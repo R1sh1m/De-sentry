@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MongoDB — Interactive Architecture</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --accent:#4f9cf9; --txt:#e6edf6; --muted:#9fb0c3; --line:#2c3a52; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:22px; }
+  .badge { display:inline-block; margin-top:8px; padding:4px 10px; border-radius:999px; background:var(--accent); color:#06121f; font-size:12px; font-weight:600; }
+  .layout { display:flex; flex-wrap:wrap; gap:20px; padding:24px; align-items:flex-start; }
+  .diagram { flex:1 1 420px; }
+  .layer { margin-bottom:14px; }
+  .layer h3 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .comp { cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--txt); padding:12px 14px; border-radius:10px; font-size:13px; text-align:left; transition:.15s; }
+  .comp:hover, .comp.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(79,156,249,.25); }
+  .connector { height:20px; width:2px; background:var(--line); margin:0 auto; }
+  aside#panel { flex:1 1 320px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; min-height:260px; position:sticky; top:24px; }
+  aside#panel h2 { margin-top:0; font-size:16px; color:var(--accent); }
+  aside#panel p { color:var(--muted); line-height:1.55; font-size:14px; }
+  .toggle { display:flex; gap:8px; margin:0 0 14px; }
+  .toggle button { background:var(--card); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .toggle button.active { border-color:var(--accent); color:var(--accent); }
+  footer { padding:16px 24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+  code { background:#0b0f18; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MongoDB — Interactive Architecture</h1>
+  <span class="badge">Document database (BSON)</span>
+</header>
+<div class="layout">
+  <div class="diagram">
+    <div class="layer">
+      <h3>Client tier</h3>
+      <div class="row">
+        <button class="comp" data-key="client">mongosh / Drivers / Compass</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Routing tier</h3>
+      <div class="row">
+        <button class="comp" data-key="mongos">mongos router (sharded only)</button>
+        <button class="comp" data-key="driveroute">driver → primary (replica set)</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Coordination tier</h3>
+      <div class="row">
+        <button class="comp" data-key="primary">Primary (election / oplog)</button>
+        <button class="comp" data-key="secondary">Secondary</button>
+        <button class="comp" data-key="config">Config servers (sharded)</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Data tier</h3>
+      <div class="row">
+        <button class="comp" data-key="shard">Shard (replica set)</button>
+        <button class="comp" data-key="wt">WiredTiger engine</button>
+        <button class="comp" data-key="index">B-tree indexes / cache</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Persistence</h3>
+      <div class="row">
+        <button class="comp" data-key="journal">Journal / WAL</button>
+        <button class="comp" data-key="oplog">Oplog</button>
+        <button class="comp" data-key="datafiles">Data files (disk)</button>
+      </div>
+    </div>
+
+    <div class="toggle">
+      <button data-path="write" class="active">Write path</button>
+      <button data-path="read">Read path</button>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <h2 id="p-title">Overview</h2>
+    <p id="p-body">Click any component to see what it does. Use the Write/Read path toggle to trace a request.</p>
+  </aside>
+</div>
+<footer>Generated from Research_Docs • MongoDB • interactive architecture viewer</footer>
+<script>
+  const info = {
+    client: { title: "Client tier — mongosh / Drivers / Compass",
+      body: "Applications connect via official language drivers (Node.js, Python, Java, Go, etc.), the mongo shell (mongosh), or the Compass GUI. Drivers handle connection pooling, server discovery, failover, and (in sharded clusters) shard-key-aware routing. They apply the configured readPreference and writeConcern." },
+    mongos: { title: "mongos router (sharded clusters only)",
+      body: "A stateless query router. Clients connect to mongos, which consults the config servers to map a query's shard key to the owning shard(s). For targeted queries it routes to one shard; for unscoped queries it does scatter-gather across shards and merges results. Not used in a plain replica set." },
+    driveroute: { title: "Driver → Primary (replica set)",
+      body: "In a non-sharded replica set, the driver connects directly to the primary. It discovers the topology via hello/heartbeats and, on failover, seamlessly reconnects to the newly elected primary without application changes." },
+    primary: { title: "Primary — election & oplog",
+      body: "The primary accepts all writes by default. It validates each write, appends it to the oplog (local.oplog.rs), and replicates it to secondaries. If the primary fails, secondaries run a Raft-like election (gated by priority and votes) to promote a new primary." },
+    secondary: { title: "Secondary",
+      body: "A voting, data-bearing member that replicates the primary's oplog and applies changes in order. Secondaries can serve reads when a secondary read preference is set, and can be promoted to primary on failover. Arbiters vote but store no data." },
+    config: { title: "Config servers (sharded mode)",
+      body: "A replica set storing cluster metadata: chunk-to-shard mappings, shard key ranges, and balancer state. mongos reads from config servers to route queries. Since MongoDB 3.4 the config servers are themselves a replica set for redundancy." },
+    shard: { title: "Shard (replica set)",
+      body: "Each shard is a replica set holding a partition (subset of chunks) of the total data. Shards provide both horizontal scale and high availability — every partition survives the loss of individual nodes." },
+    wt: { title: "WiredTiger storage engine",
+      body: "Default engine. Provides document-level concurrency (optimistic locking, only same-document writes serialize), a write-ahead journal, Snappy/zstd/zlib compression, and an in-memory cache (default up to 50% RAM). Checkpoints flush dirty pages to data files periodically." },
+    index: { title: "B-tree indexes & cache",
+      body: "WiredTiger indexes are B-trees. Single-field, compound, multikey (array), text, geospatial, TTL, unique, and partial indexes are supported. Indexes and hot documents live in the WiredTiger cache / OS page cache for fast access. Indexes speed reads but add write and storage cost." },
+    journal: { title: "Journal / WAL",
+      body: "Write-ahead log. Before modifying data files, WiredTiger records the change to the journal (batched ~every 100ms, or on j:true) for crash recovery. On restart, uncheckpointed operations replay from the journal." },
+    oplog: { title: "Oplog (replication log)",
+      body: "A capped, idempotent, ordered log of all write operations on the primary. Secondaries tail the oplog and apply entries to stay in sync. Also powers change streams and point-in-time recovery." },
+    datafiles: { title: "Data files on disk",
+      body: "WiredTiger stores collections and indexes as compressed files under /data/db (or dbPath). Checkpoints periodically persist the in-memory state to disk; the journal guarantees durability between checkpoints." }
+  };
+  const paths = {
+    write: "Write path: the driver (or mongos in a sharded cluster) routes the operation by shard key (sharded) or to the primary (replica set). The primary validates it, writes to WiredTiger (journal + in-memory cache), appends an oplog entry, and replicates it to secondaries. The write is acknowledged once the configured write concern (e.g. w:'majority', j:true) is satisfied.",
+    read: "Read path: by default reads go to the primary for strong consistency. A readPreference can route to the nearest or a secondary. MongoDB selects an index (or does a collection scan) and reads from the WiredTiger cache / disk. Aggregation pipelines execute their stages inside the engine, minimizing data returned to the client."
+  };
+  const pTitle = document.getElementById('p-title');
+  const pBody  = document.getElementById('p-body');
+  document.querySelectorAll('.comp').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.comp').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const d = info[b.dataset.key];
+    if (d) { pTitle.textContent = d.title; pBody.textContent = d.body; }
+  }));
+  document.querySelectorAll('.toggle button').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle button').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    pTitle.textContent = btn.dataset.path === 'write' ? 'Write path' : 'Read path';
+    pBody.textContent = paths[btn.dataset.path];
+  }));
+</script>
+</body>
+</html>
