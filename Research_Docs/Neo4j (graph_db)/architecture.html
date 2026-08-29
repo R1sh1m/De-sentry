@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neo4j — Interactive Architecture</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --accent:#4f9cf9; --txt:#e6edf6; --muted:#9fb0c3; --line:#2c3a52; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:22px; }
+  .badge { display:inline-block; margin-top:8px; padding:4px 10px; border-radius:999px; background:var(--accent); color:#06121f; font-size:12px; font-weight:600; }
+  .layout { display:flex; flex-wrap:wrap; gap:20px; padding:24px; align-items:flex-start; }
+  .diagram { flex:1 1 420px; }
+  .layer { margin-bottom:14px; }
+  .layer h3 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .comp { cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--txt); padding:12px 14px; border-radius:10px; font-size:13px; text-align:left; transition:.15s; }
+  .comp:hover, .comp.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(79,156,249,.25); }
+  .connector { height:20px; width:2px; background:var(--line); margin:0 auto; }
+  aside#panel { flex:1 1 320px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; min-height:260px; position:sticky; top:24px; }
+  aside#panel h2 { margin-top:0; font-size:16px; color:var(--accent); }
+  aside#panel p { color:var(--muted); line-height:1.55; font-size:14px; }
+  .toggle { display:flex; gap:8px; margin:0 0 14px; }
+  .toggle button { background:var(--card); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .toggle button.active { border-color:var(--accent); color:var(--accent); }
+  footer { padding:16px 24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+  code { background:#0b0f18; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Neo4j — Interactive Architecture</h1>
+  <span class="badge">Native graph database (Cypher)</span>
+</header>
+<div class="layout">
+  <div class="diagram">
+    <div class="layer">
+      <h3>Client tier</h3>
+      <div class="row">
+        <button class="comp" data-key="browser">Neo4j Browser</button>
+        <button class="comp" data-key="drivers">Drivers</button>
+        <button class="comp" data-key="shell">Cypher Shell</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Protocol tier</h3>
+      <div class="row">
+        <button class="comp" data-key="bolt">Bolt :7687</button>
+        <button class="comp" data-key="http">HTTP :7474</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Processing tier</h3>
+      <div class="row">
+        <button class="comp" data-key="processor">Cypher Query Processor</button>
+        <button class="comp" data-key="planner">Planner / Optimizer</button>
+        <button class="comp" data-key="runtime">Runtime</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Storage / Engine tier</h3>
+      <div class="row">
+        <button class="comp" data-key="native">Native Graph Store</button>
+        <button class="comp" data-key="adjacency">Index-Free Adjacency</button>
+        <button class="comp" data-key="pagecache">Page Cache</button>
+        <button class="comp" data-key="heap">Heap</button>
+        <button class="comp" data-key="indexes">Indexes</button>
+        <button class="comp" data-key="wal">WAL</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>HA tier</h3>
+      <div class="row">
+        <button class="comp" data-key="single">Single Instance</button>
+        <button class="comp" data-key="core">Core (Raft)</button>
+        <button class="comp" data-key="replica">Read Replica</button>
+      </div>
+    </div>
+
+    <div class="toggle">
+      <button data-path="write" class="active">Write path</button>
+      <button data-path="read">Read path</button>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <h2 id="p-title">Overview</h2>
+    <p id="p-body">Click any component to see what it does. Use the Write/Read path toggle to trace a request.</p>
+  </aside>
+</div>
+<footer>Generated from Research_Docs • Neo4j • interactive architecture viewer</footer>
+<script>
+  const info = {
+    browser: { title: "Neo4j Browser", body: "Web UI served on :7474 for writing Cypher, visualizing graphs, and administering the database. Primary interactive client for developers and analysts." },
+    drivers: { title: "Drivers", body: "Official client drivers (Java, Python, JavaScript, .NET, Go) that communicate with Neo4j over the Bolt binary protocol using connection pooling and pipelining." },
+    shell:   { title: "Cypher Shell", body: "Command-line client (cypher-shell) for executing Cypher statements over Bolt. Useful for scripting and administration." },
+    bolt:    { title: "Bolt (:7687)", body: "Binary, stateful request/response protocol optimized for graph workloads. Efficiently encodes nodes, relationships, and paths. Default port 7687 and the primary protocol for drivers." },
+    http:    { title: "HTTP (:7474)", body: "Transactional REST/JSON API for Cypher execution and integrations. Convenient for non-driver clients but generally slower than Bolt for high throughput." },
+    processor:{ title: "Cypher Query Processor", body: "Parses Cypher statements, builds a logical plan, and prepares the query for planning and execution. Entry point of the processing tier." },
+    planner: { title: "Planner / Optimizer", body: "Cost-based optimizer that produces a physical execution plan. Decides index usage, join order, and traversal strategy to minimize work." },
+    runtime: { title: "Runtime", body: "Executes the physical plan: opens transactions, acquires locks, reads/writes the native store, maintains indexes, and assembles result subgraphs." },
+    native:  { title: "Native Graph Store", body: "On-disk record stores for nodes, relationships, and properties. Relationships are stored as physical records with direct node pointers — the core of a native graph DB." },
+    adjacency:{ title: "Index-Free Adjacency", body: "Each node points directly to its relationships, and each relationship points to its source/target nodes. Traversal is O(1) per hop with no join tables or index lookups." },
+    pagecache:{ title: "Page Cache", body: "Off-heap cache mapping native store and index pages from disk into memory. The key to fast traversal; should be sized to hold the graph working set (server.memory.pagecache.size)." },
+    heap:    { title: "Heap", body: "JVM heap for query runtime state, transaction state, locking, planning, and connections. Sized via server.memory.heap.initial_size / heap.max_size." },
+    indexes: { title: "Indexes", body: "Auxiliary structures used to find anchor nodes: B-tree, range, full-text (Lucene), token lookup (by label). Not used for traversal itself, only for entry points." },
+    wal:     { title: "Write-Ahead Log", body: "Transaction log that records every change before commit, guaranteeing durability and crash recovery. Replicated to a majority of cores in a cluster." },
+    single:  { title: "Single Instance", body: "Community Edition runs as one instance: no HA, no causal clustering. Suitable for dev/small prod; a crash means downtime until restart." },
+    core:    { title: "Core (Raft)", body: "Enterprise Causal Cluster members using Raft consensus. Replicate the transaction log to a majority quorum, serve reads and writes, and provide automatic failover." },
+    replica: { title: "Read Replica", body: "Enterprise read-only members that asynchronously copy the transaction log from a Core. Provide horizontal read scaling; eventually consistent; cannot become leader." }
+  };
+  const paths = {
+    write: "Write path: Cypher WRITE -> Cypher planner/optimizer -> transaction (locks, txn state) -> write node/rel/property records into the native store (wiring relationship pointers for index-free adjacency) -> update indexes (B-tree/full-text/token) -> append to WAL for durability -> commit and acknowledge.",
+    read:  "Read path: Cypher MATCH -> planner uses an index to find the anchor node(s) -> traverse from the anchor via relationship pointers (index-free adjacency); each hop is O(1) -> node/rel/property pages served from the page cache (disk only on a miss) -> matched subgraph assembled and returned over Bolt."
+  };
+  const pTitle = document.getElementById('p-title');
+  const pBody  = document.getElementById('p-body');
+  document.querySelectorAll('.comp').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.comp').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const d = info[b.dataset.key];
+    if (d) { pTitle.textContent = d.title; pBody.textContent = d.body; }
+  }));
+  document.querySelectorAll('.toggle button').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle button').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    pTitle.textContent = btn.dataset.path === 'write' ? 'Write path' : 'Read path';
+    pBody.textContent = paths[btn.dataset.path];
+  }));
+</script>
+</body>
+</html>
