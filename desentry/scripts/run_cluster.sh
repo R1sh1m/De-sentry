@@ -23,6 +23,7 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+"$ROOT_DIR/scripts/stop_cluster.sh" 2>/dev/null || true
 mkdir -p "$RUN_DIR"
 rm -f "$RUN_DIR"/*.pid
 
@@ -68,7 +69,7 @@ for ((i = 0; i < NUM_NODES; i++)); do
 }
 EOF
 
-  "$BIN" --config "$config_path" > "$RUN_DIR/node${i}.log" 2>&1 &
+  nohup "$BIN" --config "$config_path" > "$RUN_DIR/node${i}.log" 2>&1 &
   echo $! > "$RUN_DIR/node${i}.pid"
   echo "started node${i}: api=http://127.0.0.1:${api_port}  p2p=127.0.0.1:${p2p_port}  pid=$!"
 done
