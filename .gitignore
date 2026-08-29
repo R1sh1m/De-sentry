@@ -1,0 +1,206 @@
+# ==============================================================================
+#  De-Sentry .gitignore
+#  Stack: C++17 / Python (pybind11) / Electron + React + TypeScript
+# ==============================================================================
+
+# ── C++ Build Artifacts ────────────────────────────────────────────────────────
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled objects and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# Precompiled headers
+*.gch
+*.pch
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# Eggs and distributions
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy / pyright type cache
+.mypy_cache/
+.pyright/
+pyrightconfig.json
+
+# pybind11 build artifacts
+src/python/*.so
+src/python/*.pyd
+src/python/build/
+
+# ── Node.js / Electron / React ─────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Build output
+src/ui/dist/
+src/ui/out/
+src/ui/.next/
+src/ui/build/
+
+# Electron packaged apps
+release/
+dist-electron/
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+*.snap
+*.exe
+*.msi
+
+# node-gyp / N-API addon
+src/ui/*.node
+src/ui/build/
+binding.gyp.bak
+
+# ── De-Sentry Runtime Data (local node data — never commit) ───────────────────
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Brain files (generated at runtime)
+brain_*.json
+
+# Benchmark temp file
+.bench_tmp
+
+# Node config with local IPs/ports (use node_profile.example.toml instead)
+node_profile.toml
+
+# Routing ledger and change ledger data files
+ledger/
+transit/
+
+# ── IDE and Editor Files ────────────────────────────────────────────────────────
+# VS Code (commit workspace settings, ignore personal)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains (CLion, PyCharm, WebStorm)
+.idea/
+*.iml
+*.iws
+*.ipr
+cmake-build-debug/
+cmake-build-release/
+
+# Visual Studio
+*.user
+*.suo
+*.sln.docview
+.vs/
+x64/
+x86/
+Debug/
+Release/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ── OS Files ───────────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log
+
+# ── Secrets and Credentials (NEVER commit) ─────────────────────────────────────
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+
+# ── Temporary Files ────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+\#*\#

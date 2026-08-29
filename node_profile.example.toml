@@ -1,0 +1,66 @@
+# ==============================================================================
+#  node_profile.example.toml
+#
+#  Copy this file to node_profile.toml and fill in your values.
+#  node_profile.toml is in .gitignore — NEVER commit it (it has local IPs/ports).
+#
+#  Usage:
+#    cp node_profile.example.toml node_profile.toml
+#    # Edit node_profile.toml with your node's ID, ports, and peer addresses
+# ==============================================================================
+
+[node]
+id           = "A"            # Change to your node: "A", "B", or "C"
+level        = 0              # 0=ROOT, 1=SPECIALIST, 2=GENERALIST  (see docs/routing_and_specialization.md)
+display_name = "Node A — Image Specialist (Root)"
+port         = 7001           # Your node's TCP listen port
+
+[peers]
+# Fill in your teammates' local IPs and ports
+# For local demo: use 127.0.0.1 for all
+B = "127.0.0.1:7002"
+C = "127.0.0.1:7003"
+
+[capabilities]
+# MIME type group → capability_score (0.0–1.0)
+# See docs/node_capability_score.md for how these feed into fitness scoring
+"image/jpeg"          = 1.00
+"image/png"           = 1.00
+"image/webp"          = 0.95
+"image/gif"           = 0.90
+"image/*"             = 0.85
+"video/mp4"           = 0.50
+"application/*"       = 0.10
+"*/*"                 = 0.05   # Catch-all — always accept as last resort
+
+[storage_engine]
+# Available engines: blob_columnar | columnar | text_fts | dom_tree | time_series | generic
+primary            = "blob_columnar"
+options.compression = "lz4"
+
+[transit]
+quota_mb         = 512         # Normal transit store quota
+emergency_expand = true        # Expand if full — never reject data
+emergency_cap_mb = 2048        # Hard ceiling on emergency expansion
+
+[brain_file]
+ttl_seconds              = 30
+sync_interval_seconds    = 10
+output_path              = "./data/brain_A.json"
+
+[ledger]
+db_path = "./data/node_A.db"
+
+[coordinator]
+node_id = "A"                  # Which node handles Routing Ledger writes
+
+[benchmark]
+run_on_startup           = true
+light_refresh_seconds    = 30
+full_refresh_hours       = 6
+
+[ranking_weights]
+w_cap   = 0.45
+w_load  = 0.25
+w_perf  = 0.20
+w_avail = 0.10
