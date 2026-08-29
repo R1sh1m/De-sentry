@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PostgreSQL — Interactive Architecture</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --accent:#4f9cf9; --txt:#e6edf6; --muted:#9fb0c3; --line:#2c3a52; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:22px; }
+  .badge { display:inline-block; margin-top:8px; padding:4px 10px; border-radius:999px; background:var(--accent); color:#06121f; font-size:12px; font-weight:600; }
+  .layout { display:flex; flex-wrap:wrap; gap:20px; padding:24px; align-items:flex-start; }
+  .diagram { flex:1 1 420px; }
+  .layer { margin-bottom:14px; }
+  .layer h3 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .comp { cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--txt); padding:12px 14px; border-radius:10px; font-size:13px; text-align:left; transition:.15s; }
+  .comp:hover, .comp.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(79,156,249,.25); }
+  .connector { height:20px; width:2px; background:var(--line); margin:0 auto; }
+  aside#panel { flex:1 1 320px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; min-height:260px; position:sticky; top:24px; }
+  aside#panel h2 { margin-top:0; font-size:16px; color:var(--accent); }
+  aside#panel p { color:var(--muted); line-height:1.55; font-size:14px; }
+  .toggle { display:flex; gap:8px; margin:0 0 14px; }
+  .toggle button { background:var(--card); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .toggle button.active { border-color:var(--accent); color:var(--accent); }
+  footer { padding:16px 24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+  code { background:#0b0f18; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PostgreSQL — Interactive Architecture</h1>
+  <span class="badge">Object-relational (MVCC, ACID)</span>
+</header>
+<div class="layout">
+  <div class="diagram">
+    <div class="layer">
+      <h3>Client tier</h3>
+      <div class="row">
+        <button class="comp" data-key="psql">psql</button>
+        <button class="comp" data-key="jdbc">JDBC / ODBC</button>
+        <button class="comp" data-key="apps">Apps / ORMs</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Connection tier</h3>
+      <div class="row">
+        <button class="comp" data-key="postmaster">Postmaster</button>
+        <button class="comp" data-key="backend">Backend process</button>
+        <button class="comp" data-key="pooler">PgBouncer (optional)</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Query tier</h3>
+      <div class="row">
+        <button class="comp" data-key="parser">Parser</button>
+        <button class="comp" data-key="rewriter">Rewriter</button>
+        <button class="comp" data-key="planner">Planner / Optimizer</button>
+        <button class="comp" data-key="executor">Executor</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Memory / shared tier</h3>
+      <div class="row">
+        <button class="comp" data-key="sharedbuf">Shared Buffers</button>
+        <button class="comp" data-key="walbuf">WAL Buffers</button>
+        <button class="comp" data-key="workmem">work_mem</button>
+        <button class="comp" data-key="effcache">effective_cache_size</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Storage / engine tier</h3>
+      <div class="row">
+        <button class="comp" data-key="heap">Heap files</button>
+        <button class="comp" data-key="indexes">Indexes (B-tree/GiST/GIN/BRIN/hash)</button>
+        <button class="comp" data-key="mvcc">MVCC (xmin/xmax)</button>
+        <button class="comp" data-key="vacuum">VACUUM / AUTOVACUUM</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+    <div class="layer">
+      <h3>Durability / replication tier</h3>
+      <div class="row">
+        <button class="comp" data-key="wal">WAL</button>
+        <button class="comp" data-key="checkpointer">Checkpointer</button>
+        <button class="comp" data-key="bgwriter">Background writer</button>
+        <button class="comp" data-key="archiver">Archiver</button>
+        <button class="comp" data-key="streaming">Streaming replication</button>
+        <button class="comp" data-key="logical">Logical replication</button>
+      </div>
+    </div>
+
+    <div class="toggle">
+      <button data-path="write" class="active">Write path</button>
+      <button data-path="read">Read path</button>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <h2 id="p-title">Overview</h2>
+    <p id="p-body">Click any component to see what it does. Use the Write/Read path toggle to trace a request.</p>
+  </aside>
+</div>
+<footer>Generated from Research_Docs • PostgreSQL • interactive architecture viewer</footer>
+<script>
+  const info = {
+    psql:     { title: "psql", body: "Interactive command-line client for PostgreSQL. Connects over TCP to the postmaster and issues SQL." },
+    jdbc:     { title: "JDBC / ODBC", body: "Standard database drivers letting Java (JDBC), C/C++/Python (ODBC) and other languages talk to PostgreSQL." },
+    apps:     { title: "Apps / ORMs", body: "Application servers and ORMs (Hibernate, SQLAlchemy, Django, Rails, Prisma) that generate and send SQL." },
+
+    postmaster: { title: "Postmaster", body: "Parent daemon. Listens on :5432, allocates shared memory, starts background workers, and forks a backend per new connection." },
+    backend:  { title: "Backend process", body: "One OS process per connection. Authenticates, parses, plans, executes SQL, and returns results for a single client." },
+    pooler:   { title: "PgBouncer (optional)", body: "Connection pooler that multiplexes many client connections onto a small pool of real backends, avoiding per-process memory blowups." },
+
+    parser:   { title: "Parser", body: "Checks SQL syntax and produces a parse tree. No semantic checks yet." },
+    rewriter: { title: "Rewriter", body: "Applies rewrite rules, expands views and WITH (CTE) references into the parse tree." },
+    planner:  { title: "Planner / Optimizer", body: "Generates candidate plans, estimates cost from statistics, and picks the cheapest (scan type, join order/algorithm, parallelism)." },
+    executor: { title: "Executor", body: "Runs the chosen plan, fetching/storing tuples through access methods and returning result rows." },
+
+    sharedbuf: { title: "Shared Buffers", body: "Shared cache of table/index pages (default 128 MB, often 25% of RAM). The primary read cache; hits avoid disk." },
+    walbuf:   { title: "WAL Buffers", body: "Staging area for WAL records before the WAL writer flushes them to WAL segment files on disk." },
+    workmem:  { title: "work_mem", body: "Per-operation local memory for sorts and hash joins. Allocated per operation, so complex queries can multiply usage." },
+    effcache: { title: "effective_cache_size", body: "Planner hint for total OS + shared-buffer cache available; influences index vs seq scan choices." },
+
+    heap:     { title: "Heap files", body: "Unordered row store. Each table is a relation of 8 KB pages holding tuples with xmin/xmax visibility metadata and ctid." },
+    indexes:  { title: "Indexes (B-tree/GiST/GIN/BRIN/hash)", body: "B-tree (default), GiST (geometric/full-text), GIN (array/JSONB), BRIN (ordered huge tables), hash (equality). Speed lookups." },
+    mvcc:     { title: "MVCC (xmin/xmax)", body: "Each tuple carries xmin (creator) and xmax (deleter). A snapshot determines visibility, so readers never block writers and vice versa." },
+    vacuum:   { title: "VACUUM / AUTOVACUUM", body: "Reclaims dead tuples left by MVCC and updates statistics. AUTOVACUUM runs automatically; neglect causes bloat and XID wraparound risk." },
+
+    wal:      { title: "WAL (Write-Ahead Log)", body: "Durability backbone. Changes are written to WAL before data pages are flushed. Enables crash recovery and replication." },
+    checkpointer: { title: "Checkpointer", body: "Flushes all dirty shared-buffer pages and records a redo point, bounding how much WAL must be replayed on recovery." },
+    bgwriter: { title: "Background writer", body: "Periodically writes dirty buffers to disk to smooth checkpoint I/O and keep the cache clean." },
+    archiver: { title: "Archiver", body: "Copies completed WAL segment files to an archive location for point-in-time recovery (PITR)." },
+    streaming:{ title: "Streaming replication (physical)", body: "Primary streams WAL to standby(s). Async (low latency) or sync (zero data loss). Standbys can serve read-only queries." },
+    logical:  { title: "Logical replication", body: "Table/row-level replication via publication/subscription. Selective, cross-version, useful for upgrades and heterogeneous consumers." }
+  };
+  const paths = {
+    write: "Write path: backend receives SQL -> parse/rewrite/plan/execute -> modifies page in Shared Buffers -> writes WAL record (WAL buffer -> WAL writer -> WAL files, fsync) FIRST for durability -> background writer / checkpointer later flushes heap & index pages -> WAL streamed to replicas for physical replication.",
+    read:  "Read path: planner chooses Index Scan or Seq Scan -> reads pages from Shared Buffers (cache hit) or disk -> MVCC visibility check using xmin/xmax and the transaction snapshot -> only visible rows returned -> cache hits avoid disk entirely."
+  };
+  const pTitle = document.getElementById('p-title');
+  const pBody  = document.getElementById('p-body');
+  document.querySelectorAll('.comp').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.comp').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const d = info[b.dataset.key];
+    if (d) { pTitle.textContent = d.title; pBody.textContent = d.body; }
+  }));
+  document.querySelectorAll('.toggle button').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle button').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    pTitle.textContent = btn.dataset.path === 'write' ? 'Write path' : 'Read path';
+    pBody.textContent = paths[btn.dataset.path];
+  }));
+</script>
+</body>
+</html>
