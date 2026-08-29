@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Database Architecture Research Hub</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --accent:#4f9cf9; --txt:#e6edf6; --muted:#9fb0c3; --line:#2c3a52; --good:#3fb950; --warn:#e3b341; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); line-height:1.5; }
+  header { padding:32px 24px 20px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:26px; }
+  header p { color:var(--muted); max-width:760px; margin:10px 0 0; }
+  .wrap { padding:24px; max-width:1200px; margin:0 auto; }
+  h2 { font-size:18px; margin:28px 0 12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; transition:.15s; }
+  .card:hover { border-color:var(--accent); transform:translateY(-2px); }
+  .card h3 { margin:0 0 4px; font-size:16px; }
+  .card .type { color:var(--accent); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .card .desc { color:var(--muted); font-size:13px; margin:8px 0 12px; }
+  .card a { color:var(--txt); text-decoration:none; font-size:13px; display:inline-block; margin-right:12px; border-bottom:1px dotted var(--muted); }
+  .card a:hover { color:var(--accent); border-color:var(--accent); }
+  table { width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); text-transform:uppercase; font-size:11px; letter-spacing:.06em; }
+  tbody tr:hover { background:#141b29; }
+  .pill { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .pill.ap { background:rgba(227,179,65,.18); color:var(--warn); }
+  .pill.cp { background:rgba(63,185,80,.18); color:var(--good); }
+  .pill.hy { background:rgba(79,156,249,.18); color:var(--accent); }
+  footer { padding:20px 24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+  a.inline { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Database Architecture Research Hub</h1>
+  <p>A comparison of six database management systems, each with an interactive architecture viewer plus schema, pros/cons, use-case, and local deployment guides. Click a system below to explore.</p>
+</header>
+<div class="wrap">
+
+  <h2>Systems</h2>
+  <div class="cards">
+    <div class="card">
+      <span class="type">Wide-column NoSQL</span>
+      <h3>Apache Cassandra</h3>
+      <div class="desc">Masterless, peer-to-peer, LSM-tree distributed store with tunable consistency. Built for massive write throughput and multi-DC active-active.</div>
+      <a href="Apache_Cassandra%20(NoSQL)/architecture.html">Architecture</a>
+      <a href="Apache_Cassandra%20(NoSQL)/architecture.md">Docs</a>
+      <a href="Apache_Cassandra%20(NoSQL)/deployment.md">Deploy</a>
+    </div>
+    <div class="card">
+      <span class="type">Time-series</span>
+      <h3>InfluxDB</h3>
+      <div class="desc">Purpose-built for metrics/events. v3 Core uses object storage + Apache Arrow/DataFusion; tags, fields and line protocol.</div>
+      <a href="Influxdb%20(time_series_db)/architecture.html">Architecture</a>
+      <a href="Influxdb%20(time_series_db)/architecture.md">Docs</a>
+      <a href="Influxdb%20(time_series_db)/deployment.md">Deploy</a>
+    </div>
+    <div class="card">
+      <span class="type">Document</span>
+      <h3>MongoDB</h3>
+      <div class="desc">BSON document store with flexible schema, replica sets for HA and sharding for horizontal scale. WiredTiger storage engine.</div>
+      <a href="MongoDB/architecture.html">Architecture</a>
+      <a href="MongoDB/architecture.md">Docs</a>
+      <a href="MongoDB/deployment.md">Deploy</a>
+    </div>
+    <div class="card">
+      <span class="type">Graph</span>
+      <h3>Neo4j</h3>
+      <div class="desc">Native graph DB with index-free adjacency and Cypher. Ideal for connected data: fraud, knowledge graphs, recommendations.</div>
+      <a href="Neo4j%20(graph_db)/architecture.html">Architecture</a>
+      <a href="Neo4j%20(graph_db)/architecture.md">Docs</a>
+      <a href="Neo4j%20(graph_db)/deployment.md">Deploy</a>
+    </div>
+    <div class="card">
+      <span class="type">Vector (SaaS)</span>
+      <h3>Pinecone</h3>
+      <div class="desc">Fully managed vector DB for embeddings/ANN search. SaaS-only — local runs via SDK; self-host alternative covered is Qdrant.</div>
+      <a href="Pinecone%20(vector_db)/architecture.html">Architecture</a>
+      <a href="Pinecone%20(vector_db)/architecture.md">Docs</a>
+      <a href="Pinecone%20(vector_db)/deployment.md">Deploy</a>
+    </div>
+    <div class="card">
+      <span class="type">Object-relational</span>
+      <h3>PostgreSQL</h3>
+      <div class="desc">ACID, MVCC relational workhorse with rich SQL, extensions (PostGIS, pgvector) and streaming/logical replication.</div>
+      <a href="PostgreSQL/architecture.html">Architecture</a>
+      <a href="PostgreSQL/architecture.md">Docs</a>
+      <a href="PostgreSQL/deployment.md">Deploy</a>
+    </div>
+  </div>
+
+  <h2>Side-by-side comparison</h2>
+  <table>
+    <thead>
+      <tr><th>System</th><th>Type</th><th>Consistency model</th><th>Scale-out</th><th>Query lang</th><th>Best for</th><th>Local deploy</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Cassandra</td><td>Wide-column</td><td><span class="pill ap">Tunable (AP)</span></td><td>Horizontal (ring)</td><td>CQL</td><td>Write-heavy, multi-DC</td><td>Docker ✅</td></tr>
+      <tr><td>InfluxDB</td><td>Time-series</td><td><span class="pill cp">Durable</span></td><td>v3 Ent cluster / Core single</td><td>SQL / InfluxQL</td><td>Metrics &amp; telemetry</td><td>Docker ✅</td></tr>
+      <tr><td>MongoDB</td><td>Document</td><td><span class="pill hy">Tunable</span></td><td>Sharding + replica sets</td><td>Documents / Agg</td><td>Flexible app data</td><td>Docker ✅</td></tr>
+      <tr><td>Neo4j</td><td>Graph</td><td><span class="pill cp">ACID</span></td><td>Causal cluster (Ent)</td><td>Cypher</td><td>Connected data</td><td>Docker ✅</td></tr>
+      <tr><td>Pinecone</td><td>Vector</td><td><span class="pill hy">Managed</span></td><td>Serverless auto</td><td>SDK / REST</td><td>Embeddings / RAG</td><td>SDK only ⚠️</td></tr>
+      <tr><td>PostgreSQL</td><td>Relational</td><td><span class="pill cp">ACID (MVCC)</span></td><td>Read replicas / partitioning</td><td>SQL</td><td>General transactional</td><td>Docker ✅</td></tr>
+    </tbody>
+  </table>
+
+  <h2>How to use</h2>
+  <p style="color:var(--muted)">Each <code>architecture.html</code> is a self-contained, offline interactive viewer — click components to read what they do and toggle the write/read path. The <code>*.md</code> files cover schema, pros/cons, use cases and step-by-step local deployment (Docker). Pinecone has no self-hosted option; its deployment guide shows the local SDK workflow plus a Qdrant self-hosted alternative.</p>
+
+</div>
+<footer>Generated from Research_Docs • 6 DBMS • interactive architecture hub</footer>
+</body>
+</html>
