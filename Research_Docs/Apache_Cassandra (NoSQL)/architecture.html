@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apache Cassandra — Interactive Architecture</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --accent:#4f9cf9; --txt:#e6edf6; --muted:#9fb0c3; --line:#2c3a52; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:22px; }
+  .badge { display:inline-block; margin-top:8px; padding:4px 10px; border-radius:999px; background:var(--accent); color:#06121f; font-size:12px; font-weight:600; }
+  .layout { display:flex; flex-wrap:wrap; gap:20px; padding:24px; align-items:flex-start; }
+  .diagram { flex:1 1 420px; }
+  .layer { margin-bottom:14px; }
+  .layer h3 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .comp { cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--txt); padding:12px 14px; border-radius:10px; font-size:13px; text-align:left; transition:.15s; }
+  .comp:hover, .comp.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(79,156,249,.25); }
+  .connector { height:20px; width:2px; background:var(--line); margin:0 auto; }
+  aside#panel { flex:1 1 320px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; min-height:260px; position:sticky; top:24px; }
+  aside#panel h2 { margin-top:0; font-size:16px; color:var(--accent); }
+  aside#panel p { color:var(--muted); line-height:1.55; font-size:14px; }
+  .toggle { display:flex; gap:8px; margin:18px 0 14px; }
+  .toggle button { background:var(--card); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .toggle button.active { border-color:var(--accent); color:var(--accent); }
+  footer { padding:16px 24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
+  code { background:#0b0f18; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .back { display:inline-block; margin-top:10px; color:var(--accent); font-size:13px; text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Apache Cassandra — Interactive Architecture</h1>
+  <span class="badge">Wide-column NoSQL (AP, LSM-tree)</span>
+</header>
+<div class="layout">
+  <div class="diagram">
+    <div class="layer">
+      <h3>Client tier</h3>
+      <div class="row">
+        <button class="comp" data-key="client">Client / Driver</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Coordination tier</h3>
+      <div class="row">
+        <button class="comp" data-key="coord">Coordinator node</button>
+        <button class="comp" data-key="gossip">Gossip / Failure detection</button>
+        <button class="comp" data-key="snitch">Snitch / Topology</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Data tier (peer ring)</h3>
+      <div class="row">
+        <button class="comp" data-key="ring">Token ring / vnodes</button>
+        <button class="comp" data-key="replica">Replica nodes</button>
+        <button class="comp" data-key="consistency">Tunable consistency</button>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="layer">
+      <h3>Persistence tier</h3>
+      <div class="row">
+        <button class="comp" data-key="commitlog">Commitlog</button>
+        <button class="comp" data-key="memtable">Memtable</button>
+        <button class="comp" data-key="sstable">SSTable</button>
+        <button class="comp" data-key="compaction">Compaction</button>
+        <button class="comp" data-key="indexes">Bloom filter / Indexes</button>
+      </div>
+    </div>
+
+    <div class="toggle">
+      <button data-path="write" class="active">Write path</button>
+      <button data-path="read">Read path</button>
+    </div>
+    <a class="back" href="architecture.md">← Read the full architecture write-up (architecture.md)</a>
+  </div>
+
+  <aside id="panel">
+    <h2 id="p-title">Overview</h2>
+    <p id="p-body">Click any component to see what it does. Use the Write/Read path toggle to trace a request end to end.</p>
+  </aside>
+</div>
+<footer>Generated from Research_Docs • Apache Cassandra • interactive architecture viewer</footer>
+<script>
+  const info = {
+    client: { title: "Client / Driver", body: "Applications connect through cqlsh or one of the multi-language native drivers (Java, Python, Go, Node.js, C#, etc.) using the CQL binary protocol on port 9042. The driver maintains a metadata-aware connection pool, is topology aware, and can route requests directly to the nearest replica, retrying or re-preparing on topology changes. Clients specify a consistency level per statement." },
+    coord: { title: "Coordinator node", body: "In a masterless design ANY node can receive a client request and becomes its Coordinator. The coordinator validates the CQL, computes the target replicas via the partitioner (Murmur3 by default) over the partition key, and orchestrates the write/read against those replicas according to the requested consistency level. The coordinator does no durable storage itself — it fans out to the replica set and reconciles responses." },
+    gossip: { title: "Gossip / Failure detection", body: "Nodes exchange state information (heartbeats, liveness, schema version, token ranges) every second via a peer-to-peer gossip protocol over ports 7000/7001. Accrual failure detection (Phi) judges whether a peer is down. Detected-down nodes are excluded from replica sets and routing until they recover and are repaired." },
+    snitch: { title: "Snitch / Topology", body: "The snitch maps IP addresses to datacenter/rack and tells the coordinator which replicas are 'closest'. It drives replica placement and read/write latency optimization (e.g. prefer LOCAL_QUORUM within a DC). GossipingPropertyFileSnitch and Ec2Snitch are common choices." },
+    ring: { title: "Token ring / vnodes", body: "The cluster is a consistent-hashing ring of 2^127 tokens. Each node owns a contiguous range; vnodes (num_tokens, default 256) split that range into many small random sub-ranges so data and load are evenly distributed and rebalancing on add/remove is automatic. The Murmur3 partitioner hashes the partition key to a token that maps to an owning node." },
+    replica: { title: "Replica nodes", body: "For a given partition key, the first N owning nodes on the ring (per the replication strategy) are its replicas. SimpleStrategy places replicas on the next N nodes clockwise; NetworkTopologyStrategy places them per-DC (e.g. 3 in dc1, 2 in dc2) honoring racks. Each replica applies the mutation to its own commitlog/memtable." },
+    consistency: { title: "Tunable consistency", body: "Per-statement consistency levels trade durability/latency: ONE (a single replica), QUORUM (majority across the ring: (replication_factor/2)+1), LOCAL_QUORUM (majority within the local DC, avoiding cross-DC latency), ALL (every replica). Writes and reads can be tuned independently; stronger levels reduce the window for stale reads but cost latency/availability." },
+    commitlog: { title: "Commitlog", body: "Every mutation is first appended sequentially to the commitlog on disk for crash durability — a classic write-ahead log. If the process dies before a memtable flushes, the commitlog is replayed on restart to rebuild lost memtables. It is purely for recovery, never read on the normal read path." },
+    memtable: { title: "Memtable", body: "In-memory, sorted (by partition key then clustering columns) representation of recent writes. Writes go to the memtable after the commitlog. Reads check the memtable first (newest data). When a memtable reaches its configured size threshold it is flushed to an immutable SSTable." },
+    sstable: { title: "SSTable", body: "Sorted-string table: an immutable, on-disk, ordered file produced when a memtable flushes. Cassandra maintains several per-partition SSTables over time; each stores data, an index, a summary, a bloom filter, and statistics. Because they are immutable, updates/deletes are just new SSTables with newer timestamps (tombstones for deletes)." },
+    compaction: { title: "Compaction", body: "Background process that merges SSTables, dropping overwritten/stale versions and tombstoned data, keeping the newest value per cell, and reclaiming space. Strategies: STCS (Size-Tiered, default, good for write-heavy), LCS (Leveled, good for read-heavy/update-heavy), TWCS (Time-Windowed, ideal for time-series/TTL data). Compaction also bounds read amplification." },
+    indexes: { title: "Bloom filter / Indexes / Cache", body: "Each SSTable has a Bloom filter (probabilistic, cheaply says 'definitely not in this file' to skip it), a partition index (offset of partitions), and a summary. The row cache (off-heap) caches hot partitions; the key cache caches partition-index offsets. Together they make point reads to specific partitions very cheap without scanning files." }
+  };
+  const paths = {
+    write: "Write path: a client sends a CQL INSERT/UPDATE → the contacted node becomes Coordinator → it validates the statement and hashes the partition key with the Murmur3 partitioner to find the replica set (replication strategy/RF) → the mutation is written to the commitlog (WAL) on EVERY replica, then to that replica's memtable → replicas acknowledge per the requested consistency level (ONE/QUORUM/LOCAL_QUORUM/ALL) → once enough acknowledgements arrive the coordinator returns success → later, when a memtable is full, it is flushed to an immutable SSTable; background compaction merges SSTables and purges stale versions.",
+    read: "Read path: a client sends a CQL SELECT → Coordinator computes replicas via the partitioner → it sends the read to the closest replicas required by the consistency level → each replica checks its memtable (newest), then the row cache, then uses the partition's Bloom filter + partition index/summary to locate the relevant SSTables → results are merged and reconciled with last-write-wins (highest timestamp wins; tombstones hide deleted data) → the coordinator returns the reconciled row → digest mismatches trigger a read-repair to fix inconsistent replicas."
+  };
+  const pTitle = document.getElementById('p-title');
+  const pBody  = document.getElementById('p-body');
+  document.querySelectorAll('.comp').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.comp').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const d = info[b.dataset.key];
+    if (d) { pTitle.textContent = d.title; pBody.textContent = d.body; }
+  }));
+  document.querySelectorAll('.toggle button').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle button').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    pTitle.textContent = btn.dataset.path === 'write' ? 'Write path' : 'Read path';
+    pBody.textContent = paths[btn.dataset.path];
+  }));
+</script>
+</body>
+</html>
