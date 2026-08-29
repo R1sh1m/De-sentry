@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>De-Sentry Node Dashboard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0b0e14; --panel: #12161f; --border: #232838; --text: #e6e9f0; --muted: #8b92a6;
+    --accent: #5b9dff; --ok: #35c98f; --bad: #ff5f6d; --mono: "SF Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .controls { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; }
+  input[type=text] { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-family: var(--mono); font-size: 12px; width: 220px; }
+  button { background: var(--accent); color: #05070c; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 12px; cursor: pointer; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+  main { padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-family: var(--mono); font-size: 12px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-all; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .pill.ok { background: rgba(53,201,143,.15); color: var(--ok); }
+  .pill.bad { background: rgba(255,95,109,.15); color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .hash { color: var(--accent); }
+  .empty { color: var(--muted); font-style: italic; }
+  .err { color: var(--bad); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>De-Sentry Node Dashboard</h1>
+    <div class="sub">Read-only view over one node's REST API. No build step, no dependency.</div>
+  </div>
+  <div class="controls">
+    <input id="apiBase" type="text" value="http://127.0.0.1:7701" spellcheck="false">
+    <button id="connectBtn">Connect</button>
+    <button id="verifyBtn" class="secondary">Verify ledger</button>
+    <button id="refreshBtn" class="secondary">Refresh</button>
+  </div>
+</header>
+<main>
+  <div class="card">
+    <h2>Status</h2>
+    <dl class="kv" id="statusBox"><dt class="empty">not connected</dt></dl>
+  </div>
+  <div class="card">
+    <h2>Ledger tip (hash-chained &amp; Ed25519-signed)</h2>
+    <dl class="kv" id="tipBox"><dt class="empty">not connected</dt></dl>
+    <div id="verifyResult" style="margin-top:10px;"></div>
+  </div>
+  <div class="card">
+    <h2>Collections</h2>
+    <table id="collectionsTable"><thead><tr><th>name</th><th>documents</th><th>checksum</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Known peers</h2>
+    <table id="peersTable"><thead><tr><th>node_id</th><th>host</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Recent ledger entries</h2>
+    <table id="ledgerTable"><thead><tr><th>entry_id</th><th>op</th><th>collection</th><th>key</th><th>prev_hash</th><th>entry_hash</th></tr></thead><tbody></tbody></table>
+  </div>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const short = (h) => (h && h.length > 16) ? h.slice(0, 8) + '…' + h.slice(-8) : h;
+
+  function kv(pairs) {
+    return pairs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  }
+
+  async function fetchJson(base, path) {
+    const res = await fetch(base + path, { method: path.startsWith('/_ledger/verify') ? 'POST' : 'GET' });
+    if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
+    return res.json();
+  }
+
+  async function refresh() {
+    const base = $('apiBase').value.replace(/\/$/, '');
+    try {
+      const [status, brain] = await Promise.all([
+        fetchJson(base, '/_status'),
+        fetchJson(base, '/_brain'),
+      ]);
+
+      $('statusBox').innerHTML = kv([
+        ['node_id', status.node_id],
+        ['uptime_seconds', status.uptime_seconds],
+        ['collections', status.collections],
+        ['known_peers', status.known_peers],
+        ['public_key', `<span class="hash">${short(status.public_key_hex)}</span>`],
+      ]);
+
+      $('tipBox').innerHTML = kv([
+        ['entry_id', brain.ledger_tip.entry_id],
+        ['entry_hash', `<span class="hash">${short(brain.ledger_tip.entry_hash)}</span>`],
+      ]);
+
+      const cBody = $('collectionsTable').querySelector('tbody');
+      cBody.innerHTML = brain.collections.length
+        ? brain.collections.map(c => `<tr><td>${c.name}</td><td>${c.document_count}</td><td class="hash">${short(c.checksum)}</td></tr>`).join('')
+        : '<tr><td colspan="3" class="empty">no collections yet</td></tr>';
+
+      const pBody = $('peersTable').querySelector('tbody');
+      pBody.innerHTML = brain.known_peers.length
+        ? brain.known_peers.map(p => `<tr><td>${short(p.node_id)}</td><td>${p.host}</td></tr>`).join('')
+        : '<tr><td colspan="2" class="empty">no peers connected</td></tr>';
+
+      const entries = await fetchJson(base, `/_ledger/entries?from=${Math.max(0, brain.ledger_tip.entry_id - 24)}&to=${brain.ledger_tip.entry_id}`);
+      const lBody = $('ledgerTable').querySelector('tbody');
+      const rows = entries.entries.slice().reverse();
+      lBody.innerHTML = rows.length
+        ? rows.map(e => `<tr><td>${e.entry_id}</td><td>${e.operation}</td><td>${e.collection}</td><td>${e.key}</td><td class="hash">${short(e.prev_hash)}</td><td class="hash">${short(e.entry_hash)}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="empty">ledger is empty</td></tr>';
+    } catch (err) {
+      $('statusBox').innerHTML = `<dt>error</dt><dd class="err">${err.message}</dd>`;
+    }
+  }
+
+  async function verify() {
+    const base = $('apiBase').value.replace(/\/$/, '');
+    const box = $('verifyResult');
+    box.innerHTML = 'verifying…';
+    try {
+      const result = await fetchJson(base, '/_ledger/verify');
+      box.innerHTML = result.verified
+        ? `<span class="pill ok">VERIFIED</span> ${result.entries_checked} entries checked`
+        : `<span class="pill bad">CHAIN BROKEN</span> at entry ${result.failed_at_entry_id}: ${result.reason}`;
+    } catch (err) {
+      box.innerHTML = `<span class="pill bad">ERROR</span> ${err.message}`;
+    }
+  }
+
+  $('connectBtn').addEventListener('click', refresh);
+  $('refreshBtn').addEventListener('click', refresh);
+  $('verifyBtn').addEventListener('click', verify);
+  refresh();
+})();
+</script>
+</body>
+</html>

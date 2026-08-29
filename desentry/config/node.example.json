@@ -1,0 +1,19 @@
+{
+  "node_name": "example-node",
+  "data_dir": "./data",
+
+  "api_bind_addr": "127.0.0.1",
+  "api_port": 7701,
+
+  "p2p_bind_addr": "0.0.0.0",
+  "p2p_port": 7801,
+
+  "discovery_enabled": true,
+  "discovery_port": 7901,
+  "discovery_interval_ms": 2000,
+
+  "bootstrap_peers": [],
+
+  "gossip_interval_ms": 2000,
+  "buffer_pool_pages": 1024
+}
