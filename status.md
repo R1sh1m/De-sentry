@@ -8,7 +8,7 @@ updated: 2026-08-29 (round 2: comparison + ledger/brain/client/dashboard)
 This captures what was actually built, tested, and demonstrated for the
 De-Sentry decentralized P2P DBMS course project, as a durable record for
 future sessions/teammates. The full design rationale lives in
-`architecture.md` in this project; this doc is the "what happened" companion
+`docs/architecture.md` in this project; this doc is the "what happened" companion
 to that "why we designed it this way" doc.
 
 ## What it is
@@ -60,7 +60,7 @@ Only third-party dependency: OpenSSL (Ed25519/X25519/AES-256-GCM via EVP).
   bug found and fixed during development).
 
 Full rationale, diagrams, and the security-model table are in
-`architecture.md`.
+`docs/architecture.md`.
 
 ## Verification performed
 
@@ -141,10 +141,10 @@ cd .. && ./scripts/run_cluster.sh 3   # then curl the REST API on ports 7701-770
 ## Round 2: comparison against a teammate's independent design, and what was merged in
 
 A teammate produced a second, independently-developed De-Sentry design in
-parallel (docs: `ARCHITECTURE.md`/`README.md`/`project_statement.md`, plus
-`docs/routing_and_specialization.md`, `docs/node_capability_score.md`,
-`docs/change_ledger.md`, `docs/sync_protocol.md`, `docs/node_design.md`,
-`docs/api_spec.md`). Full comparison is `comparison.md` in this project;
+parallel (docs: `Project_Statement/project_statement.md`, plus
+`docs/original_design/routing_and_specialization.md`, `docs/original_design/node_capability_score.md`,
+`docs/original_design/change_ledger.md`, `docs/original_design/sync_protocol.md`, `docs/original_design/node_design.md`,
+`docs/original_design/api_spec.md`). Full comparison is `docs/comparison.md` in this project;
 summary of the outcome:
 
 **Core fork**: their design avoids write conflicts by giving each node
@@ -159,7 +159,7 @@ risk). This build's CRDT/HLC model already solves both of those problems
 more generally — every node can write anything, ordering is causally
 correct under clock skew, no coordinator exists to fail — so the ownership
 + routing + coordinator subsystem was **not adopted**, with the reasoning
-recorded in `comparison.md` §2 rather than silently ignored.
+recorded in `docs/comparison.md` §2 rather than silently ignored.
 
 **What *was* adopted**, because it was genuinely complementary rather than
 competing with the CRDT model:
@@ -203,7 +203,7 @@ competing with the CRDT model:
 All four items, plus the full reasoning for what was deliberately left
 out (ownership partitioning, the 3-level node hierarchy, physical-clock
 LWW, type-specialized storage engines, hardware capability benchmarking),
-are written up in `comparison.md`. The type-aware data-*placement* idea
+are written up in `docs/comparison.md`. The type-aware data-*placement* idea
 (as opposed to conflict resolution) is flagged there as legitimate future
 work, not rejected outright — see its final section.
 
@@ -218,8 +218,8 @@ against a live running `desentryd` process, not just unit-tested.
   beyond OpenSSL), delivered to the team as `desentry-mvp.tar.gz`
   (round 2: now includes the audit ledger, `/_brain`, the Python client,
   and the dashboard).
-- `architecture.md` (this project) — full design document, updated with
+- `docs/architecture.md` — full design document, updated with
   the ledger/brain-file section (§7.6).
-- `comparison.md` (this project) — the design comparison against the
+- `docs/comparison.md` — the design comparison against the
   teammate's consortium/routing design and what was adopted from it.
 - This status doc.

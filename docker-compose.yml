@@ -1,0 +1,115 @@
+# De-Sentry 3-node P2P cluster + end-to-end integration test.
+#
+# Usage:
+#   docker compose up --build            # build image, start 3 nodes + run tests
+#   docker compose up node-a node-b node-c   # just the cluster, for manual play
+#   docker compose run tester            # re-run the integration test against a running cluster
+#
+# Each node is the *same* image, parameterized by environment variables via
+# docker-entrypoint.sh. Nodes reach each other over the `desentry` network by
+# service name; the API ports are published to the host (7701/7702/7703) so
+# you can curl/use the dashboard from your machine.
+
+name: desentry
+
+services:
+  node-a:
+    build: .
+    image: desentry:local
+    container_name: desentry-node-a
+    environment:
+      DESENTRY_NODE_NAME: node-a
+      DESENTRY_API_PORT: "7701"
+      DESENTRY_P2P_PORT: "7801"
+      DESENTRY_BOOTSTRAP_PEERS: "node-b:7802,node-c:7803"
+      DESENTRY_GOSSIP_INTERVAL_MS: "1500"
+    ports:
+      - "7701:7701"
+    volumes:
+      - node-a-data:/data
+    networks:
+      - desentry
+    restart: unless-stopped
+
+  node-b:
+    build: .
+    image: desentry:local
+    container_name: desentry-node-b
+    environment:
+      DESENTRY_NODE_NAME: node-b
+      DESENTRY_API_PORT: "7702"
+      DESENTRY_P2P_PORT: "7802"
+      DESENTRY_BOOTSTRAP_PEERS: "node-a:7801,node-c:7803"
+      DESENTRY_GOSSIP_INTERVAL_MS: "1500"
+    ports:
+      - "7702:7702"
+    volumes:
+      - node-b-data:/data
+    networks:
+      - desentry
+    restart: unless-stopped
+
+  node-c:
+    build: .
+    image: desentry:local
+    container_name: desentry-node-c
+    environment:
+      DESENTRY_NODE_NAME: node-c
+      DESENTRY_API_PORT: "7703"
+      DESENTRY_P2P_PORT: "7803"
+      DESENTRY_BOOTSTRAP_PEERS: "node-a:7801,node-b:7802"
+      DESENTRY_GOSSIP_INTERVAL_MS: "1500"
+    ports:
+      - "7703:7703"
+    volumes:
+      - node-c-data:/data
+    networks:
+      - desentry
+    restart: unless-stopped
+
+  # End-to-end test: drives the live cluster through the Python client and
+  # asserts cross-node replication, CRDT convergence, and ledger integrity.
+  tester:
+    image: desentry:local
+    container_name: desentry-tester
+    depends_on:
+      - node-a
+      - node-b
+      - node-c
+    environment:
+      NODE_A_URL: "http://node-a:7701"
+      NODE_B_URL: "http://node-b:7702"
+      NODE_C_URL: "http://node-c:7703"
+    command:
+      - /opt/desentry/tests/integration/cluster_integration_test.py
+    entrypoint:
+      - python3
+    volumes:
+      - ./tests/integration/cluster_integration_test.py:/opt/desentry/tests/integration/cluster_integration_test.py:ro
+    networks:
+      - desentry
+    # Keep the cluster up afterwards; the tester exits with the test result.
+    restart: "no"
+
+  # Unit suites: the four assert-based C++ test binaries (crdt, crypto,
+  # storage, network). Run standalone with `docker compose run unit-tests`.
+  unit-tests:
+    image: desentry:local
+    container_name: desentry-unit-tests
+    command:
+      - "crdt_test && crypto_test && storage_test && network_test"
+    entrypoint:
+      - sh
+      - -c
+    networks:
+      - desentry
+    restart: "no"
+
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:
+
+networks:
+  desentry:
+    driver: bridge

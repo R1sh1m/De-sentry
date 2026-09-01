@@ -1,6 +1,6 @@
 # ==============================================================================
 #  De-Sentry .gitignore
-#  Stack: C++17 / Python (pybind11) / Electron + React + TypeScript
+#  Stack: C++17 / Python (stdlib HTTP client) / Static HTML dashboard
 # ==============================================================================
 
 # ── C++ Build Artifacts ────────────────────────────────────────────────────────
@@ -52,7 +52,6 @@ ENV/
 *.egg
 *.egg-info/
 dist/
-build/
 eggs/
 .eggs/
 
@@ -66,46 +65,6 @@ htmlcov/
 .pyright/
 pyrightconfig.json
 
-# pybind11 build artifacts
-src/python/*.so
-src/python/*.pyd
-src/python/build/
-
-# ── Node.js / Electron / React ─────────────────────────────────────────────────
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-.yarn/cache
-.yarn/unplugged
-.yarn/build-state.yml
-.yarn/install-state.gz
-.pnp.*
-
-# Build output
-src/ui/dist/
-src/ui/out/
-src/ui/.next/
-src/ui/build/
-
-# Electron packaged apps
-release/
-dist-electron/
-*.dmg
-*.pkg
-*.deb
-*.rpm
-*.AppImage
-*.snap
-*.exe
-*.msi
-
-# node-gyp / N-API addon
-src/ui/*.node
-src/ui/build/
-binding.gyp.bak
-
 # ── De-Sentry Runtime Data (local node data — never commit) ───────────────────
 data/
 *.db
@@ -115,15 +74,15 @@ data/
 # Brain files (generated at runtime)
 brain_*.json
 
-# Benchmark temp file
-.bench_tmp
-
-# Node config with local IPs/ports (use node_profile.example.toml instead)
+# Node config with local IPs/ports (use config/node.example.json instead)
 node_profile.toml
 
 # Routing ledger and change ledger data files
 ledger/
 transit/
+
+# Benchmark temp file
+.bench_tmp
 
 # ── IDE and Editor Files ────────────────────────────────────────────────────────
 # VS Code (commit workspace settings, ignore personal)
@@ -133,7 +92,7 @@ transit/
 !.vscode/tasks.json
 !.vscode/launch.json
 
-# JetBrains (CLion, PyCharm, WebStorm)
+# JetBrains (CLion, PyCharm)
 .idea/
 *.iml
 *.iws
@@ -182,7 +141,6 @@ $RECYCLE.BIN/
 # ── Logs ───────────────────────────────────────────────────────────────────────
 *.log
 logs/
-npm-debug.log
 
 # ── Secrets and Credentials (NEVER commit) ─────────────────────────────────────
 *.pem

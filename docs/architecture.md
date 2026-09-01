@@ -4,7 +4,7 @@
 
 Status: MVP design + reference implementation. Course project scaffold that is built the way a startup would build v0.1 of a real product.
 
-> **Related doc**: [`docs/COMPARISON.md`](COMPARISON.md) compares this design against a second, independently-developed De-Sentry design produced in parallel (ownership-partitioned nodes + a routing coordinator), and records which of its ideas were adopted here (a hash-chained audit ledger, a brain-file status endpoint, a Python client) versus deliberately not adopted, and why.
+> **Related doc**: [`docs/comparison.md`](comparison.md) compares this design against a second, independently-developed De-Sentry design produced in parallel (ownership-partitioned nodes + a routing coordinator), and records which of its ideas were adopted here (a hash-chained audit ledger, a brain-file status endpoint, a Python client) versus deliberately not adopted, and why.
 
 ---
 
@@ -237,4 +237,4 @@ Exposed over the local REST API (see `README.md`'s endpoint table):
 
 ## 10. Repository layout
 
-See `README.md` for the build instructions; the directory structure is documented inline there and mirrors this document's component boundaries 1:1 (`storage/`, `crdt/`, `net/`, `security/`, `api/`). `clients/python/` and `tools/dashboard.html` (§7.6, `docs/COMPARISON.md` §3.3–§4) are consumers of the REST API, not part of the engine itself.
+See `README.md` for the build instructions; the directory structure is documented inline there and mirrors this document's component boundaries 1:1 (`storage/`, `crdt/`, `net/`, `security/`, `api/`). `clients/python/` and `tools/dashboard.html` (§7.6, `docs/comparison.md` §3.3–§4) are consumers of the REST API, not part of the engine itself.

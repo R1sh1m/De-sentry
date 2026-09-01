@@ -166,4 +166,4 @@ Your local node config (`node_profile.toml`) is **gitignored** — it has your l
 2. Edit it with your node ID and your peers' addresses
 3. Never commit `node_profile.toml`
 
-The example template [`node_profile.example.toml`](../node_profile.example.toml) is committed and shows all available options.
+The example template [`node_profile.example.toml`](../docs/original_design/node_profile.example.toml) is committed and shows all available options.

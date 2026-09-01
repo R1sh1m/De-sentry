@@ -1,0 +1,10 @@
+build/
+.git/
+__pycache__/
+*.pyc
+node_modules/
+data/
+*.dsf
+*.wal
+.idea/
+.vscode/
