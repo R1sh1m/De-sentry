@@ -1,4 +1,6 @@
 {
+  "//": "Every field De-Sentry v2 reads, with its default. The desktop app writes this file for you -- you are not expected to hand-edit it, and the app is the single point of access. It stays human-readable anyway, because a config you cannot read during an incident is a config you cannot debug.",
+
   "node_name": "example-node",
   "data_dir": "./data",
 
@@ -11,9 +13,49 @@
   "discovery_enabled": true,
   "discovery_port": 7901,
   "discovery_interval_ms": 2000,
+  "mdns_enabled": true,
+  "advertise_hostname": "",
 
   "bootstrap_peers": [],
 
   "gossip_interval_ms": 2000,
-  "buffer_pool_pages": 1024
+  "buffer_pool_pages": 1024,
+
+  "//supervisor": "An app-local control-plane node: hardware discovery, node lifecycle, key custody, quorum-gated ledger checkpointing. Never elected, never holds replicated data, never on the write path. Its api_bind_addr is forced to loopback.",
+  "supervisor": false,
+
+  "//quota_mb": "Total on-disk budget for this node in MiB. 0 means unlimited. Enforced in StorageEngine::PutRaw and again inside each router backend.",
+  "quota_mb": 0,
+  "//quota_split": "How that budget is divided between subsystems, as percentages summing to 100. The AI sizing step proposes a split per workload shape: vector workloads shift +15 into cache_hash, time-series workloads shift +10 into ledger.",
+  "quota_split": {
+    "db": 60,
+    "transit_store": 15,
+    "cache_hash": 10,
+    "ledger": 10,
+    "net_buffers": 5
+  },
+
+  "//engines": "Router backends this node may bind collections to. Always available: kv, columnar_lite, ts_rollup, vector_hnsw_lite, graph_adj. Available only when vendored and compiled in: sqlite, duckdb, lmdb, sqlite_vec (see third_party/README.md; check GET /_engines on a running node).",
+  "engines": ["kv"],
+  "default_engine": "kv",
+
+  "//replication_factor": "Replicas per key on the consistent-hash ring. 3 is the default.",
+  "replication_factor": 3,
+
+  "//transit_ttl_seconds": "How long bytes held for an offline owner survive before expiring. 0 disables expiry, which is an operational decision rather than a default -- the node logs a warning if you set it.",
+  "transit_ttl_seconds": 604800,
+
+  "//retention_days": "Default time-series retention for collections that do not set their own. 0 keeps everything.",
+  "retention_days": 0,
+
+  "//encrypt_at_rest": "At-rest AES-GCM encryption. The key never appears in this file: keychain_ref names an entry in the OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) that the app unlocks and hands to the process.",
+  "encrypt_at_rest": false,
+  "keychain_ref": "",
+
+  "//max_peer_threads": "Worker threads for eager broadcast fan-out. Bounded so a write to a 50-node mesh does not spawn 50 threads.",
+  "max_peer_threads": 8,
+
+  "//peer_rate_limit": "Token-bucket admission control on inbound P2P requests, per authenticated peer. 0 disables it -- do not run that configuration on an untrusted network.",
+  "peer_rate_limit_per_sec": 200,
+  "peer_rate_burst": 400
 }

@@ -1,0 +1,340 @@
+{
+  "//": "Workload prototypes for the node sizing step (app/src-tauri/src/ai.rs).",
+  "//about": [
+    "Seven shapes a node can be. The sizing step embeds the user's description with the",
+    "bundled all-MiniLM-L6-v2 model, embeds each prototype's `text` with the SAME model,",
+    "and picks the closest by cosine similarity.",
+    "",
+    "Prototype vectors are deliberately NOT stored here. Embedding the texts at load time",
+    "guarantees the prototypes live in the same vector space as the description, whatever",
+    "model file is actually present -- a checked-in vector would silently become garbage",
+    "the day the model is replaced or requantised, and nothing would report it.",
+    "",
+    "`keywords` drives the deterministic fallback used when the model cannot be loaded.",
+    "It is blunt on purpose: it is meant to be predictable and explainable, not clever.",
+    "Weights are relative within a prototype; a term unique to one shape earns more than",
+    "one that several shapes share."
+  ],
+  "//quota": [
+    "Splits follow the base 60/15/10/10/5 profile from include/desentry/common/config.h,",
+    "except where a workload's costs genuinely sit elsewhere: vector search pays for its",
+    "index (+15 to cache/index, taken from collections) and time series pays for a much",
+    "busier ledger (+10 to ledger, taken from collections)."
+  ],
+  "confidence_floor": 0.35,
+  "//confidence_floor": "Below this the wizard stops proposing and makes the user pick engines. It is a real threshold, not a display nicety.",
+  "version": 2,
+  "prototypes": [
+    {
+      "workload": "sql",
+      "label": "Relational",
+      "text": "Structured records in tables with fixed columns and clear relationships between them, queried with joins, filters and aggregates, where every row has the same shape and referential consistency matters.",
+      "keywords": {
+        "sql": 3.0,
+        "relational": 3.0,
+        "table": 2.0,
+        "tables": 2.0,
+        "join": 2.5,
+        "joins": 2.5,
+        "schema": 1.5,
+        "column": 1.5,
+        "columns": 1.5,
+        "row": 1.0,
+        "rows": 1.0,
+        "foreign key": 3.0,
+        "normalised": 2.0,
+        "normalized": 2.0,
+        "transaction": 1.5,
+        "invoice": 1.5,
+        "ledger": 1.0,
+        "orders": 1.5,
+        "customers": 1.5,
+        "inventory": 1.5,
+        "report": 1.0,
+        "aggregate": 1.5
+      },
+      "engines": ["sqlite", "kv"],
+      "engines_fallback": ["kv"],
+      "default_engine": "sqlite",
+      "default_engine_fallback": "kv",
+      "quota_split": { "db_pct": 60, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        {
+          "name": "records",
+          "engine": "sqlite",
+          "shard_key": "",
+          "retention_days": 0,
+          "schema": {
+            "type": "object",
+            "properties": { "id": { "type": "string" }, "created_at": { "type": "string" } },
+            "required": ["id"]
+          }
+        }
+      ]
+    },
+    {
+      "workload": "nosql-doc",
+      "label": "Documents",
+      "text": "Self-contained JSON documents whose fields vary from one record to the next, fetched and written whole by key, with no fixed schema and no joins.",
+      "keywords": {
+        "document": 3.0,
+        "documents": 3.0,
+        "json": 2.5,
+        "nosql": 3.0,
+        "key value": 2.5,
+        "key-value": 2.5,
+        "mongo": 2.5,
+        "flexible": 1.5,
+        "schemaless": 3.0,
+        "blob": 1.5,
+        "notes": 1.5,
+        "profile": 1.0,
+        "profiles": 1.0,
+        "settings": 1.5,
+        "cache": 1.0,
+        "session": 1.5,
+        "content": 1.0
+      },
+      "engines": ["kv"],
+      "default_engine": "kv",
+      "quota_split": { "db_pct": 60, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        { "name": "documents", "engine": "kv", "shard_key": "", "retention_days": 0, "schema": null }
+      ]
+    },
+    {
+      "workload": "time-series",
+      "label": "Time series",
+      "text": "Measurements stamped with a time and a series name, arriving continuously from sensors or meters, read back as ranges and averages over hours or days, and eventually thrown away once they are old enough.",
+      "keywords": {
+        "time series": 4.0,
+        "timeseries": 4.0,
+        "sensor": 3.0,
+        "sensors": 3.0,
+        "metric": 2.5,
+        "metrics": 2.5,
+        "telemetry": 3.0,
+        "readings": 2.5,
+        "reading": 2.0,
+        "measurement": 2.5,
+        "temperature": 2.0,
+        "logging": 1.5,
+        "logs": 1.5,
+        "monitoring": 2.0,
+        "hourly": 2.0,
+        "daily": 1.5,
+        "per second": 2.0,
+        "retention": 2.0,
+        "downsample": 3.0,
+        "rollup": 3.0,
+        "iot": 3.0,
+        "history": 1.0,
+        "over time": 2.0
+      },
+      "engines": ["ts_rollup", "kv"],
+      "default_engine": "ts_rollup",
+      "quota_split": { "db_pct": 50, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 20, "net_buffers_pct": 5 },
+      "shard_key": "series",
+      "replication_factor": 3,
+      "secondary_indexes": ["series"],
+      "retention_days": 365,
+      "collections": [
+        {
+          "name": "readings",
+          "engine": "ts_rollup",
+          "shard_key": "series",
+          "retention_days": 365,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "series": { "type": "string" },
+              "timestamp_ms": { "type": "integer" },
+              "value": { "type": "number" }
+            },
+            "required": ["series", "timestamp_ms", "value"]
+          }
+        }
+      ]
+    },
+    {
+      "workload": "vector",
+      "label": "Vectors and similarity",
+      "text": "Embeddings of text or images stored as numeric vectors and searched by similarity, so that asking for something returns the nearest matches by meaning rather than by exact value.",
+      "keywords": {
+        "vector": 4.0,
+        "vectors": 4.0,
+        "embedding": 4.0,
+        "embeddings": 4.0,
+        "similarity": 3.5,
+        "semantic": 3.0,
+        "nearest neighbour": 4.0,
+        "nearest neighbor": 4.0,
+        "knn": 3.0,
+        "rag": 3.0,
+        "retrieval": 2.5,
+        "search": 1.5,
+        "recommend": 2.5,
+        "recommendation": 2.5,
+        "image search": 3.0,
+        "cosine": 3.0
+      },
+      "engines": ["vector_hnsw_lite", "kv"],
+      "default_engine": "kv",
+      "quota_split": { "db_pct": 45, "transit_store_pct": 15, "cache_hash_pct": 25, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        {
+          "name": "embeddings",
+          "engine": "vector_hnsw_lite",
+          "shard_key": "",
+          "retention_days": 0,
+          "schema": {
+            "type": "object",
+            "properties": { "vector": { "type": "array" }, "text": { "type": "string" } },
+            "required": ["vector"]
+          }
+        }
+      ]
+    },
+    {
+      "workload": "graph",
+      "label": "Graph",
+      "text": "Entities connected to other entities, where the connections are the point: parents and children, who follows whom, what depends on what, traversed outward from a starting node.",
+      "keywords": {
+        "graph": 4.0,
+        "edge": 3.0,
+        "edges": 3.0,
+        "node": 1.0,
+        "relationship": 2.5,
+        "relationships": 2.5,
+        "network": 2.0,
+        "hierarchy": 3.0,
+        "tree": 2.0,
+        "parent": 2.0,
+        "children": 2.0,
+        "follows": 2.5,
+        "social": 2.5,
+        "dependency": 3.0,
+        "dependencies": 3.0,
+        "traverse": 3.0,
+        "traversal": 3.0,
+        "ancestors": 3.0,
+        "descendants": 3.0,
+        "org chart": 3.0
+      },
+      "engines": ["graph_adj", "kv"],
+      "default_engine": "graph_adj",
+      "quota_split": { "db_pct": 60, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        {
+          "name": "entities",
+          "engine": "graph_adj",
+          "shard_key": "",
+          "retention_days": 0,
+          "schema": {
+            "type": "object",
+            "properties": { "parent": { "type": "string" }, "edges": { "type": "array" } },
+            "required": []
+          }
+        }
+      ]
+    },
+    {
+      "workload": "semi-structured",
+      "label": "Semi-structured",
+      "text": "Records that mostly share a shape but not entirely: logs, events, imported files and scraped data, where some fields are always present, others appear sometimes, and the whole lot has to be scanned and summarised.",
+      "keywords": {
+        "semi structured": 4.0,
+        "semi-structured": 4.0,
+        "csv": 2.5,
+        "import": 2.0,
+        "imported": 2.0,
+        "events": 2.5,
+        "event": 2.0,
+        "scrape": 2.5,
+        "scraped": 2.5,
+        "mixed": 2.0,
+        "analytics": 2.5,
+        "analytical": 2.5,
+        "columnar": 3.0,
+        "scan": 2.0,
+        "aggregate": 2.0,
+        "summarise": 2.0,
+        "summarize": 2.0,
+        "warehouse": 2.5,
+        "olap": 3.0
+      },
+      "engines": ["columnar_lite", "kv"],
+      "engines_preferred": ["duckdb", "columnar_lite", "kv"],
+      "default_engine": "columnar_lite",
+      "quota_split": { "db_pct": 60, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        { "name": "events", "engine": "columnar_lite", "shard_key": "", "retention_days": 0, "schema": null }
+      ]
+    },
+    {
+      "workload": "oops-rdbms",
+      "label": "Objects over relational",
+      "text": "Objects with classes, inheritance and typed attributes, persisted into relational tables and read back as objects, so that the code works with instances while the storage stays queryable.",
+      "keywords": {
+        "object": 2.5,
+        "objects": 2.5,
+        "oop": 4.0,
+        "class": 3.0,
+        "classes": 3.0,
+        "inheritance": 4.0,
+        "instance": 2.5,
+        "instances": 2.5,
+        "orm": 4.0,
+        "entity": 2.0,
+        "entities": 2.0,
+        "model": 1.5,
+        "models": 1.5,
+        "attribute": 2.0,
+        "attributes": 2.0,
+        "polymorphic": 3.5,
+        "subclass": 3.5
+      },
+      "engines": ["graph_adj", "sqlite", "kv"],
+      "engines_fallback": ["graph_adj", "kv"],
+      "default_engine": "graph_adj",
+      "quota_split": { "db_pct": 60, "transit_store_pct": 15, "cache_hash_pct": 10, "ledger_pct": 10, "net_buffers_pct": 5 },
+      "shard_key": "",
+      "replication_factor": 3,
+      "secondary_indexes": [],
+      "retention_days": 0,
+      "collections": [
+        {
+          "name": "objects",
+          "engine": "graph_adj",
+          "shard_key": "",
+          "retention_days": 0,
+          "schema": {
+            "type": "object",
+            "properties": { "class": { "type": "string" }, "parent": { "type": "string" } },
+            "required": ["class"]
+          }
+        }
+      ]
+    }
+  ]
+}

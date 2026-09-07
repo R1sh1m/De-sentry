@@ -1,6 +1,5 @@
 #include "desentry/storage/disk_manager.h"
 
-#include <sys/stat.h>
 
 #include "desentry/common/logger.h"
 

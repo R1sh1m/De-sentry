@@ -1,0 +1,895 @@
+/*
+ * Component styles. Every value here references a token from tokens.css --
+ * there are no literal colours, radii, shadows or type sizes in this file, by
+ * design (DESIGN.md Sec 7).
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font: var(--text-body);
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* The app is a tool, not a document: text selection is enabled only where a
+   * value is meant to be copied out. */
+  user-select: none;
+  cursor: default;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-primary) 24%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Boot state
+ * ------------------------------------------------------------------------ */
+.boot {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-sm);
+  height: 100%;
+}
+.boot__mark {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  opacity: 0.9;
+}
+.boot__title {
+  margin: 0;
+  font: var(--text-tagline);
+  letter-spacing: var(--tracking-display);
+}
+.boot__sub {
+  margin: 0;
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+}
+
+/* ---------------------------------------------------------------------------
+ * Shell
+ * ------------------------------------------------------------------------ */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr auto;
+  grid-template-rows: var(--chrome-header-height) 1fr;
+  grid-template-areas:
+    "header header header"
+    "sidebar canvas inspector";
+  height: 100vh;
+}
+.app-shell[data-inspector="collapsed"] {
+  grid-template-columns: var(--sidebar-width) 1fr 0;
+}
+
+/* Below the minimum comfortable width the side panels become overlays rather
+ * than squeezing the canvas into uselessness. */
+@media (max-width: 1023px) {
+  .app-shell {
+    grid-template-columns: 0 1fr 0;
+  }
+  .sidebar,
+  .inspector {
+    position: fixed;
+    top: var(--chrome-header-height);
+    bottom: 0;
+    z-index: 20;
+    box-shadow: var(--elev-popover);
+  }
+  .sidebar {
+    left: 0;
+    width: var(--sidebar-width);
+    transform: translateX(-100%);
+    transition: transform var(--motion-quick);
+  }
+  .sidebar[data-open="true"] {
+    transform: none;
+  }
+  .inspector {
+    right: 0;
+    width: var(--inspector-width);
+    transform: translateX(100%);
+    transition: transform var(--motion-quick);
+  }
+  .inspector[data-open="true"] {
+    transform: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Chrome: header, sidebar, inspector. The only three frosted planes.
+ * ------------------------------------------------------------------------ */
+.header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 var(--space-md);
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border-bottom: 1px solid var(--color-hairline);
+  /* Tauri's decorationless window: this strip is what the user drags. */
+  -webkit-app-region: drag;
+}
+.header > * {
+  -webkit-app-region: no-drag;
+}
+.header__title {
+  font: var(--text-body-strong);
+  letter-spacing: var(--tracking-body);
+  margin: 0;
+}
+.header__sub {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+  margin: 0;
+}
+.header__spacer {
+  flex: 1;
+  -webkit-app-region: drag;
+}
+
+.sidebar {
+  grid-area: sidebar;
+  background: var(--chrome-fill-sidebar);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border-right: 1px solid var(--color-hairline);
+  padding: var(--space-sm);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.inspector {
+  grid-area: inspector;
+  width: var(--inspector-width);
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border-left: 1px solid var(--color-hairline);
+  padding: var(--space-md);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.app-shell[data-inspector="collapsed"] .inspector {
+  display: none;
+}
+
+.canvas {
+  grid-area: canvas;
+  position: relative;
+  overflow: auto;
+  background: var(--color-canvas);
+}
+
+/* ---------------------------------------------------------------------------
+ * Sidebar tree
+ * ------------------------------------------------------------------------ */
+.tree__group-label {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  padding: var(--space-sm) var(--space-xs) var(--space-xxs);
+}
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: 30px;
+  padding: 6px var(--space-xs);
+  border-radius: var(--radius-sm);
+  font: var(--text-body);
+  letter-spacing: var(--tracking-body);
+  cursor: default;
+  transition: background var(--motion-instant);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.tree__row:hover {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+.tree__row[aria-selected="true"] {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.tree__row[aria-selected="true"] .tree__meta,
+.tree__row[aria-selected="true"] .badge {
+  color: var(--color-on-primary);
+  opacity: 0.86;
+}
+.tree__chevron {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  color: var(--color-ink-muted-48);
+  transition: transform var(--motion-quick);
+}
+.tree__chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+.tree__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree__meta {
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  flex: none;
+}
+.tree__row[data-depth="1"] {
+  padding-left: calc(var(--space-xs) + 16px);
+}
+.tree__row[data-depth="2"] {
+  padding-left: calc(var(--space-xs) + 32px);
+}
+
+/* ---------------------------------------------------------------------------
+ * Status dot + badges. Colour is only ever health or role -- never decoration.
+ * ------------------------------------------------------------------------ */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  flex: none;
+  background: var(--color-ink-muted-48);
+}
+.dot[data-status="converged"] {
+  background: var(--color-status-converged);
+}
+.dot[data-status="lagging"] {
+  background: var(--color-status-lagging);
+}
+.dot[data-status="offline"] {
+  background: var(--color-status-offline);
+}
+.dot[data-status="supervisor"] {
+  background: var(--color-status-supervisor);
+}
+/*
+ * Diverged shares the offline hue but adds a ring, because the two are not
+ * the same problem and must not read as the same problem. Offline means a node
+ * is not answering; diverged means it *is* answering, at the same ledger
+ * height as its peers, with a different hash -- a history that does not match.
+ * Colour alone would collapse those; the ring keeps them distinguishable at a
+ * glance and without relying on hue perception.
+ */
+.dot[data-status="diverged"] {
+  background: var(--color-status-offline);
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3.5px var(--color-status-offline);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  font: var(--text-fine);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted-80);
+  white-space: nowrap;
+}
+.badge[data-tone="converged"] {
+  background: var(--color-status-converged-bg);
+  color: var(--color-status-converged);
+}
+.badge[data-tone="lagging"] {
+  background: var(--color-status-lagging-bg);
+  color: var(--color-status-lagging);
+}
+.badge[data-tone="offline"] {
+  background: var(--color-status-offline-bg);
+  color: var(--color-status-offline);
+}
+.badge[data-tone="supervisor"] {
+  background: var(--color-status-supervisor-bg);
+  color: var(--color-status-supervisor);
+}
+.badge[data-tone="diverged"] {
+  background: var(--color-status-offline-bg);
+  color: var(--color-status-offline);
+  box-shadow: inset 0 0 0 1px var(--color-status-offline);
+}
+
+/* ---------------------------------------------------------------------------
+ * Cards. These never nest -- a section inside a card is a label plus space.
+ * ------------------------------------------------------------------------ */
+.card {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  box-shadow: var(--elev-hairline);
+}
+.card--elevated {
+  padding: var(--space-lg);
+  box-shadow: var(--elev-card);
+}
+.card__title {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  margin: 0 0 var(--space-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(84px, auto) 1fr;
+  gap: var(--space-xxs) var(--space-sm);
+  align-items: baseline;
+}
+.kv dt {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+}
+.kv dd {
+  margin: 0;
+  font: var(--text-caption);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+ * Buttons
+ * ------------------------------------------------------------------------ */
+.btn {
+  font: var(--text-button);
+  letter-spacing: var(--tracking-body);
+  border-radius: var(--radius-pill);
+  padding: 7px 16px;
+  border: 0;
+  cursor: default;
+  background: var(--color-surface-pearl);
+  color: var(--color-ink);
+  box-shadow: var(--elev-hairline);
+  transition: transform var(--motion-instant), opacity var(--motion-instant);
+  white-space: nowrap;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn:disabled {
+  opacity: 0.4;
+}
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  box-shadow: none;
+}
+.btn--danger {
+  background: transparent;
+  color: var(--color-status-offline);
+}
+.btn--ghost {
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-primary);
+}
+.btn--sm {
+  padding: 4px 10px;
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  height: 28px;
+}
+.segmented button {
+  font: var(--text-button);
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-muted-80);
+  border-radius: calc(var(--radius-sm) - 2px);
+  padding: 0 var(--space-sm);
+  cursor: default;
+  transition: background var(--motion-instant);
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: var(--elev-hairline);
+}
+
+/* ---------------------------------------------------------------------------
+ * Monospace value chips: node ids, hashes, signatures, checksums.
+ * Click-to-copy is learned once and works everywhere.
+ * ------------------------------------------------------------------------ */
+.chip {
+  font: var(--text-mono);
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted-80);
+  border-radius: var(--radius-xs);
+  padding: 1px 6px;
+  border: 0;
+  cursor: default;
+  user-select: text;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: baseline;
+}
+.chip:hover {
+  color: var(--color-ink);
+}
+
+/* ---------------------------------------------------------------------------
+ * Tables
+ * ------------------------------------------------------------------------ */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-caption);
+}
+.table th {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  text-align: left;
+  padding: 0 var(--space-xs) var(--space-xxs) 0;
+  white-space: nowrap;
+}
+.table td {
+  padding: 7px var(--space-xs) 7px 0;
+  border-top: 1px solid var(--color-divider-soft);
+  vertical-align: middle;
+}
+.table td:last-child,
+.table th:last-child {
+  padding-right: 0;
+}
+.table--numeric td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * Canvas: mesh + tree views
+ * ------------------------------------------------------------------------ */
+.canvas__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.mesh {
+  display: block;
+  width: 100%;
+  min-height: 480px;
+}
+.mesh__edge {
+  stroke: var(--color-hairline);
+  stroke-width: 1.5;
+  fill: none;
+}
+.mesh__node-card {
+  fill: var(--color-surface);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.06)) drop-shadow(0 8px 24px rgba(0, 0, 0, 0.06));
+}
+.mesh__node[data-selected="true"] .mesh__node-card {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+.mesh__node-label {
+  font: var(--text-body-strong);
+  fill: var(--color-ink);
+}
+.mesh__node-meta {
+  font: var(--text-mono);
+  fill: var(--color-ink-muted-48);
+}
+
+.tree-canvas {
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* ---------------------------------------------------------------------------
+ * Explorer
+ * ------------------------------------------------------------------------ */
+.explorer {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  align-items: start;
+}
+.explorer__keys {
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+}
+.explorer__key {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: var(--text-mono);
+  padding: 5px var(--space-xs);
+  border-radius: var(--radius-xs);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explorer__key:hover {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+.explorer__key[aria-selected="true"] {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.explorer__doc {
+  font: var(--text-mono);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  color: var(--color-ink);
+  user-select: text;
+  tab-size: 2;
+}
+
+/* ---------------------------------------------------------------------------
+ * Wizard -- the one screen that keeps the source's generous rhythm.
+ * ------------------------------------------------------------------------ */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--color-ink) 32%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  padding: var(--space-lg);
+}
+.wizard {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  box-shadow: var(--elev-popover);
+  width: min(720px, 100%);
+  max-height: min(84vh, 860px);
+  overflow-y: auto;
+}
+.wizard__eyebrow {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  margin: 0 0 var(--space-xs);
+}
+.wizard__title {
+  font: var(--text-display-md);
+  letter-spacing: var(--tracking-display);
+  margin: 0 0 var(--space-xs);
+}
+.wizard__lead {
+  font: var(--text-body);
+  color: var(--color-ink-muted-80);
+  margin: 0 0 var(--space-lg);
+  max-width: 56ch;
+}
+.wizard__section {
+  margin-bottom: var(--space-lg);
+}
+.wizard__footer {
+  display: flex;
+  gap: var(--space-xs);
+  justify-content: flex-end;
+  margin-top: var(--space-xl);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-divider-soft);
+}
+
+.field {
+  display: block;
+  margin-bottom: var(--space-md);
+}
+.field__label {
+  display: block;
+  font: var(--text-caption-strong);
+  margin-bottom: var(--space-xxs);
+}
+.field__hint {
+  display: block;
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  margin-top: var(--space-xxs);
+}
+.field input[type="text"],
+.field input[type="number"],
+.field textarea,
+.field select {
+  width: 100%;
+  font: var(--text-body);
+  color: var(--color-ink);
+  background: var(--color-surface-pearl);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: 8px var(--space-sm);
+  user-select: text;
+}
+.field textarea {
+  min-height: 96px;
+  resize: vertical;
+  font: var(--text-body);
+}
+.field input[type="range"] {
+  width: 100%;
+  accent-color: var(--color-primary);
+}
+
+.meter {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+}
+.meter__fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: var(--radius-pill);
+  transition: width var(--motion-settle);
+}
+.meter[data-low="true"] .meter__fill {
+  background: var(--color-status-lagging);
+}
+
+.quota-bar {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+  margin-top: var(--space-xxs);
+}
+.quota-bar__fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: var(--radius-pill);
+}
+.quota-bar[data-level="warn"] .quota-bar__fill {
+  background: var(--color-status-lagging);
+}
+.quota-bar[data-level="full"] .quota-bar__fill {
+  background: var(--color-status-offline);
+}
+
+/* ---------------------------------------------------------------------------
+ * Empty / loading / error. Written, never generic.
+ * ------------------------------------------------------------------------ */
+.empty {
+  display: grid;
+  place-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xxl) var(--space-lg);
+  text-align: center;
+  color: var(--color-ink-muted-48);
+}
+.empty__title {
+  font: var(--text-body-strong);
+  color: var(--color-ink);
+  margin: 0;
+}
+.empty__body {
+  font: var(--text-caption);
+  margin: 0;
+  max-width: 44ch;
+}
+.skeleton {
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-sunken) 0%,
+    color-mix(in srgb, var(--color-surface-sunken) 60%, var(--color-surface)) 50%,
+    var(--color-surface-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton 1.4s ease-in-out infinite;
+  margin-bottom: var(--space-xxs);
+}
+@keyframes skeleton {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+.error-note {
+  font: var(--text-caption);
+  color: var(--color-status-offline);
+  user-select: text;
+}
+
+/* ---------------------------------------------------------------------------
+ * Toasts
+ * ------------------------------------------------------------------------ */
+.toasts {
+  position: fixed;
+  bottom: var(--space-lg);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  z-index: 60;
+  pointer-events: none;
+}
+.toast {
+  background: color-mix(in srgb, var(--color-ink) 92%, transparent);
+  color: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: 10px var(--space-md);
+  font: var(--text-caption);
+  box-shadow: var(--elev-popover);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  animation: toast-in var(--motion-settle);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.qr {
+  display: block;
+  image-rendering: pixelated;
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  padding: var(--space-sm);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.row--between {
+  justify-content: space-between;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.muted {
+  color: var(--color-ink-muted-48);
+}
+.mono {
+  font: var(--text-mono);
+  user-select: text;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * Print. The only thing anyone prints from this app is a recovery key, and it
+ * has to come out readable on a monochrome office printer with no colour
+ * management and no background graphics. So printing drops the chrome, forces
+ * the light palette, and lets the QR and the key text have the page.
+ * ------------------------------------------------------------------------ */
+@media print {
+  .header,
+  .sidebar,
+  .inspector,
+  .canvas,
+  .toasts,
+  .wizard__footer,
+  .btn {
+    display: none !important;
+  }
+
+  :root,
+  :root[data-theme="dark"] {
+    --color-canvas: #ffffff;
+    --color-surface: #ffffff;
+    --color-ink: #000000;
+    --color-ink-muted-48: #444444;
+    --color-hairline: #999999;
+  }
+
+  body,
+  .app-shell {
+    display: block;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .sheet {
+    position: static;
+    display: block;
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .wizard {
+    box-shadow: none;
+    border: 0;
+    max-width: none;
+    padding: 0;
+  }
+
+  /* The key itself must not be split across a page break -- half a recovery
+   * key is not a recovery key. */
+  .qr,
+  .mono {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .qr svg {
+    width: 62mm;
+    height: 62mm;
+  }
+}

@@ -4,10 +4,7 @@
 // 127.0.0.1:7701), exactly like curl would, but with less typing for the
 // demo script (scripts/run_cluster.sh).
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "desentry/common/platform.h"
 
 #include <cstdio>
 #include <cstring>
@@ -20,14 +17,15 @@ namespace {
 
 bool HttpCall(const std::string& host, uint16_t port, const std::string& method, const std::string& path,
               const std::string& body, std::string* out_body, int* out_status) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return false;
+  desentry::NetInit();
+  desentry::dsn_socket_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!desentry::SocketValid(fd)) return false;
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   ::inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
+    desentry::CloseSocket(fd);
     return false;
   }
 
@@ -41,16 +39,16 @@ bool HttpCall(const std::string& host, uint16_t port, const std::string& method,
   std::string req_s = req.str();
   size_t sent = 0;
   while (sent < req_s.size()) {
-    ssize_t n = ::send(fd, req_s.data() + sent, req_s.size() - sent, 0);
-    if (n <= 0) { ::close(fd); return false; }
+    desentry::dsn_iolen_t n = desentry::SocketSend(fd, req_s.data() + sent, req_s.size() - sent);
+    if (n <= 0) { desentry::CloseSocket(fd); return false; }
     sent += static_cast<size_t>(n);
   }
 
   std::string resp;
   char buf[4096];
-  ssize_t n;
-  while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0) resp.append(buf, static_cast<size_t>(n));
-  ::close(fd);
+  desentry::dsn_iolen_t n;
+  while ((n = desentry::SocketRecv(fd, buf, sizeof(buf))) > 0) resp.append(buf, static_cast<size_t>(n));
+  desentry::CloseSocket(fd);
 
   auto line_end = resp.find("\r\n");
   if (line_end == std::string::npos) return false;

@@ -1,17 +1,15 @@
 #include "desentry/storage/storage_engine.h"
 
-#include <sys/stat.h>
+#include <algorithm>
 
 #include "desentry/common/logger.h"
-#include "desentry/storage/slotted_page.h"
+#include "desentry/common/platform.h"
 
 namespace desentry {
 
 namespace {
 Status EnsureDir(const std::string& path) {
-  if (::mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
-    return Status::IOError("cannot create directory: " + path);
-  }
+  if (!MakeDirs(path)) return Status::IOError("cannot create directory: " + path);
   return Status::OK();
 }
 }  // namespace
@@ -21,12 +19,8 @@ StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& opti
   if (!dir_st.ok()) return dir_st;
 
   std::unique_ptr<StorageEngine> engine(new StorageEngine());
-
-  auto dm_or = DiskManager::Open(options.data_dir + "/desentry.dsf");
-  if (!dm_or.ok()) return dm_or.status();
-  engine->disk_manager_ = std::move(dm_or.value());
-
-  engine->buffer_pool_ = std::make_unique<BufferPoolManager>(options.buffer_pool_pages, engine->disk_manager_.get());
+  engine->data_dir_ = options.data_dir;
+  engine->quota_bytes_ = options.quota_mb * 1024ull * 1024ull;
 
   auto wal_or = WriteAheadLog::Open(options.data_dir + "/desentry.wal");
   if (!wal_or.ok()) return wal_or.status();
@@ -36,215 +30,188 @@ StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& opti
   if (!cat_or.ok()) return cat_or.status();
   engine->catalog_ = std::move(cat_or.value());
 
-  Status replay_st = engine->ReplayWal();
+  StorageRouter::Options router_opts;
+  router_opts.data_dir = options.data_dir;
+  router_opts.quota_mb = options.quota_mb;
+  router_opts.db_share_pct = options.db_share_pct;
+  router_opts.engines = options.engines;
+  router_opts.default_engine = options.default_engine;
+  router_opts.catalog = engine->catalog_.get();
+  router_opts.node_id = options.node_id;
+  auto router_or = StorageRouter::Open(router_opts);
+  if (!router_or.ok()) return router_or.status();
+  engine->router_ = std::move(router_or.value());
+
+  Status replay_st = engine->ReplayLedger();
   if (!replay_st.ok()) return replay_st;
+
+  if (engine->wal_->migrated_from_v1()) {
+    // The v1 -> v2 ledger migration re-derives the chain (see wal.cpp). That
+    // discontinuity is recorded on disk so an auditor comparing this node
+    // against a replica that has not yet upgraded can see exactly where the
+    // hashes stop matching, and why.
+    JsonValue::Object record;
+    record.emplace_back("migrated_at_ms", JsonValue(NowMs()));
+    record.emplace_back("pre_migration_tip_hash",
+                        JsonValue(engine->wal_->pre_migration_tip_hash()));
+    record.emplace_back("note",
+                        JsonValue("ledger upgraded from the v1 record format; entry hashes were "
+                                  "re-derived because the hashed content now covers key_hash, HLC "
+                                  "and origin fields that v1 records did not carry"));
+    std::ofstream f(options.data_dir + "/ledger_migration.json", std::ios::trunc);
+    if (f.is_open()) f << JsonValue(std::move(record)).Dump();
+  }
 
   return engine;
 }
 
-Status StorageEngine::ReplayWal() {
+Status StorageEngine::ReplayLedger() {
   auto records_or = wal_->ReadAll();
   if (!records_or.ok()) return records_or.status();
-  auto& records = records_or.value();
+  const std::vector<WalRecord>& records = records_or.value();
   if (records.empty()) return Status::OK();
 
-  DSN_LOG_INFO("storage", "replaying " << records.size() << " WAL record(s)...");
-
-  // Every collection touched by the WAL gets a *freshly allocated* B+Tree
-  // rather than reusing whatever root_page_id the catalog last recorded:
-  // the catalog is saved eagerly (outside the buffer pool/WAL durability
-  // path), so after an unclean shutdown its root_page_id may point at a
-  // page that was never actually flushed to the data file. Rebuilding into
-  // brand-new pages during replay -- and only then repointing the catalog
-  // at them -- sidesteps ever trusting a page whose durability we can't
-  // verify. The old pages simply become unreachable garbage (documented
-  // "vacuum later" trade-off, same as elsewhere in this engine).
-  std::unordered_map<std::string, bool> rebuilt;
-
-  for (auto& rec : records) {
-    if (!rebuilt[rec.collection]) {
-      auto root_or = BPlusTree::CreateNew(buffer_pool_.get());
-      if (!root_or.ok()) return root_or.status();
-      {
-        std::lock_guard<std::mutex> lock(indexes_mu_);
-        indexes_[rec.collection] = std::make_unique<BPlusTree>(buffer_pool_.get(), root_or.value());
-      }
-      catalog_->UpsertRootPageId(rec.collection, root_or.value());
-      rebuilt[rec.collection] = true;
+  DSN_LOG_INFO("storage", "replaying " << records.size() << " ledger record(s)...");
+  size_t applied = 0;
+  for (const WalRecord& rec : records) {
+    // Only document mutations rebuild state. Transit and checkpoint entries
+    // are ledger bookkeeping -- replaying a TRANSIT_INTENT as a document
+    // write would materialise an envelope as if it were user data.
+    if (rec.type != WalRecordType::kPut) continue;
+    // Replay goes through the router, not the ledger: appending again would
+    // duplicate the entry and break the chain's relationship to history.
+    Status st = router_->Put(rec.collection, rec.key, rec.document_bytes);
+    if (!st.ok()) {
+      // One unreplayable record must not abort recovery of everything after
+      // it -- that would turn a single bad row into total data loss. It is
+      // logged loudly and skipped, and VerifyAll() will report the resulting
+      // gap between the ledger and the materialised state.
+      DSN_LOG_ERROR("storage", "ledger replay skipped entry " << rec.lsn << " (" << rec.collection
+                                                               << "/" << rec.key
+                                                               << "): " << st.message());
+      continue;
     }
-    BPlusTree* index = GetOrCreateIndex(rec.collection);
-    if (index == nullptr) continue;
-
-    if (rec.type == WalRecordType::kPut) {
-      // Same physical write path as PutRaw(), minus the WAL append (we are
-      // replaying the WAL itself -- appending again would duplicate it).
-      page_id_t write_page_id;
-      {
-        std::lock_guard<std::mutex> lock(write_pages_mu_);
-        auto it = write_pages_.find(rec.collection);
-        if (it == write_pages_.end()) {
-          page_id_t new_id;
-          Page* p = buffer_pool_->NewPage(&new_id);
-          if (p) { SlottedPage::Init(p); buffer_pool_->UnpinPage(new_id, true); }
-          write_pages_[rec.collection] = new_id;
-          write_page_id = new_id;
-        } else {
-          write_page_id = it->second;
-        }
-      }
-      Page* page = buffer_pool_->FetchPage(write_page_id);
-      slot_id_t slot = SlottedPage::InsertRecord(page, rec.document_bytes);
-      if (slot < 0) {
-        buffer_pool_->UnpinPage(write_page_id, false);
-        page_id_t new_id;
-        Page* np = buffer_pool_->NewPage(&new_id);
-        SlottedPage::Init(np);
-        slot = SlottedPage::InsertRecord(np, rec.document_bytes);
-        buffer_pool_->UnpinPage(new_id, true);
-        std::lock_guard<std::mutex> lock(write_pages_mu_);
-        write_pages_[rec.collection] = new_id;
-        write_page_id = new_id;
-      } else {
-        buffer_pool_->UnpinPage(write_page_id, true);
-      }
-      index->Insert(rec.key, RID{write_page_id, slot});
-    }
-    // kDelete records don't appear in this engine's WAL stream today
-    // (deletes are modeled as CRDT-tombstoning PUTs -- see the class
-    // comment) but the type is handled for forward-compatibility.
+    ++applied;
   }
-  buffer_pool_->FlushAllPages();
-  DSN_LOG_INFO("storage", "WAL replay complete");
+  Status flush_st = router_->Flush();
+  if (!flush_st.ok()) return flush_st;
+  DSN_LOG_INFO("storage", "ledger replay complete (" << applied << " document write(s) applied)");
   return Status::OK();
 }
 
-BPlusTree* StorageEngine::GetOrCreateIndex(const std::string& collection) {
-  std::lock_guard<std::mutex> lock(indexes_mu_);
-  auto it = indexes_.find(collection);
-  if (it != indexes_.end()) return it->second.get();
-
-  const CollectionMeta* meta = catalog_->Get(collection);
-  page_id_t root;
-  if (meta != nullptr && meta->root_page_id != kInvalidPageId) {
-    root = meta->root_page_id;
-  } else {
-    auto root_or = BPlusTree::CreateNew(buffer_pool_.get());
-    if (!root_or.ok()) return nullptr;
-    root = root_or.value();
-    catalog_->CreateCollection(collection, root);
-  }
-  auto tree = std::make_unique<BPlusTree>(buffer_pool_.get(), root);
-  BPlusTree* raw = tree.get();
-  indexes_[collection] = std::move(tree);
-  return raw;
+void StorageEngine::SetLedgerOrigin(std::string node_id, WriteAheadLog::Signer signer) {
+  wal_->SetOrigin(std::move(node_id), std::move(signer));
 }
 
-Status StorageEngine::EnsureCollection(const std::string& collection) {
-  if (GetOrCreateIndex(collection) == nullptr) {
-    return Status::Internal("failed to create index for collection " + collection);
-  }
-  return Status::OK();
+void StorageEngine::SetTipObserver(std::function<void(lsn_t)> observer) {
+  std::lock_guard<std::mutex> lock(observer_mu_);
+  tip_observer_ = std::move(observer);
 }
 
 std::vector<std::string> StorageEngine::ListCollections() const { return catalog_->ListCollections(); }
 
-Status StorageEngine::PutRaw(const std::string& collection, const std::string& key, const std::string& encoded_doc) {
-  BPlusTree* index = GetOrCreateIndex(collection);
-  if (index == nullptr) return Status::Internal("no index for collection " + collection);
+Status StorageEngine::EnsureCollection(const std::string& collection) {
+  if (catalog_->HasCollection(collection)) return Status::OK();
+  Status st = catalog_->UpsertRootPageId(collection, kInvalidPageId);
+  if (!st.ok()) return st;
+  return Status::OK();
+}
 
-  // Durability point: fsync'd WAL append before the page mutation.
-  auto lsn_or = wal_->Append(WalRecordType::kPut, collection, key, encoded_doc);
+StorageEngine::QuotaStatus StorageEngine::Quota() const {
+  QuotaStatus status;
+  status.limit_bytes = quota_bytes_;
+  status.ledger_bytes = FileSize(data_dir_ + "/desentry.wal");
+  status.used_bytes = router_->QuotaUse() + status.ledger_bytes;
+  if (quota_bytes_ > 0) {
+    status.used_fraction = static_cast<double>(status.used_bytes) / static_cast<double>(quota_bytes_);
+    status.over_limit = status.used_bytes > quota_bytes_;
+  }
+  return status;
+}
+
+Status StorageEngine::PutRaw(const std::string& collection, const std::string& key,
+                              const std::string& encoded_doc) {
+  // Node-level quota check, before anything is written. The backend checks
+  // its own share too; this is the number the user actually set, and it
+  // covers the ledger's own growth, which no single backend can see.
+  if (quota_bytes_ > 0) {
+    const QuotaStatus quota = Quota();
+    // The ledger append itself costs roughly the record size, so charge the
+    // write twice: once for the log entry, once for the materialised row.
+    const uint64_t projected = quota.used_bytes + 2 * (key.size() + encoded_doc.size());
+    if (projected > quota_bytes_) {
+      return Status::OutOfSpace("node quota exceeded: " + std::to_string(projected) + " > " +
+                                 std::to_string(quota_bytes_) +
+                                 " bytes (raise the node's quota in the app, or free space)");
+    }
+  }
+
+  // Durability point: ledger append + fsync strictly before the physical
+  // write. The reverse order would let a crash leave a materialised row the
+  // ledger never attested to, which no peer could then verify.
+  WriteAheadLog::AppendOptions options;
+  auto lsn_or = wal_->Append(WalRecordType::kPut, collection, key, encoded_doc, options);
   if (!lsn_or.ok()) return lsn_or.status();
 
-  page_id_t write_page_id;
+  Status st = router_->Put(collection, key, encoded_doc);
+  if (!st.ok()) return st;
+
+  EnsureCollection(collection);
   {
-    std::lock_guard<std::mutex> lock(write_pages_mu_);
-    auto it = write_pages_.find(collection);
-    if (it == write_pages_.end()) {
-      page_id_t new_id;
-      Page* p = buffer_pool_->NewPage(&new_id);
-      if (p == nullptr) return Status::OutOfSpace("buffer pool exhausted allocating data page");
-      SlottedPage::Init(p);
-      buffer_pool_->UnpinPage(new_id, true);
-      write_pages_[collection] = new_id;
-      write_page_id = new_id;
-    } else {
-      write_page_id = it->second;
-    }
+    std::lock_guard<std::mutex> lock(observer_mu_);
+    if (tip_observer_) tip_observer_(lsn_or.value());
   }
+  return Status::OK();
+}
 
-  Page* page = buffer_pool_->FetchPage(write_page_id);
-  if (page == nullptr) return Status::OutOfSpace("buffer pool exhausted");
-  slot_id_t slot = SlottedPage::InsertRecord(page, encoded_doc);
-  if (slot < 0) {
-    // Current write page is full: allocate a fresh one and retry there.
-    buffer_pool_->UnpinPage(write_page_id, false);
-    page_id_t new_id;
-    Page* np = buffer_pool_->NewPage(&new_id);
-    if (np == nullptr) return Status::OutOfSpace("buffer pool exhausted allocating data page");
-    SlottedPage::Init(np);
-    slot = SlottedPage::InsertRecord(np, encoded_doc);
-    if (slot < 0) {
-      buffer_pool_->UnpinPage(new_id, true);
-      return Status::InvalidArgument("document too large to fit in a page (" + std::to_string(encoded_doc.size()) + " bytes)");
-    }
-    buffer_pool_->UnpinPage(new_id, true);
-    std::lock_guard<std::mutex> lock(write_pages_mu_);
-    write_pages_[collection] = new_id;
-    write_page_id = new_id;
-  } else {
-    buffer_pool_->UnpinPage(write_page_id, true);
+StatusOr<lsn_t> StorageEngine::AppendLedgerOp(WalRecordType type, const std::string& collection,
+                                               const std::string& key, const std::string& payload,
+                                               const HLCTimestamp& hlc) {
+  WriteAheadLog::AppendOptions options;
+  options.hlc = hlc;
+  auto lsn_or = wal_->Append(type, collection, key, payload, options);
+  if (!lsn_or.ok()) return lsn_or.status();
+  {
+    std::lock_guard<std::mutex> lock(observer_mu_);
+    if (tip_observer_) tip_observer_(lsn_or.value());
   }
-
-  return index->Insert(key, RID{write_page_id, slot});
+  return lsn_or.value();
 }
 
 StatusOr<std::string> StorageEngine::GetRaw(const std::string& collection, const std::string& key) {
-  BPlusTree* index = GetOrCreateIndex(collection);
-  if (index == nullptr) return Status::Internal("no index for collection " + collection);
-
-  RID rid;
-  if (!index->Search(key, &rid)) {
-    return Status::NotFound("no such key: " + key);
-  }
-  Page* page = buffer_pool_->FetchPage(rid.page_id);
-  if (page == nullptr) return Status::Internal("failed to fetch data page");
-  std::string bytes;
-  bool found = SlottedPage::GetRecord(page, rid.slot_id, &bytes);
-  buffer_pool_->UnpinPage(rid.page_id, false);
-  if (!found) return Status::NotFound("dangling index entry for key: " + key);
-  return bytes;
+  return router_->Get(collection, key);
 }
 
 std::vector<std::pair<std::string, std::string>> StorageEngine::Scan(const std::string& collection,
-                                                                       const std::string& start_key, size_t limit) {
-  std::vector<std::pair<std::string, std::string>> results;
-  BPlusTree* index = GetOrCreateIndex(collection);
-  if (index == nullptr) return results;
-
-  auto entries = index->Scan(start_key, limit);
-  for (auto& [key, rid] : entries) {
-    Page* page = buffer_pool_->FetchPage(rid.page_id);
-    if (page == nullptr) continue;
-    std::string bytes;
-    if (SlottedPage::GetRecord(page, rid.slot_id, &bytes)) {
-      results.emplace_back(key, std::move(bytes));
-    }
-    buffer_pool_->UnpinPage(rid.page_id, false);
-  }
-  return results;
+                                                                       const std::string& start_key,
+                                                                       size_t limit) {
+  return router_->Scan(collection, start_key, limit);
 }
 
-void StorageEngine::Checkpoint() { buffer_pool_->FlushAllPages(); }
+void StorageEngine::Checkpoint() {
+  Status st = router_->Flush();
+  if (!st.ok()) DSN_LOG_ERROR("storage", "checkpoint flush failed: " << st.message());
+  catalog_->Save();
+}
 
 StatusOr<std::vector<WalRecord>> StorageEngine::LedgerEntries(lsn_t from, lsn_t to) {
   auto records_or = wal_->ReadAll();
   if (!records_or.ok()) return records_or.status();
   std::vector<WalRecord> out;
-  for (auto& rec : records_or.value()) {
+  for (const WalRecord& rec : records_or.value()) {
     if (rec.lsn >= from && rec.lsn <= to) out.push_back(rec);
   }
   return out;
+}
+
+StorageEngine::VerifyReport StorageEngine::VerifyAll(
+    const WriteAheadLog::SignatureVerifier& verify_signature) {
+  VerifyReport report;
+  report.ledger = wal_->VerifyChain(verify_signature);
+  Status backends = router_->Verify();
+  report.backends_ok = backends.ok();
+  if (!backends.ok()) report.backend_failure = backends.message();
+  return report;
 }
 
 }  // namespace desentry

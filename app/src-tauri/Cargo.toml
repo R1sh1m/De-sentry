@@ -1,0 +1,87 @@
+[package]
+name = "de-sentry-app"
+version = "2.0.0"
+description = "De-Sentry control room"
+authors = ["De-Sentry"]
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+
+[lib]
+# Tauri v2 puts the app in a library so the mobile targets can link it; the
+# desktop binary in src/main.rs is a two-line shim over it.
+name = "de_sentry_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+
+# Recovery keys and node names need a CSPRNG. `getrandom` is the OS entropy
+# source directly -- no PRNG seeding decisions to get wrong.
+getrandom = "0.2"
+
+# OS keychain: Windows Credential Manager, macOS Keychain, Linux Secret
+# Service. One crate rather than three `#[cfg]` blocks over three C APIs.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Autostart on login. Official Tauri plugin; on Linux it writes a .desktop
+# file, on macOS a login item, on Windows a Run key.
+tauri-plugin-autostart = "2"
+
+[target.'cfg(unix)'.dependencies]
+# One call: SIGTERM to a child, so `desentryd` gets to flush and close instead
+# of being killed mid-write. Not worth an unsafe hand-declared extern.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Battery state and volume-arrival notifications come from Win32 directly;
+# there is no cross-platform crate for either that is smaller than the calls.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_Storage_FileSystem",
+] }
+
+[features]
+# The ONNX sizing model. On by default -- the workload proposal is part of the
+# product, not an extra -- but separable, because `ort` links a native runtime
+# and an environment that cannot build it should still be able to build the
+# app. With the feature off (or with the model absent at run time) the
+# deterministic keyword heuristic in `ai.rs` runs instead, and the UI says so
+# rather than presenting a fallback result as a model result.
+default = ["onnx"]
+onnx = ["dep:ort", "dep:tokenizers"]
+
+[dependencies.ort]
+version = "2.0.0-rc.9"
+optional = true
+default-features = false
+# `load-dynamic` resolves libonnxruntime at run time from the bundled
+# resources instead of downloading a build-time binary, which is what keeps
+# `cargo build` working with no network.
+features = ["load-dynamic", "ndarray"]
+
+[dependencies.tokenizers]
+version = "0.20"
+optional = true
+default-features = false
+features = ["onig"]
+
+[profile.release]
+# The installers ship one binary per platform and are downloaded rarely; size
+# is worth more here than the last few percent of speed.
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

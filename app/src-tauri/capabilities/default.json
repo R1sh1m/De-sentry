@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the control-room window is allowed to reach.\n\nDeliberately tiny. Every privileged action -- spawning `desentryd`, writing node.json, reading the OS keychain, choosing a folder, showing a notification -- is a named command in src/commands.rs, invoked from the web view and executed in Rust. Custom commands are not gated by capabilities, so what is listed here is only the handful of built-in surfaces the window genuinely touches.\n\nThe dialog, notification, os and autostart plugins are registered on the Rust side and driven from Rust; the web view never calls them directly, so they are not granted here. If a future change calls one from TypeScript, the grant has to be added deliberately rather than already being present.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

@@ -2,12 +2,27 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>De-Sentry Node Dashboard</title>
+<!--
+  A single file, no build step, no dependency: open it from disk and point it
+  at a node. It is the diagnostic page for engine work -- the thing to reach
+  for when you have started a cluster from a terminal and want to see what it
+  is doing without launching the desktop app.
+
+  The app (app/) is the product; this is the instrument. It stays deliberately
+  plain, and read-only apart from the two explicit actions (verify, checkpoint)
+  which are the ones you cannot get from a GET.
+
+  v2: engines, quota, per-collection ACL and engine binding, transit, peer
+  fitness, and live updates from GET /_changes rather than a refresh button.
+-->
 <style>
   :root {
     color-scheme: light dark;
     --bg: #0b0e14; --panel: #12161f; --border: #232838; --text: #e6e9f0; --muted: #8b92a6;
-    --accent: #5b9dff; --ok: #35c98f; --bad: #ff5f6d; --mono: "SF Mono", Consolas, monospace;
+    --accent: #5b9dff; --ok: #35c98f; --warn: #ffd166; --bad: #ff5f6d;
+    --mono: "SF Mono", ui-monospace, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -18,21 +33,32 @@
   input[type=text] { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-family: var(--mono); font-size: 12px; width: 220px; }
   button { background: var(--accent); color: #05070c; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 12px; cursor: pointer; }
   button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
-  main { padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  button:disabled { opacity: .5; cursor: default; }
+  main { padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-family: var(--mono); font-size: 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-family: var(--mono); font-size: 12px; margin: 0; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; word-break: break-all; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
   .pill.ok { background: rgba(53,201,143,.15); color: var(--ok); }
+  .pill.warn { background: rgba(255,209,102,.15); color: var(--warn); }
   .pill.bad { background: rgba(255,95,109,.15); color: var(--bad); }
+  .pill.dim { background: rgba(139,146,166,.15); color: var(--muted); }
   table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .hash { color: var(--accent); }
   .empty { color: var(--muted); font-style: italic; }
   .err { color: var(--bad); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+  .bar { height: 6px; background: rgba(139,146,166,.2); border-radius: 999px; overflow: hidden; margin: 8px 0; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .bar.warn > span { background: var(--warn); }
+  .bar.full > span { background: var(--bad); }
+  .live { font-size: 11px; color: var(--muted); }
+  .live b { color: var(--ok); font-weight: 600; }
+  .live.stalled b { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -44,8 +70,9 @@
   <div class="controls">
     <input id="apiBase" type="text" value="http://127.0.0.1:7701" spellcheck="false">
     <button id="connectBtn">Connect</button>
-    <button id="verifyBtn" class="secondary">Verify ledger</button>
-    <button id="refreshBtn" class="secondary">Refresh</button>
+    <button id="verifyBtn" class="secondary">Verify</button>
+    <button id="checkpointBtn" class="secondary" title="Supervisor nodes only">Checkpoint</button>
+    <span id="liveState" class="live">idle</span>
   </div>
 </header>
 <main>
@@ -53,100 +80,396 @@
     <h2>Status</h2>
     <dl class="kv" id="statusBox"><dt class="empty">not connected</dt></dl>
   </div>
+
   <div class="card">
     <h2>Ledger tip (hash-chained &amp; Ed25519-signed)</h2>
     <dl class="kv" id="tipBox"><dt class="empty">not connected</dt></dl>
     <div id="verifyResult" style="margin-top:10px;"></div>
   </div>
+
+  <div class="card">
+    <h2>Storage</h2>
+    <div id="quotaBox"><span class="empty">not connected</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Engines in this build</h2>
+    <table id="enginesTable"><thead><tr><th>engine</th><th>state</th><th>enable with</th></tr></thead><tbody></tbody></table>
+  </div>
+
   <div class="card">
     <h2>Collections</h2>
-    <table id="collectionsTable"><thead><tr><th>name</th><th>documents</th><th>checksum</th></tr></thead><tbody></tbody></table>
+    <table id="collectionsTable">
+      <thead><tr><th>name</th><th>engine</th><th class="num">docs</th><th>checksum</th><th>access</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
+
   <div class="card">
-    <h2>Known peers</h2>
-    <table id="peersTable"><thead><tr><th>node_id</th><th>host</th></tr></thead><tbody></tbody></table>
+    <h2>Peers (ranked by fitness)</h2>
+    <table id="peersTable">
+      <thead><tr><th>node</th><th>host</th><th class="num">latency</th><th class="num">success</th><th class="num">ledger</th><th class="num">score</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
+
+  <div class="card">
+    <h2>Transit (held for offline owners)</h2>
+    <div id="transitBox"><span class="empty">not connected</span></div>
+  </div>
+
   <div class="card" style="grid-column: 1 / -1;">
     <h2>Recent ledger entries</h2>
-    <table id="ledgerTable"><thead><tr><th>entry_id</th><th>op</th><th>collection</th><th>key</th><th>prev_hash</th><th>entry_hash</th></tr></thead><tbody></tbody></table>
+    <table id="ledgerTable">
+      <thead><tr><th class="num">entry</th><th>op</th><th>collection</th><th>key</th><th>origin</th><th>prev_hash</th><th>entry_hash</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 </main>
 
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const short = (h) => (h && h.length > 16) ? h.slice(0, 8) + '…' + h.slice(-8) : h;
 
-  function kv(pairs) {
-    return pairs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  }
+  // Collection names, keys and hostnames are user data that ends up in
+  // innerHTML. Escaping them is not optional: a document key containing a
+  // <script> tag would otherwise execute in whoever opened this page.
+  const esc = (value) => String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-  async function fetchJson(base, path) {
-    const res = await fetch(base + path, { method: path.startsWith('/_ledger/verify') ? 'POST' : 'GET' });
-    if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
-    return res.json();
-  }
+  const short = (h, head = 8, tail = 8) =>
+    (h && h.length > head + tail + 1) ? h.slice(0, head) + '…' + h.slice(-tail) : (h || '—');
 
-  async function refresh() {
-    const base = $('apiBase').value.replace(/\/$/, '');
+  const bytes = (n) => {
+    if (!Number.isFinite(n)) return '—';
+    if (n < 1024) return n + ' B';
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+    let value = n / 1024, unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return value.toFixed(1) + ' ' + units[unit];
+  };
+
+  const duration = (s) => {
+    if (!Number.isFinite(s)) return '—';
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+    return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
+  };
+
+  const kv = (pairs) => pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('');
+  const base = () => $('apiBase').value.replace(/\/$/, '');
+
+  async function api(path, method = 'GET', timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const [status, brain] = await Promise.all([
-        fetchJson(base, '/_status'),
-        fetchJson(base, '/_brain'),
-      ]);
-
-      $('statusBox').innerHTML = kv([
-        ['node_id', status.node_id],
-        ['uptime_seconds', status.uptime_seconds],
-        ['collections', status.collections],
-        ['known_peers', status.known_peers],
-        ['public_key', `<span class="hash">${short(status.public_key_hex)}</span>`],
-      ]);
-
-      $('tipBox').innerHTML = kv([
-        ['entry_id', brain.ledger_tip.entry_id],
-        ['entry_hash', `<span class="hash">${short(brain.ledger_tip.entry_hash)}</span>`],
-      ]);
-
-      const cBody = $('collectionsTable').querySelector('tbody');
-      cBody.innerHTML = brain.collections.length
-        ? brain.collections.map(c => `<tr><td>${c.name}</td><td>${c.document_count}</td><td class="hash">${short(c.checksum)}</td></tr>`).join('')
-        : '<tr><td colspan="3" class="empty">no collections yet</td></tr>';
-
-      const pBody = $('peersTable').querySelector('tbody');
-      pBody.innerHTML = brain.known_peers.length
-        ? brain.known_peers.map(p => `<tr><td>${short(p.node_id)}</td><td>${p.host}</td></tr>`).join('')
-        : '<tr><td colspan="2" class="empty">no peers connected</td></tr>';
-
-      const entries = await fetchJson(base, `/_ledger/entries?from=${Math.max(0, brain.ledger_tip.entry_id - 24)}&to=${brain.ledger_tip.entry_id}`);
-      const lBody = $('ledgerTable').querySelector('tbody');
-      const rows = entries.entries.slice().reverse();
-      lBody.innerHTML = rows.length
-        ? rows.map(e => `<tr><td>${e.entry_id}</td><td>${e.operation}</td><td>${e.collection}</td><td>${e.key}</td><td class="hash">${short(e.prev_hash)}</td><td class="hash">${short(e.entry_hash)}</td></tr>`).join('')
-        : '<tr><td colspan="6" class="empty">ledger is empty</td></tr>';
-    } catch (err) {
-      $('statusBox').innerHTML = `<dt>error</dt><dd class="err">${err.message}</dd>`;
+      const res = await fetch(base() + path, { method, signal: controller.signal });
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+      if (!res.ok) {
+        const message = body && body.error ? body.error : `HTTP ${res.status}`;
+        const error = new Error(`${path}: ${message}`);
+        error.status = res.status;
+        throw error;
+      }
+      return body;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
+  // -- rendering ------------------------------------------------------------
+
+  function renderStatus(status) {
+    $('statusBox').innerHTML = kv([
+      ['node_id', `<span class="hash">${esc(short(status.node_id, 12, 8))}</span>`],
+      ['node_name', esc(status.node_name || '—')],
+      ['role', status.supervisor
+        ? '<span class="pill dim">supervisor · holds no data</span>'
+        : '<span class="pill ok">data node</span>'],
+      ['uptime', esc(duration(status.uptime_seconds))],
+      ['api / p2p', `${esc(status.api_port)} / ${esc(status.p2p_port)}`],
+      ['collections', esc(status.collections)],
+      ['known_peers', esc(status.known_peers)],
+      ['default_engine', esc(status.default_engine)],
+      ['replication_factor', esc(status.replication_factor)],
+      ['broadcast', status.broadcast
+        ? `sent ${esc(status.broadcast.sent)} · dropped ${esc(status.broadcast.dropped)} · ` +
+          `dup ${esc(status.broadcast.duplicates_suppressed)} · limited ${esc(status.broadcast.rate_limited)}`
+        : '—'],
+      ['public_key', `<span class="hash">${esc(short(status.public_key_hex))}</span>`],
+    ]);
+  }
+
+  function renderTip(tip) {
+    $('tipBox').innerHTML = kv([
+      ['entry_id', esc(tip.entry_id)],
+      ['entry_hash', `<span class="hash">${esc(short(tip.entry_hash))}</span>`],
+      ['signature', `<span class="hash">${esc(short(tip.signature))}</span>`],
+    ]);
+  }
+
+  function renderQuota(quota) {
+    if (!quota) { $('quotaBox').innerHTML = '<span class="empty">unavailable</span>'; return; }
+    const unlimited = !quota.limit_bytes;
+    const fraction = Math.min(1, quota.used_fraction || 0);
+    const level = quota.over_limit ? 'full' : (fraction > 0.85 ? 'warn' : '');
+
+    const engines = (quota.engines || []).map(e =>
+      `<tr><td>${esc(e.engine)}</td><td class="num">${esc(bytes(e.used_bytes))}</td>` +
+      `<td class="num">${e.limit_bytes ? esc(bytes(e.limit_bytes)) : 'unlimited'}</td></tr>`).join('');
+
+    $('quotaBox').innerHTML =
+      (unlimited
+        ? '<p class="empty">No quota set — this node will use whatever the disk allows.</p>'
+        : `<div class="bar ${level}"><span style="width:${Math.round(fraction * 100)}%"></span></div>`) +
+      `<dl class="kv">${kv([
+        ['used', esc(bytes(quota.used_bytes))],
+        ['budget', unlimited ? 'unlimited' : esc(bytes(quota.limit_bytes))],
+        ['ledger', esc(bytes(quota.ledger_bytes))],
+        ['state', quota.over_limit
+          ? '<span class="pill bad">over budget — writes refused</span>'
+          : '<span class="pill ok">within budget</span>'],
+      ])}</dl>` +
+      (engines
+        ? `<table style="margin-top:10px"><thead><tr><th>engine</th><th class="num">used</th><th class="num">limit</th></tr></thead><tbody>${engines}</tbody></table>`
+        : '');
+  }
+
+  function renderEngines(engines) {
+    const body = $('enginesTable').querySelector('tbody');
+    if (!engines || !engines.length) {
+      body.innerHTML = '<tr><td colspan="3" class="empty">unavailable</td></tr>';
+      return;
+    }
+    // An engine the binary does not contain is shown greyed with the CMake
+    // option that would add it, rather than hidden -- "why is DuckDB missing"
+    // is a question this page should answer, not raise.
+    body.innerHTML = engines.map(e => {
+      const state = e.active_on_this_node
+        ? '<span class="pill ok">active</span>'
+        : e.compiled_in
+          ? '<span class="pill dim">compiled in</span>'
+          : '<span class="pill bad">not in this build</span>';
+      return `<tr><td>${esc(e.name)}${e.built_in ? ' <span class="pill dim">built in</span>' : ''}</td>` +
+             `<td>${state}</td><td class="hash">${esc(e.enable_with || '—')}</td></tr>`;
+    }).join('');
+  }
+
+  function renderCollections(collections) {
+    const body = $('collectionsTable').querySelector('tbody');
+    if (!collections || !collections.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">no collections yet</td></tr>';
+      return;
+    }
+    body.innerHTML = collections.map(c =>
+      `<tr><td>${esc(c.name)}</td><td>${esc(c.engine || '—')}</td>` +
+      `<td class="num">${esc(c.document_count)}</td>` +
+      `<td class="hash">${esc(short(c.checksum))}</td>` +
+      `<td>${c.private ? '<span class="pill warn">private</span>' : '<span class="pill dim">shared</span>'}</td></tr>`
+    ).join('');
+  }
+
+  function renderPeers(peers) {
+    const body = $('peersTable').querySelector('tbody');
+    if (!peers || !peers.length) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">no peers connected</td></tr>';
+      return;
+    }
+    body.innerHTML = peers.map(p => {
+      const f = p.fitness || {};
+      const name = p.hostname || short(p.node_id, 10, 4);
+      return `<tr><td>${esc(name)}${p.supervisor ? ' <span class="pill dim">sup</span>' : ''}</td>` +
+             `<td>${esc(p.host)}:${esc(p.p2p_port)}</td>` +
+             `<td class="num">${f.latency_ms ? esc(f.latency_ms.toFixed(1)) + ' ms' : '—'}</td>` +
+             `<td class="num">${f.probes ? esc(Math.round((f.success_rate || 0) * 100)) + '%' : '—'}</td>` +
+             `<td class="num">#${esc(f.ledger_freshness_entry_id ?? 0)}</td>` +
+             `<td class="num">${f.score !== undefined ? esc(f.score.toFixed(3)) : '—'}</td></tr>`;
+    }).join('');
+  }
+
+  function renderTransit(transit) {
+    if (!transit) { $('transitBox').innerHTML = '<span class="empty">unavailable</span>'; return; }
+    const owners = transit.holding_for || [];
+    $('transitBox').innerHTML =
+      `<dl class="kv">${kv([
+        ['documents held', esc(transit.documents_held)],
+        ['bytes held', esc(bytes(transit.bytes_held))],
+        ['ttl', esc(duration(transit.ttl_seconds))],
+      ])}</dl>` +
+      (owners.length
+        ? `<table style="margin-top:10px"><thead><tr><th>for node</th><th class="num">docs</th></tr></thead><tbody>` +
+          owners.map(o => `<tr><td class="hash">${esc(short(o.owner_node, 10, 4))}</td>` +
+                          `<td class="num">${esc(o.documents)}</td></tr>`).join('') +
+          `</tbody></table>`
+        : '<p class="empty">Nothing is being held for an absent node.</p>');
+  }
+
+  function renderLedger(entries) {
+    const body = $('ledgerTable').querySelector('tbody');
+    const rows = (entries || []).slice().reverse();
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">ledger is empty</td></tr>';
+      return;
+    }
+    const opClass = { CHECKPOINT: 'warn', TRANSIT_INTENT: 'dim', TRANSIT_CLAIMED: 'ok', DEL: 'bad' };
+    body.innerHTML = rows.map(e =>
+      `<tr><td class="num">${esc(e.entry_id)}</td>` +
+      `<td><span class="pill ${opClass[e.operation] || 'dim'}">${esc(e.operation)}</span></td>` +
+      `<td>${esc(e.collection)}</td><td>${esc(e.key)}</td>` +
+      `<td class="hash">${esc(short(e.origin_node_id, 8, 0))}</td>` +
+      `<td class="hash">${esc(short(e.prev_hash, 6, 6))}</td>` +
+      `<td class="hash">${esc(short(e.entry_hash, 6, 6))}</td></tr>`
+    ).join('');
+  }
+
+  // -- refresh --------------------------------------------------------------
+
+  async function refresh() {
+    try {
+      // /_brain already carries collections, peers and the tip, so the common
+      // case is a handful of calls rather than one per panel. The optional
+      // ones are allowed to fail: an older node without them should still
+      // render everything else.
+      const [status, brain] = await Promise.all([api('/_status'), api('/_brain')]);
+      const [quota, engines, transit] = await Promise.all([
+        api('/_quota').catch(() => null),
+        api('/_engines').catch(() => null),
+        api('/_transit').catch(() => null),
+      ]);
+
+      renderStatus(status);
+      renderTip(brain.ledger_tip);
+      renderQuota(quota);
+      renderEngines(engines);
+      renderCollections(brain.collections);
+      renderPeers(brain.known_peers);
+      renderTransit(transit);
+
+      const tip = brain.ledger_tip.entry_id;
+      const page = await api(`/_ledger/entries?from=${Math.max(0, tip - 24)}&to=${tip}`);
+      renderLedger(page.entries);
+
+      $('checkpointBtn').disabled = !status.supervisor;
+      $('checkpointBtn').title = status.supervisor
+        ? 'Run the quorum-gated checkpoint'
+        : 'Checkpointing runs on a supervisor; this node is not one';
+      return tip;
+    } catch (error) {
+      $('statusBox').innerHTML = `<dt>error</dt><dd class="err">${esc(error.message)}</dd>`;
+      throw error;
+    }
+  }
+
+  // -- live updates ---------------------------------------------------------
+  //
+  // One long poll over GET /_changes rather than a refresh timer: a quiet node
+  // costs nothing and a busy one updates at its own rate. A `truncated`
+  // response means the cursor predates a checkpoint prune, so the cursor is
+  // dropped and everything re-read rather than pretending continuity.
+
+  let liveToken = 0;
+
+  function setLive(text, stalled) {
+    const box = $('liveState');
+    box.className = 'live' + (stalled ? ' stalled' : '');
+    box.innerHTML = text;
+  }
+
+  async function live(token) {
+    let cursor = -1;
+    let backoff = 1000;
+
+    try {
+      cursor = await refresh();
+      setLive('<b>live</b> · watching for changes');
+    } catch {
+      setLive('<b>disconnected</b>', true);
+    }
+
+    while (token === liveToken) {
+      try {
+        const batch = await api(`/_changes?since=${cursor}&timeout_ms=20000`, 'GET', 35000);
+        if (token !== liveToken) return;
+        backoff = 1000;
+
+        if (batch.truncated) {
+          cursor = batch.tip;
+          await refresh();
+          setLive('<b>live</b> · re-synced past a checkpoint');
+          continue;
+        }
+        cursor = batch.tip;
+        if (batch.count > 0) {
+          await refresh();
+          setLive(`<b>live</b> · ${batch.count} change${batch.count === 1 ? '' : 's'} at ${new Date().toLocaleTimeString()}`);
+        }
+      } catch (error) {
+        if (token !== liveToken) return;
+        setLive('<b>disconnected</b> · retrying', true);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        backoff = Math.min(15000, backoff * 2);
+        try {
+          cursor = await refresh();
+          setLive('<b>live</b> · reconnected');
+        } catch { /* keep retrying */ }
+      }
+    }
+  }
+
+  function connect() {
+    liveToken += 1;
+    live(liveToken);
+  }
+
+  // -- actions --------------------------------------------------------------
+
   async function verify() {
-    const base = $('apiBase').value.replace(/\/$/, '');
     const box = $('verifyResult');
     box.innerHTML = 'verifying…';
     try {
-      const result = await fetchJson(base, '/_ledger/verify');
-      box.innerHTML = result.verified
-        ? `<span class="pill ok">VERIFIED</span> ${result.entries_checked} entries checked`
-        : `<span class="pill bad">CHAIN BROKEN</span> at entry ${result.failed_at_entry_id}: ${result.reason}`;
-    } catch (err) {
-      box.innerHTML = `<span class="pill bad">ERROR</span> ${err.message}`;
+      // The full check: the chain proves history was not rewritten, the
+      // backends prove the materialised state is readable. Reporting only the
+      // first would be misleading, so both are shown.
+      const result = await api('/_verify', 'POST', 120000);
+      const ledger = result.ledger || {};
+      box.innerHTML = result.ok
+        ? `<span class="pill ok">VERIFIED</span> ${esc(ledger.entries_checked)} entries · ` +
+          `${esc(ledger.signed_entries)} signed, ${esc(ledger.unsigned_entries)} unsigned · backends ok`
+        : `<span class="pill bad">FAILED</span> ` +
+          esc(ledger.verified ? (result.backend_failure || 'a storage backend failed its check')
+                              : (ledger.reason || 'the hash chain is broken'));
+    } catch (error) {
+      box.innerHTML = `<span class="pill bad">ERROR</span> ${esc(error.message)}`;
     }
   }
 
-  $('connectBtn').addEventListener('click', refresh);
-  $('refreshBtn').addEventListener('click', refresh);
+  async function checkpoint() {
+    const box = $('verifyResult');
+    box.innerHTML = 'collecting replica tips…';
+    try {
+      const result = await api('/_checkpoint', 'POST', 120000);
+      const d = result.decision;
+      box.innerHTML = d.proceeded
+        ? `<span class="pill ok">CHECKPOINTED</span> ${esc(result.entries_pruned)} entries pruned, ` +
+          `${esc(result.envelopes_released)} held writes released · ` +
+          `${esc(d.agreeing)}/${esc(d.required)} replicas agreed`
+        // Not proceeding is the safe outcome, not a failure -- say which.
+        : `<span class="pill warn">HELD BACK</span> ${esc(d.reason || `only ${d.agreeing} of ${d.required} replicas agreed`)}`;
+      await refresh();
+    } catch (error) {
+      box.innerHTML = `<span class="pill bad">ERROR</span> ${esc(error.message)}`;
+    }
+  }
+
+  $('connectBtn').addEventListener('click', connect);
   $('verifyBtn').addEventListener('click', verify);
-  refresh();
+  $('checkpointBtn').addEventListener('click', checkpoint);
+  $('apiBase').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
+  connect();
 })();
 </script>
 </body>

@@ -9,9 +9,6 @@
 // -- that's inherent to testing a distributed system honestly rather than
 // mocking the network away.
 
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <cassert>
 #include <chrono>
 #include <iostream>
@@ -19,6 +16,7 @@
 
 #include "desentry/common/json.h"
 #include "desentry/engine/node_engine.h"
+#include "desentry/common/platform.h"
 #include "desentry/net/network_manager.h"
 #include "desentry/net/secure_channel.h"
 #include "desentry/net/tcp_transport.h"
@@ -26,18 +24,26 @@
 using namespace desentry;
 
 namespace {
-void RmRf(const std::string& path) { int rc = std::system(("rm -rf " + path).c_str()); (void)rc; }
+// Windows has no /tmp and no `rm -rf`; platform.h is the one file in the tree
+// that knows the difference, so the tests go through it too.
+const std::string kNetRoot = AppDataDir() + "/desentry_test_net";
+std::string NetPath(const std::string& leaf) { return kNetRoot + "/" + leaf; }
+
+void RmRf(const std::string& path) { RemoveTree(path); }
 }  // namespace
 
 static void TestSecureChannelHandshake() {
-  RmRf("/tmp/desentry_test_net");
-  int rc = std::system("mkdir -p /tmp/desentry_test_net"); (void)rc;
-  auto idA = NodeIdentity::LoadOrCreate("/tmp/desentry_test_net/idA.key").ValueOrDie();
-  auto idB = NodeIdentity::LoadOrCreate("/tmp/desentry_test_net/idB.key").ValueOrDie();
+  RmRf(kNetRoot);
+  MakeDirs(kNetRoot);
+  auto idA = NodeIdentity::LoadOrCreate(NetPath("idA.key")).ValueOrDie();
+  auto idB = NodeIdentity::LoadOrCreate(NetPath("idB.key")).ValueOrDie();
   assert(idA.node_id() != idB.node_id());
 
-  int fds[2];
-  assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+  // A connected socket pair, however the platform provides one -- this
+  // exercises the handshake without a listener and without assuming AF_UNIX,
+  // which Windows does not have.
+  dsn_socket_t fds[2];
+  assert(SocketPair(fds));
   StatusOr<HandshakeResult> client_result = Status::Internal("unset");
   StatusOr<HandshakeResult> server_result = Status::Internal("unset");
   std::thread server_thread([&]() { server_result = ServerHandshake(fds[1], idB, 7801); });
@@ -60,14 +66,14 @@ static void TestSecureChannelHandshake() {
   echo.join();
   assert(reply.type == MessageType::kPong && reply.payload == "pong");
 
-  close(fds[0]);
-  close(fds[1]);
+  CloseSocket(fds[0]);
+  CloseSocket(fds[1]);
   std::cout << "[network_test] secure channel handshake + encrypted round-trip: PASS" << std::endl;
 }
 
 static void TestTcpTransportOverRealLoopback() {
-  auto idA = NodeIdentity::LoadOrCreate("/tmp/desentry_test_net/tcpA.key").ValueOrDie();
-  auto idB = NodeIdentity::LoadOrCreate("/tmp/desentry_test_net/tcpB.key").ValueOrDie();
+  auto idA = NodeIdentity::LoadOrCreate(NetPath("tcpA.key")).ValueOrDie();
+  auto idB = NodeIdentity::LoadOrCreate(NetPath("tcpB.key")).ValueOrDie();
 
   TcpTransport server(&idB, 19801);
   auto st = server.StartListening("127.0.0.1", [&](const std::string& peer_id, const WireMessage& req) {
@@ -89,14 +95,14 @@ static void TestTcpTransportOverRealLoopback() {
 }
 
 static void TestThreeNodeMeshConverges() {
-  RmRf("/tmp/desentry_test_net/nodeA");
-  RmRf("/tmp/desentry_test_net/nodeB");
-  RmRf("/tmp/desentry_test_net/nodeC");
+  RmRf(NetPath("nodeA"));
+  RmRf(NetPath("nodeB"));
+  RmRf(NetPath("nodeC"));
 
   NodeEngine::Options oA, oB, oC;
-  oA.data_dir = "/tmp/desentry_test_net/nodeA"; oA.buffer_pool_pages = 64;
-  oB.data_dir = "/tmp/desentry_test_net/nodeB"; oB.buffer_pool_pages = 64;
-  oC.data_dir = "/tmp/desentry_test_net/nodeC"; oC.buffer_pool_pages = 64;
+  oA.data_dir = NetPath("nodeA"); oA.buffer_pool_pages = 64;
+  oB.data_dir = NetPath("nodeB"); oB.buffer_pool_pages = 64;
+  oC.data_dir = NetPath("nodeC"); oC.buffer_pool_pages = 64;
   auto engA = NodeEngine::Open(oA).ValueOrDie();
   auto engB = NodeEngine::Open(oB).ValueOrDie();
   auto engC = NodeEngine::Open(oC).ValueOrDie();
@@ -113,28 +119,28 @@ static void TestThreeNodeMeshConverges() {
   assert(netA.Start().ok() && netB.Start().ok() && netC.Start().ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  assert(engA->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin"})")).ok());
+  assert(engA->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin"})"), engA->SelfRequestor()).ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(400));
-  assert(engB->GetDocument("users", "u1").ok());
-  assert(engC->GetDocument("users", "u1").ok());
+  assert(engB->GetDocument("users", "u1", engB->SelfRequestor()).ok());
+  assert(engC->GetDocument("users", "u1", engC->SelfRequestor()).ok());
 
   // Concurrent divergent writes on B and C to the same document.
-  assert(engB->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin","dept":"eng"})")).ok());
-  assert(engC->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha Khan","role":"admin"})")).ok());
+  assert(engB->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin","dept":"eng"})"), engB->SelfRequestor()).ok());
+  assert(engC->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha Khan","role":"admin"})"), engC->SelfRequestor()).ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
-  auto a = engA->GetDocument("users", "u1").ValueOrDie();
-  auto b = engB->GetDocument("users", "u1").ValueOrDie();
-  auto c = engC->GetDocument("users", "u1").ValueOrDie();
+  auto a = engA->GetDocument("users", "u1", engA->SelfRequestor()).ValueOrDie();
+  auto b = engB->GetDocument("users", "u1", engB->SelfRequestor()).ValueOrDie();
+  auto c = engC->GetDocument("users", "u1", engC->SelfRequestor()).ValueOrDie();
   assert(a.CanonicalDump() == b.CanonicalDump());
   assert(b.CanonicalDump() == c.CanonicalDump());
   std::cout << "[network_test] 3-node concurrent-write convergence -> " << a.Dump() << std::endl;
 
   // Gossip-only propagation path (new collection+key reaches every node).
-  assert(engC->PutDocument("items", "i1", JsonValue::Parse(R"({"sku":"X1","qty":5})")).ok());
+  assert(engC->PutDocument("items", "i1", JsonValue::Parse(R"({"sku":"X1","qty":5})"), engC->SelfRequestor()).ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  assert(engA->GetDocument("items", "i1").ok());
-  assert(engB->GetDocument("items", "i1").ok());
+  assert(engA->GetDocument("items", "i1", engA->SelfRequestor()).ok());
+  assert(engB->GetDocument("items", "i1", engB->SelfRequestor()).ok());
 
   netA.Stop(); netB.Stop(); netC.Stop();
   std::cout << "[network_test] 3-node P2P mesh (eager broadcast + gossip anti-entropy): PASS" << std::endl;

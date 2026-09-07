@@ -43,14 +43,14 @@ class TcpTransport {
   uint16_t port() const { return p2p_port_; }
 
  private:
-  void AcceptLoop(int listen_fd);
-  void HandleConnection(int client_fd);
+  void AcceptLoop(dsn_socket_t listen_fd);
+  void HandleConnection(dsn_socket_t client_fd);
 
   const NodeIdentity* identity_;
   uint16_t p2p_port_;
   RequestHandler handler_;
   std::atomic<bool> running_{false};
-  int listen_fd_ = -1;
+  dsn_socket_t listen_fd_ = kInvalidSocket;
   std::thread accept_thread_;
 };
 

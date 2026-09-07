@@ -10,6 +10,8 @@
 #include <sstream>
 #include <string>
 
+#include "desentry/common/platform.h"
+
 namespace desentry {
 
 enum class LogLevel { kDebug = 0, kInfo = 1, kWarn = 2, kError = 3 };
@@ -29,8 +31,7 @@ class Logger {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-    std::tm tm{};
-    localtime_r(&t, &tm);
+    std::tm tm = LocalTime(t);
     char buf[32];
     std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
     std::fprintf(stderr, "%s.%03d [%s] %-5s %s\n", buf, static_cast<int>(ms.count()),

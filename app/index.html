@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!--
+      Content-Security-Policy is enforced here as well as in tauri.conf.json.
+      No remote origins are allowed at all: every asset, font and script is
+      bundled. `connect-src` permits only loopback, because the app talks to
+      its own nodes' REST APIs and to nothing else -- which is what makes the
+      airplane-mode acceptance test hold for the UI, not just the engine.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <title>De-Sentry</title>
+    <link rel="stylesheet" href="/src/tokens.css" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell" data-loading="true">
+      <!--
+        A static first paint, replaced by the real UI on mount. It exists so
+        the window never shows an empty white rectangle while the sidecar is
+        starting -- which on a cold start can be a second or two.
+      -->
+      <div class="boot">
+        <div class="boot__mark" aria-hidden="true"></div>
+        <p class="boot__title">De-Sentry</p>
+        <p class="boot__sub">Starting the control plane…</p>
+      </div>
+    </div>
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,6 +1,5 @@
 #include "desentry/net/identity.h"
 
-#include <sys/stat.h>
 
 #include <fstream>
 #include <sstream>
@@ -56,7 +55,7 @@ StatusOr<NodeIdentity> NodeIdentity::LoadOrCreate(const std::string& key_file) {
   }
   out << id.private_key_ << id.public_key_;
   out.close();
-  ::chmod(key_file.c_str(), 0600);
+  RestrictToOwner(key_file);  // chmod 0600 on POSIX; owner-only DACL on Windows
 
   DSN_LOG_INFO("identity", "generated new identity, node_id=" << id.node_id_);
   return id;

@@ -1,0 +1,206 @@
+/*
+ * Design tokens. This is the ONLY file in the app allowed to contain a literal
+ * colour, radius, shadow or type size -- every other stylesheet references a
+ * custom property. That rule is what makes a token change a one-file edit
+ * rather than a search-and-replace across the UI.
+ *
+ * Values are inherited from DESIGN.md, which in turn inherits them from the
+ * Apple design analysis installed by `npx getdesign@latest add apple`
+ * (preserved unmodified at docs/apple-reference.md). Where this app departs
+ * from that source -- body 15px instead of 17px, three elevation levels
+ * instead of one, four semantic status hues -- DESIGN.md Sec 2 states each
+ * deviation and its reason.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* -- brand / interaction ------------------------------------------------ */
+  --color-primary: #0066cc;
+  --color-primary-focus: #0071e3;
+  --color-on-primary: #ffffff;
+
+  /* -- ink ---------------------------------------------------------------- */
+  --color-ink: #1d1d1f;
+  --color-ink-muted-80: #333333;
+  --color-ink-muted-48: #7a7a7a;
+
+  /* -- surfaces ----------------------------------------------------------- */
+  --color-canvas: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-surface-pearl: #fafafc;
+  --color-surface-sunken: #f0f0f2;
+
+  /* -- lines -------------------------------------------------------------- */
+  --color-hairline: #e0e0e0;
+  --color-divider-soft: #f0f0f0;
+
+  /* -- frosted chrome ----------------------------------------------------- */
+  --chrome-fill: rgba(255, 255, 255, 0.72);
+  --chrome-fill-sidebar: rgba(245, 245, 247, 0.72);
+  --chrome-blur: saturate(180%) blur(20px);
+
+  /* -- status ------------------------------------------------------------- *
+   * Deliberately darker than the familiar iOS system colours: #30d158 on
+   * white is 1.9:1 and unreadable as text. These meet AA on --color-surface.
+   */
+  --color-status-converged: #1d7f4e;
+  --color-status-lagging: #8a6100;
+  --color-status-offline: #a1252b;
+  --color-status-supervisor: #5a4bb8;
+  --color-status-converged-bg: rgba(29, 127, 78, 0.10);
+  --color-status-lagging-bg: rgba(138, 97, 0, 0.10);
+  --color-status-offline-bg: rgba(161, 37, 43, 0.10);
+  --color-status-supervisor-bg: rgba(90, 75, 184, 0.10);
+
+  /* -- type --------------------------------------------------------------- */
+  --font-display: "SF Pro Display", system-ui, -apple-system, "Segoe UI Variable Display",
+    "Segoe UI", Inter, Roboto, sans-serif;
+  --font-text: "SF Pro Text", system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
+    Inter, Roboto, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas,
+    "Liberation Mono", monospace;
+
+  --text-display-lg: 600 40px/1.1 var(--font-display);
+  --text-display-md: 600 28px/1.14 var(--font-display);
+  --text-tagline: 600 21px/1.19 var(--font-display);
+  --text-body-strong: 600 15px/1.33 var(--font-text);
+  --text-body: 400 15px/1.47 var(--font-text);
+  --text-caption: 400 13px/1.38 var(--font-text);
+  --text-caption-strong: 600 13px/1.31 var(--font-text);
+  --text-button: 500 13px/1 var(--font-text);
+  --text-fine: 400 11px/1.27 var(--font-text);
+  --text-mono: 400 12px/1.5 var(--font-mono);
+  --text-mono-strong: 600 12px/1.5 var(--font-mono);
+
+  /* The signature "Apple tight" tracking. Applied at display sizes only --
+   * never at 12px or below, per the source. */
+  --tracking-display: -0.02em;
+  --tracking-body: -0.016em;
+  --tracking-label: 0.06em;
+
+  /* -- spacing (8px base, with the source's 17px step retained) ----------- */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 17px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+  --space-section: 80px;
+
+  /* -- radius ------------------------------------------------------------- */
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --radius-pill: 9999px;
+
+  /* -- elevation ---------------------------------------------------------- *
+   * Three levels, where the source has one. Chrome still has none: elevation
+   * is for canvas objects and popovers only.
+   */
+  --elev-hairline: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --elev-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
+  --elev-popover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 16px 48px rgba(0, 0, 0, 0.12);
+  --elev-artifact: rgba(0, 0, 0, 0.22) 3px 5px 30px 0;
+
+  /* -- motion ------------------------------------------------------------- */
+  --motion-instant: 90ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-quick: 160ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-settle: 280ms cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* -- layout ------------------------------------------------------------- */
+  --chrome-header-height: 52px;
+  --sidebar-width: 280px;
+  --inspector-width: 340px;
+}
+
+/*
+ * Dark mode is not an inversion. Surfaces move onto the near-black tile ladder
+ * from the source, hairlines lighten, and every status hue swaps to its
+ * on-dark sibling -- the light-mode greens and reds go muddy on #272729.
+ *
+ * The system-preference block is guarded against an explicit light override so
+ * a user who forces light mode on a dark desktop actually gets it.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-primary: #2997ff;
+    --color-primary-focus: #4aa8ff;
+    --color-on-primary: #ffffff;
+
+    --color-ink: #f5f5f7;
+    --color-ink-muted-80: #cccccc;
+    --color-ink-muted-48: #8e8e93;
+
+    --color-canvas: #1c1c1e;
+    --color-surface: #272729;
+    --color-surface-pearl: #2a2a2c;
+    --color-surface-sunken: #252527;
+
+    --color-hairline: #3a3a3c;
+    --color-divider-soft: #2f2f31;
+
+    --chrome-fill: rgba(39, 39, 41, 0.72);
+    --chrome-fill-sidebar: rgba(28, 28, 30, 0.72);
+
+    --color-status-converged: #30d158;
+    --color-status-lagging: #ffd60a;
+    --color-status-offline: #ff453a;
+    --color-status-supervisor: #bf5af2;
+    --color-status-converged-bg: rgba(48, 209, 88, 0.16);
+    --color-status-lagging-bg: rgba(255, 214, 10, 0.16);
+    --color-status-offline-bg: rgba(255, 69, 58, 0.16);
+    --color-status-supervisor-bg: rgba(191, 90, 242, 0.16);
+
+    --elev-hairline: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+    --elev-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.36);
+    --elev-popover: 0 4px 12px rgba(0, 0, 0, 0.40), 0 16px 48px rgba(0, 0, 0, 0.50);
+  }
+}
+
+/* The explicit override wins in both directions -- a control room is often on
+ * a second monitor whose ambient light does not match the laptop's. */
+:root[data-theme="dark"] {
+  --color-primary: #2997ff;
+  --color-primary-focus: #4aa8ff;
+  --color-on-primary: #ffffff;
+
+  --color-ink: #f5f5f7;
+  --color-ink-muted-80: #cccccc;
+  --color-ink-muted-48: #8e8e93;
+
+  --color-canvas: #1c1c1e;
+  --color-surface: #272729;
+  --color-surface-pearl: #2a2a2c;
+  --color-surface-sunken: #252527;
+
+  --color-hairline: #3a3a3c;
+  --color-divider-soft: #2f2f31;
+
+  --chrome-fill: rgba(39, 39, 41, 0.72);
+  --chrome-fill-sidebar: rgba(28, 28, 30, 0.72);
+
+  --color-status-converged: #30d158;
+  --color-status-lagging: #ffd60a;
+  --color-status-offline: #ff453a;
+  --color-status-supervisor: #bf5af2;
+  --color-status-converged-bg: rgba(48, 209, 88, 0.16);
+  --color-status-lagging-bg: rgba(255, 214, 10, 0.16);
+  --color-status-offline-bg: rgba(255, 69, 58, 0.16);
+  --color-status-supervisor-bg: rgba(191, 90, 242, 0.16);
+
+  --elev-hairline: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  --elev-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.36);
+  --elev-popover: 0 4px 12px rgba(0, 0, 0, 0.40), 0 16px 48px rgba(0, 0, 0, 0.50);
+}
+
+/* The mesh canvas never animates continuously; this collapses the rest. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-instant: 0ms;
+    --motion-quick: 0ms;
+    --motion-settle: 0ms;
+  }
+}

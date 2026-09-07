@@ -31,18 +31,18 @@ struct HandshakeResult {
 };
 
 // Client side: we initiated the TCP connection.
-StatusOr<HandshakeResult> ClientHandshake(int sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
+StatusOr<HandshakeResult> ClientHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
 
 // Server side: we accepted the TCP connection.
-StatusOr<HandshakeResult> ServerHandshake(int sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
+StatusOr<HandshakeResult> ServerHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
 
 // Encrypts `msg` and writes it as one length-prefixed frame; advances
 // keys->send_counter.
-Status SendEncrypted(int sockfd, SessionKeys* keys, const WireMessage& msg);
+Status SendEncrypted(dsn_socket_t sockfd, SessionKeys* keys, const WireMessage& msg);
 
 // Reads one length-prefixed frame and decrypts it; advances
 // keys->recv_counter. Returns a NetworkError (not a crash) if authentication
 // fails -- the same treatment as any other malformed/hostile input.
-StatusOr<WireMessage> RecvEncrypted(int sockfd, SessionKeys* keys, size_t max_len);
+StatusOr<WireMessage> RecvEncrypted(dsn_socket_t sockfd, SessionKeys* keys, size_t max_len);
 
 }  // namespace desentry

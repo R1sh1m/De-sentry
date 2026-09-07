@@ -16,6 +16,7 @@
 #include <map>
 #include <random>
 
+#include "desentry/common/platform.h"
 #include "desentry/crdt/document.h"
 #include "desentry/crdt/hlc.h"
 #include "desentry/storage/buffer_pool_manager.h"
@@ -28,14 +29,18 @@
 using namespace desentry;
 
 namespace {
-const char* kTestDir = "/tmp/desentry_test_storage";
+// A per-user temporary directory rather than a hard-coded /tmp: these tests
+// have to run on Windows too, where /tmp does not exist and `rm -rf` is not a
+// command. platform.h is the one place in the tree that knows the difference.
+const std::string kTestDirStorage = AppDataDir() + "/desentry_test_storage";
+const char* kTestDir = kTestDirStorage.c_str();
 
-void RmRf(const std::string& path) { int rc = std::system(("rm -rf " + path).c_str()); (void)rc; }
+void RmRf(const std::string& path) { RemoveTree(path); }
 }  // namespace
 
 static void TestBufferPoolAndWal() {
   RmRf(kTestDir);
-  int rc = std::system((std::string("mkdir -p ") + kTestDir).c_str()); (void)rc;
+  MakeDirs(kTestDir);
   auto dm = DiskManager::Open(std::string(kTestDir) + "/bp.dsf").ValueOrDie();
   BufferPoolManager bpm(4, dm.get());  // tiny pool: forces real eviction
 

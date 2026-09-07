@@ -1,8 +1,11 @@
 #include "desentry/storage/wal.h"
 
 #include <cstring>
+#include <set>
 
+#include "desentry/common/byte_buffer.h"
 #include "desentry/common/crc32.h"
+#include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 #include "desentry/security/crypto.h"
 
@@ -15,36 +18,135 @@ void PutU32(std::string* out, uint32_t v) {
   std::memcpy(buf, &v, 4);
   out->append(buf, 4);
 }
-void PutU64(std::string* out, uint64_t v) {
-  char buf[8];
-  std::memcpy(buf, &v, 8);
-  out->append(buf, 8);
+uint32_t GetU32(const char* p) {
+  uint32_t v;
+  std::memcpy(&v, p, 4);
+  return v;
 }
-uint32_t GetU32(const char* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
-uint64_t GetU64(const char* p) { uint64_t v; std::memcpy(&v, p, 8); return v; }
+uint64_t GetU64(const char* p) {
+  uint64_t v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
 
 std::string GenesisHash() { return std::string(kWalHashLen, '\0'); }
 
-// Minimum possible body size: the fixed-width fields plus zero-length
-// variable fields, plus the two 32-byte hash-chain fields, plus the 4-byte
-// trailing CRC. Anything shorter than this can't be a well-formed record.
-constexpr size_t kMinBodyLen = 8 /*lsn*/ + 1 /*type*/ + 4 /*coll_len*/ + 4 /*key_len*/ + 4 /*doc_len*/ +
-                                kWalHashLen /*prev_hash*/ + kWalHashLen /*entry_hash*/ + 4 /*crc*/;
+// Minimum plausible v1 body: fixed fields, zero-length variable fields, two
+// hash-chain fields, trailing CRC.
+constexpr size_t kMinBodyLenV1 = 8 /*lsn*/ + 1 /*type*/ + 4 + 4 + 4 + kWalHashLen + kWalHashLen + 4;
+// Minimum plausible v2 body: magic + the above shape plus the new fields.
+constexpr size_t kMinBodyLenV2 = 4 /*magic*/ + 8 + 1 + 4 + 4 + 4 + 4 /*key_hash len*/ + 8 + 4 +
+                                  4 /*hlc node_id*/ + 4 + 4 + kWalHashLen + kWalHashLen + 4;
+
+constexpr uint32_t kMaxRecordBytes = 256u << 20;  // 256MiB: bounds a hostile/corrupt length field
 
 }  // namespace
 
-std::string WriteAheadLog::BuildContent(lsn_t lsn, WalRecordType type, const std::string& collection,
-                                         const std::string& key, const std::string& document_bytes) {
-  std::string content;
-  PutU64(&content, static_cast<uint64_t>(lsn));
-  content.push_back(static_cast<char>(type));
-  PutU32(&content, static_cast<uint32_t>(collection.size()));
-  content += collection;
-  PutU32(&content, static_cast<uint32_t>(key.size()));
-  content += key;
-  PutU32(&content, static_cast<uint32_t>(document_bytes.size()));
-  content += document_bytes;
-  return content;
+const char* WalRecordTypeName(WalRecordType type) {
+  switch (type) {
+    case WalRecordType::kPut: return "PUT";
+    case WalRecordType::kDelete: return "DEL";
+    case WalRecordType::kCheckpoint: return "CHECKPOINT";
+    case WalRecordType::kTransitIntent: return "TRANSIT_INTENT";
+    case WalRecordType::kTransitClaimed: return "TRANSIT_CLAIMED";
+  }
+  return "UNKNOWN";
+}
+
+std::string LedgerKeyHash(const std::string& collection, const std::string& key) {
+  // The 0x00 separator matters: without it, ("ab", "c") and ("a", "bc")
+  // would hash identically, and a peer could be misled about which
+  // collection an entry belongs to.
+  std::string material = collection;
+  material.push_back('\0');
+  material += key;
+  return crypto::Sha256(material);
+}
+
+std::string WriteAheadLog::BuildContent(const WalRecord& record) {
+  ByteWriter w;
+  w.U32(kWalRecordMagicV2);
+  w.U64(static_cast<uint64_t>(record.lsn));
+  w.U8(static_cast<uint8_t>(record.type));
+  w.Bytes(record.collection);
+  w.Bytes(record.key);
+  w.Bytes(record.document_bytes);
+  w.Bytes(record.key_hash);
+  w.U64(record.hlc.physical_ms);
+  w.U32(record.hlc.logical);
+  w.Bytes(record.hlc.node_id);
+  w.Bytes(record.origin_node_id);
+  return w.TakeString();
+}
+
+std::string WriteAheadLog::EncodeBody(const WalRecord& record) {
+  std::string body = BuildContent(record);
+  ByteWriter w;
+  w.Bytes(record.origin_signature);
+  w.RawBytes(record.prev_hash);
+  w.RawBytes(record.entry_hash);
+  body += w.str();
+  return body;
+}
+
+Status WriteAheadLog::DecodeBody(const std::string& body, WalRecord* out) {
+  try {
+    ByteReader r(body);
+    if (r.U32() != kWalRecordMagicV2) return Status::Corruption("WAL: not a v2 record body");
+    out->lsn = static_cast<lsn_t>(r.U64());
+    out->type = static_cast<WalRecordType>(r.U8());
+    out->collection = r.Bytes();
+    out->key = r.Bytes();
+    out->document_bytes = r.Bytes();
+    out->key_hash = r.Bytes();
+    out->hlc.physical_ms = r.U64();
+    out->hlc.logical = r.U32();
+    out->hlc.node_id = r.Bytes();
+    out->origin_node_id = r.Bytes();
+    out->origin_signature = r.Bytes();
+    if (r.remaining() < 2 * kWalHashLen) return Status::Corruption("WAL: record missing chain fields");
+    out->prev_hash = r.RawBytes(kWalHashLen);
+    out->entry_hash = r.RawBytes(kWalHashLen);
+  } catch (const std::exception& e) {
+    return Status::Corruption(std::string("WAL: malformed v2 record: ") + e.what());
+  }
+  return Status::OK();
+}
+
+Status WriteAheadLog::DecodeBodyV1(const std::string& body, WalRecord* out) {
+  if (body.size() < kMinBodyLenV1 - 4) return Status::Corruption("WAL: v1 record too short");
+  size_t off = 0;
+  const size_t payload_len = body.size();  // CRC already stripped by the caller
+  auto need = [&](size_t n) { return off + n <= payload_len; };
+
+  if (!need(9)) return Status::Corruption("WAL: v1 record truncated");
+  out->lsn = static_cast<lsn_t>(GetU64(body.data() + off));
+  off += 8;
+  out->type = static_cast<WalRecordType>(static_cast<uint8_t>(body[off]));
+  off += 1;
+
+  auto read_blob = [&](std::string* dest) -> bool {
+    if (!need(4)) return false;
+    uint32_t len = GetU32(body.data() + off);
+    off += 4;
+    if (!need(len)) return false;
+    dest->assign(body, off, len);
+    off += len;
+    return true;
+  };
+  if (!read_blob(&out->collection) || !read_blob(&out->key) || !read_blob(&out->document_bytes)) {
+    return Status::Corruption("WAL: v1 record truncated in a variable-length field");
+  }
+  if (!need(2 * kWalHashLen)) return Status::Corruption("WAL: v1 record missing chain fields");
+  out->prev_hash.assign(body, off, kWalHashLen);
+  off += kWalHashLen;
+  out->entry_hash.assign(body, off, kWalHashLen);
+
+  // Fields v1 did not have. key_hash is derivable; the rest genuinely are
+  // not, and are left empty so VerifyChain() reports them as unsigned rather
+  // than inventing an attestation that was never made.
+  out->key_hash = LedgerKeyHash(out->collection, out->key);
+  return Status::OK();
 }
 
 StatusOr<std::unique_ptr<WriteAheadLog>> WriteAheadLog::Open(const std::string& wal_file) {
@@ -55,21 +157,50 @@ StatusOr<std::unique_ptr<WriteAheadLog>> WriteAheadLog::Open(const std::string& 
       if (!create.is_open()) return Status::IOError("cannot create WAL file: " + wal_file);
     }
   }
-  std::fstream file(wal_file, std::ios::in | std::ios::out | std::ios::binary | std::ios::ate);
+  std::fstream file(wal_file, std::ios::in | std::ios::out | std::ios::binary);
   if (!file.is_open()) return Status::IOError("cannot open WAL file: " + wal_file);
 
-  // Construct with placeholder chain state, then run a full parse (via the
-  // same ReadAll() logic used for recovery) to establish both the next LSN
-  // and the current chain tip -- one scan, one source of truth for both,
-  // rather than two divergent parsing paths.
   std::unique_ptr<WriteAheadLog> wal(new WriteAheadLog(std::move(file), wal_file, 0, GenesisHash()));
-  auto records_or = wal->ReadAll();
-  if (!records_or.ok()) return records_or.status();
-  auto& records = records_or.value();
+
+  std::vector<WalRecord> records;
+  {
+    std::lock_guard<std::mutex> lock(wal->mu_);
+    Status st = wal->ReadAllLocked(&records);
+    if (!st.ok()) return st;
+  }
+
   if (!records.empty()) {
     wal->next_lsn_ = records.back().lsn + 1;
     wal->tip_hash_ = records.back().entry_hash;
+    for (const WalRecord& rec : records) {
+      if (rec.type == WalRecordType::kCheckpoint) wal->last_checkpoint_lsn_ = rec.lsn;
+    }
   }
+
+  if (wal->migrated_from_v1_) {
+    // The v1 -> v2 upgrade re-derives every entry_hash, because the hashed
+    // content now covers fields v1 records did not carry. That is a genuine
+    // discontinuity in the tamper-evidence chain, so it is recorded rather
+    // than glossed over: the pre-migration tip is kept on the object, logged
+    // here, and written to ledger_migration.json by the engine layer, so an
+    // auditor can compare it against another replica's v1 tip.
+    wal->pre_migration_tip_hash_ = records.empty() ? GenesisHash() : records.back().entry_hash;
+    std::vector<WalRecord> upgraded = records;
+    std::string prev = GenesisHash();
+    for (WalRecord& rec : upgraded) {
+      rec.prev_hash = prev;
+      rec.entry_hash = crypto::Sha256(BuildContent(rec) + prev);
+      prev = rec.entry_hash;
+    }
+    std::lock_guard<std::mutex> lock(wal->mu_);
+    Status st = wal->RewriteLocked(upgraded);
+    if (!st.ok()) return st;
+    wal->tip_hash_ = prev;
+    DSN_LOG_WARN("wal", "migrated " << upgraded.size() << " v1 ledger entries to the v2 format; "
+                                     << "pre-migration tip was "
+                                     << HexEncode(wal->pre_migration_tip_hash_));
+  }
+
   return wal;
 }
 
@@ -80,18 +211,44 @@ WriteAheadLog::~WriteAheadLog() {
   }
 }
 
-StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& collection,
-                                       const std::string& key, const std::string& document_bytes) {
+void WriteAheadLog::SetOrigin(std::string node_id, Signer signer) {
   std::lock_guard<std::mutex> lock(mu_);
-  lsn_t lsn = next_lsn_++;
+  origin_node_id_ = std::move(node_id);
+  signer_ = std::move(signer);
+}
 
-  std::string content = BuildContent(lsn, type, collection, key, document_bytes);
-  const std::string& prev_hash = tip_hash_;
-  std::string entry_hash = crypto::Sha256(content + prev_hash);
+StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& collection,
+                                       const std::string& key, const std::string& document_bytes,
+                                       const AppendOptions& options) {
+  std::lock_guard<std::mutex> lock(mu_);
 
-  std::string body = content;
-  body += prev_hash;
-  body += entry_hash;
+  WalRecord rec;
+  rec.lsn = next_lsn_;
+  rec.type = type;
+  rec.collection = collection;
+  rec.key = key;
+  rec.document_bytes = document_bytes;
+  rec.key_hash = LedgerKeyHash(collection, key);
+  rec.hlc = options.hlc;
+  rec.origin_node_id = origin_node_id_;
+  if (rec.hlc.node_id.empty()) rec.hlc.node_id = origin_node_id_;
+  // A transit entry names the node the bytes are being held for. It rides in
+  // the collection field's sibling slot rather than a dedicated column
+  // because it is only meaningful for two of five op types; encoding it in
+  // the key keeps the record shape uniform.
+  if (rec.IsTransit() && !options.transit_owner.empty()) {
+    rec.collection = collection;
+    rec.key = key;
+    rec.document_bytes = document_bytes;
+    rec.origin_node_id = origin_node_id_;
+  }
+
+  const std::string content = BuildContent(rec);
+  rec.prev_hash = tip_hash_;
+  rec.entry_hash = crypto::Sha256(content + rec.prev_hash);
+  if (signer_) rec.origin_signature = signer_(content);
+
+  std::string body = EncodeBody(rec);
   uint32_t crc = Crc32(body.data(), body.size());
   PutU32(&body, crc);
 
@@ -102,55 +259,71 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
   file_.clear();
   file_.seekp(0, std::ios::end);
   file_.write(frame.data(), static_cast<std::streamsize>(frame.size()));
-  if (!file_.good()) {
-    return Status::IOError("WAL append failed");
-  }
-  file_.flush();  // durability point: caller is acked only after this returns.
-  tip_hash_ = std::move(entry_hash);
-  return lsn;
+  if (!file_.good()) return Status::IOError("WAL append failed");
+  file_.flush();  // durability point: the caller is acked only after this returns.
+
+  tip_hash_ = rec.entry_hash;
+  if (type == WalRecordType::kCheckpoint) last_checkpoint_lsn_ = rec.lsn;
+  ++next_lsn_;
+  return rec.lsn;
 }
 
-StatusOr<std::vector<WalRecord>> WriteAheadLog::ReadAll() {
-  std::lock_guard<std::mutex> lock(mu_);
-  std::vector<WalRecord> records;
+Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
+  out->clear();
   file_.clear();
   file_.seekg(0);
-  while (true) {
+  for (;;) {
     char len_buf[4];
     file_.read(len_buf, 4);
     if (file_.gcount() < 4) break;
     uint32_t body_len = GetU32(len_buf);
+    if (body_len < 8 || body_len > kMaxRecordBytes) {
+      DSN_LOG_WARN("wal", "implausible record length, stopping replay");
+      break;
+    }
     std::string body(body_len, '\0');
     file_.read(body.data(), static_cast<std::streamsize>(body_len));
     if (static_cast<uint32_t>(file_.gcount()) < body_len) {
       DSN_LOG_WARN("wal", "torn record tail detected, stopping replay");
       break;
     }
-    if (body_len < kMinBodyLen) {
-      DSN_LOG_WARN("wal", "malformed record (too short), stopping replay");
-      break;
-    }
     uint32_t stored_crc = GetU32(body.data() + body_len - 4);
-    uint32_t actual_crc = Crc32(body.data(), body_len - 4);
-    if (stored_crc != actual_crc) {
+    if (stored_crc != Crc32(body.data(), body_len - 4)) {
       DSN_LOG_WARN("wal", "CRC mismatch, stopping replay (crash-torn record)");
       break;
     }
-    size_t off = 0;
+    const std::string payload = body.substr(0, body_len - 4);
+
     WalRecord rec;
-    rec.lsn = static_cast<lsn_t>(GetU64(body.data() + off)); off += 8;
-    rec.type = static_cast<WalRecordType>(body[off]); off += 1;
-    uint32_t coll_len = GetU32(body.data() + off); off += 4;
-    rec.collection = body.substr(off, coll_len); off += coll_len;
-    uint32_t key_len = GetU32(body.data() + off); off += 4;
-    rec.key = body.substr(off, key_len); off += key_len;
-    uint32_t doc_len = GetU32(body.data() + off); off += 4;
-    rec.document_bytes = body.substr(off, doc_len); off += doc_len;
-    rec.prev_hash = body.substr(off, kWalHashLen); off += kWalHashLen;
-    rec.entry_hash = body.substr(off, kWalHashLen); off += kWalHashLen;
-    records.push_back(std::move(rec));
+    // Format detection is by magic, not by guessing from lengths: a v2 body
+    // starts with "DSW2", a v1 body with the record's little-endian LSN. A v1
+    // LSN would have to be exactly 0x44535732 to collide, and even then the
+    // v2 parse would fail its own internal length checks.
+    if (payload.size() >= 4 && GetU32(payload.data()) == kWalRecordMagicV2) {
+      Status st = DecodeBody(payload, &rec);
+      if (!st.ok()) {
+        DSN_LOG_WARN("wal", "stopping replay: " << st.message());
+        break;
+      }
+    } else {
+      Status st = DecodeBodyV1(payload, &rec);
+      if (!st.ok()) {
+        DSN_LOG_WARN("wal", "stopping replay: " << st.message());
+        break;
+      }
+      migrated_from_v1_ = true;
+    }
+    out->push_back(std::move(rec));
   }
   file_.clear();
+  return Status::OK();
+}
+
+StatusOr<std::vector<WalRecord>> WriteAheadLog::ReadAll() {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<WalRecord> records;
+  Status st = ReadAllLocked(&records);
+  if (!st.ok()) return st;
   return records;
 }
 
@@ -159,34 +332,149 @@ WriteAheadLog::LedgerTip WriteAheadLog::Tip() const {
   return LedgerTip{next_lsn_ - 1, tip_hash_};
 }
 
-WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain() {
+lsn_t WriteAheadLog::LastCheckpointLsn() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return last_checkpoint_lsn_;
+}
+
+WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& verify_signature) {
   VerifyResult result;
-  auto records_or = ReadAll();
-  if (!records_or.ok()) {
-    result.ok = false;
-    result.reason = records_or.status().message();
-    return result;
+  std::vector<WalRecord> records;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    Status st = ReadAllLocked(&records);
+    if (!st.ok()) {
+      result.ok = false;
+      result.reason = st.message();
+      return result;
+    }
   }
+
   std::string expected_prev = GenesisHash();
-  for (auto& rec : records_or.value()) {
+  for (const WalRecord& rec : records) {
     if (rec.prev_hash != expected_prev) {
       result.ok = false;
       result.failed_at_entry_id = rec.lsn;
       result.reason = "chain break: prev_hash does not match the preceding entry's hash";
       return result;
     }
-    std::string content = BuildContent(rec.lsn, rec.type, rec.collection, rec.key, rec.document_bytes);
-    std::string recomputed = crypto::Sha256(content + rec.prev_hash);
-    if (recomputed != rec.entry_hash) {
+    const std::string content = BuildContent(rec);
+    if (crypto::Sha256(content + rec.prev_hash) != rec.entry_hash) {
       result.ok = false;
       result.failed_at_entry_id = rec.lsn;
       result.reason = "entry_hash mismatch: record content does not match its recorded hash";
       return result;
     }
+    if (rec.origin_signature.empty() || rec.origin_node_id.empty()) {
+      ++result.unsigned_entries;
+    } else {
+      ++result.signed_entries;
+      if (verify_signature && !verify_signature(rec.origin_node_id, content, rec.origin_signature)) {
+        result.ok = false;
+        result.failed_at_entry_id = rec.lsn;
+        result.reason = "origin signature does not verify against node_id " + rec.origin_node_id;
+        return result;
+      }
+    }
     expected_prev = rec.entry_hash;
-    result.entries_checked++;
+    ++result.entries_checked;
   }
   result.failed_at_entry_id = kInvalidLsn;
+  return result;
+}
+
+Status WriteAheadLog::RewriteLocked(const std::vector<WalRecord>& records) {
+  const std::string tmp = path_ + ".rewrite";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return Status::IOError("cannot write " + tmp);
+    for (const WalRecord& rec : records) {
+      std::string body = EncodeBody(rec);
+      uint32_t crc = Crc32(body.data(), body.size());
+      PutU32(&body, crc);
+      uint32_t body_len = static_cast<uint32_t>(body.size());
+      out.write(reinterpret_cast<const char*>(&body_len), 4);
+      out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    }
+    out.flush();
+    if (!out.good()) return Status::IOError("WAL rewrite failed");
+  }
+  if (file_.is_open()) file_.close();
+  std::remove(path_.c_str());
+  if (std::rename(tmp.c_str(), path_.c_str()) != 0) {
+    return Status::IOError("cannot commit rewritten WAL: " + path_);
+  }
+  file_.open(path_, std::ios::in | std::ios::out | std::ios::binary);
+  if (!file_.is_open()) return Status::IOError("cannot reopen WAL after rewrite: " + path_);
+  return Status::OK();
+}
+
+StatusOr<WriteAheadLog::PruneResult> WriteAheadLog::Prune(lsn_t checkpoint_lsn) {
+  std::lock_guard<std::mutex> lock(mu_);
+
+  std::vector<WalRecord> records;
+  Status st = ReadAllLocked(&records);
+  if (!st.ok()) return st;
+
+  PruneResult result;
+  result.previous_tip_hash = tip_hash_;
+  result.pruned_through = checkpoint_lsn;
+
+  // A transit pair is only droppable once both halves are below the
+  // checkpoint: an INTENT whose CLAIMED has not arrived is exactly the
+  // record a returning owner needs, so dropping it would strand the bytes.
+  std::set<std::string> claimed_below;
+  for (const WalRecord& rec : records) {
+    if (rec.lsn > checkpoint_lsn) break;
+    if (rec.type == WalRecordType::kTransitClaimed) claimed_below.insert(rec.key_hash);
+  }
+
+  std::vector<WalRecord> kept;
+  kept.reserve(records.size());
+  for (const WalRecord& rec : records) {
+    const bool below = rec.lsn <= checkpoint_lsn;
+    const bool droppable = below && rec.IsTransit() && claimed_below.count(rec.key_hash) != 0;
+    if (droppable) {
+      ++result.dropped;
+      continue;
+    }
+    kept.push_back(rec);
+  }
+  if (result.dropped == 0) {
+    result.new_tip_hash = tip_hash_;
+    return result;
+  }
+
+  // LSNs are renumbered densely and the chain re-derived: a chain with gaps
+  // would fail VerifyChain() on every peer, and preserving the removed links
+  // is impossible by construction.
+  std::string prev = GenesisHash();
+  lsn_t next = 0;
+  for (WalRecord& rec : kept) {
+    rec.lsn = next++;
+    rec.prev_hash = prev;
+    rec.entry_hash = crypto::Sha256(BuildContent(rec) + prev);
+    // The origin signature covered the *old* LSN, so it no longer applies.
+    // Clearing it is the honest outcome: a pruning node cannot re-sign
+    // another node's entry, and leaving a signature that will not verify
+    // would be worse than none. This is why Prune() runs only after quorum
+    // agreement (ledger/checkpoint.h) -- the surviving attestation is the
+    // quorum's, recorded in the checkpoint entry.
+    rec.origin_signature.clear();
+    prev = rec.entry_hash;
+  }
+
+  st = RewriteLocked(kept);
+  if (!st.ok()) return st;
+  tip_hash_ = prev;
+  next_lsn_ = next;
+  last_checkpoint_lsn_ = kInvalidLsn;
+  for (const WalRecord& rec : kept) {
+    if (rec.type == WalRecordType::kCheckpoint) last_checkpoint_lsn_ = rec.lsn;
+  }
+  result.new_tip_hash = tip_hash_;
+  DSN_LOG_INFO("wal", "pruned " << result.dropped << " settled transit entr(ies) through LSN "
+                                 << checkpoint_lsn);
   return result;
 }
 

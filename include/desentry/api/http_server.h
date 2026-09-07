@@ -8,6 +8,8 @@
 // stated plainly rather than pretending this is a general-purpose web
 // server.
 
+#include "desentry/common/platform.h"
+
 #include <atomic>
 #include <functional>
 #include <map>
@@ -60,14 +62,14 @@ class HttpServer {
 
   void AddRoute(const std::string& method, const std::string& pattern, HttpHandler handler);
   void AcceptLoop();
-  void HandleConnection(int fd);
+  void HandleConnection(dsn_socket_t fd);
   HttpResponse Dispatch(HttpRequest* req);
 
   std::string bind_addr_;
   uint16_t port_;
   std::vector<Route> routes_;
   std::atomic<bool> running_{false};
-  int listen_fd_ = -1;
+  dsn_socket_t listen_fd_ = kInvalidSocket;
   std::thread accept_thread_;
 };
 

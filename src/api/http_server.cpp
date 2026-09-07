@@ -1,15 +1,12 @@
 #include "desentry/api/http_server.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <cstring>
 #include <sstream>
 
 #include "desentry/common/logger.h"
+#include "desentry/common/platform.h"
 
 namespace desentry {
 
@@ -68,14 +65,14 @@ std::string StatusText(int code) {
 // blocking socket. Returns false on a malformed/incomplete request (peer
 // disconnected, garbage input) -- the caller just closes the connection,
 // same treatment as any other untrusted local input.
-bool ReadHttpRequest(int fd, HttpRequest* req) {
+bool ReadHttpRequest(dsn_socket_t fd, HttpRequest* req) {
   std::string buf;
   buf.reserve(4096);
   char chunk[4096];
   size_t header_end = std::string::npos;
 
   while (header_end == std::string::npos) {
-    ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    dsn_iolen_t n = SocketRecv(fd, chunk, sizeof(chunk));
     if (n <= 0) return false;
     buf.append(chunk, static_cast<size_t>(n));
     header_end = buf.find("\r\n\r\n");
@@ -134,7 +131,7 @@ bool ReadHttpRequest(int fd, HttpRequest* req) {
   if (content_length > (64u << 20)) return false;  // 64MiB body cap
 
   while (body_so_far.size() < content_length) {
-    ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    dsn_iolen_t n = SocketRecv(fd, chunk, sizeof(chunk));
     if (n <= 0) return false;
     body_so_far.append(chunk, static_cast<size_t>(n));
   }
@@ -142,7 +139,7 @@ bool ReadHttpRequest(int fd, HttpRequest* req) {
   return true;
 }
 
-void WriteHttpResponse(int fd, const HttpResponse& resp) {
+void WriteHttpResponse(dsn_socket_t fd, const HttpResponse& resp) {
   std::ostringstream out;
   out << "HTTP/1.1 " << resp.status << " " << StatusText(resp.status) << "\r\n";
   out << "Content-Type: " << resp.content_type << "\r\n";
@@ -163,7 +160,7 @@ void WriteHttpResponse(int fd, const HttpResponse& resp) {
   std::string s = out.str();
   size_t sent = 0;
   while (sent < s.size()) {
-    ssize_t n = ::send(fd, s.data() + sent, s.size() - sent, 0);
+    dsn_iolen_t n = SocketSend(fd, s.data() + sent, s.size() - sent);
     if (n <= 0) break;
     sent += static_cast<size_t>(n);
   }
@@ -178,10 +175,10 @@ void HttpServer::AddRoute(const std::string& method, const std::string& pattern,
 }
 
 bool HttpServer::Start() {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return false;
-  int opt = 1;
-  ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  NetInit();
+  dsn_socket_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!SocketValid(fd)) return false;
+  SetSockOptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1);
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -189,17 +186,17 @@ bool HttpServer::Start() {
   if (bind_addr_.empty() || bind_addr_ == "0.0.0.0") {
     addr.sin_addr.s_addr = INADDR_ANY;
   } else if (::inet_pton(AF_INET, bind_addr_.c_str(), &addr.sin_addr) != 1) {
-    ::close(fd);
+    CloseSocket(fd);
     return false;
   }
 
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    DSN_LOG_ERROR("http", "bind() failed on " << bind_addr_ << ":" << port_ << ": " << std::strerror(errno));
-    ::close(fd);
+    DSN_LOG_ERROR("http", "bind() failed on " << bind_addr_ << ":" << port_ << ": " << SocketErrorString());
+    CloseSocket(fd);
     return false;
   }
   if (::listen(fd, 64) != 0) {
-    ::close(fd);
+    CloseSocket(fd);
     return false;
   }
 
@@ -213,9 +210,9 @@ bool HttpServer::Start() {
 void HttpServer::AcceptLoop() {
   while (running_) {
     sockaddr_in peer{};
-    socklen_t len = sizeof(peer);
-    int fd = ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &len);
-    if (fd < 0) {
+    dsn_socklen_t len = sizeof(peer);
+    dsn_socket_t fd = ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &len);
+    if (!SocketValid(fd)) {
       if (!running_) break;
       continue;
     }
@@ -223,7 +220,7 @@ void HttpServer::AcceptLoop() {
   }
 }
 
-void HttpServer::HandleConnection(int fd) {
+void HttpServer::HandleConnection(dsn_socket_t fd) {
   HttpRequest req;
   if (ReadHttpRequest(fd, &req)) {
     HttpResponse resp = Dispatch(&req);
@@ -231,7 +228,7 @@ void HttpServer::HandleConnection(int fd) {
   } else {
     WriteHttpResponse(fd, HttpResponse::Json(400, R"({"error":"malformed request"})"));
   }
-  ::close(fd);
+  CloseSocket(fd);
 }
 
 HttpResponse HttpServer::Dispatch(HttpRequest* req) {
@@ -279,10 +276,10 @@ HttpResponse HttpServer::Dispatch(HttpRequest* req) {
 void HttpServer::Stop() {
   if (!running_) return;
   running_ = false;
-  if (listen_fd_ >= 0) {
-    ::shutdown(listen_fd_, SHUT_RDWR);
-    ::close(listen_fd_);
-    listen_fd_ = -1;
+  if (SocketValid(listen_fd_)) {
+    ShutdownSocket(listen_fd_);
+    CloseSocket(listen_fd_);
+    listen_fd_ = kInvalidSocket;
   }
   if (accept_thread_.joinable()) accept_thread_.join();
 }
