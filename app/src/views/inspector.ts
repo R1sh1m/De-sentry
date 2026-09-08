@@ -74,6 +74,37 @@ function copyable(text: string, label: string): HTMLElement {
 
 // -- sections ----------------------------------------------------------------
 
+function heroKpis(node: NodeView): HTMLElement {
+  const tip = node.tip;
+  const mesh = meshTip();
+  const behind = tip !== null && mesh !== null ? mesh.entry_id - tip.entry_id : 0;
+  const quota = node.quota ?? node.status?.quota;
+  const usedPct = quota && quota.limit_bytes > 0 ? Math.round((quota.used_bytes / quota.limit_bytes) * 100) : null;
+
+  const tipVal = tip ? `#${tip.entry_id}` : "—";
+  const tipSub = behind > 0 ? `-${behind} lag` : "In sync";
+
+  const quotaVal = usedPct !== null ? `${usedPct}%` : quota ? bytes(quota.used_bytes) : "—";
+  const quotaSub = quota && quota.limit_bytes > 0 ? `${bytes(quota.limit_bytes)} cap` : "dynamic";
+
+  return el(
+    "div",
+    { class: "inspector__kpis" },
+    el(
+      "div",
+      { class: "kpi-tile" },
+      el("span", { class: "kpi-tile__label", text: "Ledger Height" }),
+      el("div", { class: "kpi-tile__val" }, tipVal, el("span", { class: "tree__meta", text: tipSub })),
+    ),
+    el(
+      "div",
+      { class: "kpi-tile" },
+      el("span", { class: "kpi-tile__label", text: "Storage Budget" }),
+      el("div", { class: "kpi-tile__val" }, quotaVal, el("span", { class: "tree__meta", text: quotaSub })),
+    ),
+  );
+}
+
 function identityCard(node: NodeView): HTMLElement {
   const status = convergenceOf(node, meshTip());
   const s = node.status;
@@ -166,17 +197,26 @@ function ledgerCard(node: NodeView, onBusy: (label: string) => void): HTMLElemen
     ),
     el(
       "div",
-      { class: "row row--between" },
+      { class: "row row--between", style: "margin-top: var(--space-xs);" },
       verdict === null
         ? el("span", { class: "muted", text: "Not verified this session" })
         : el("span", {
             class: verdict.verified ? "muted" : "error-note",
-            text: verdict.verified
-              ? `Verified ${ago(node.lastVerifyMs)} · ${count(verdict.entries_checked)} entries, ${count(verdict.unsigned_entries)} unsigned`
-              : `Failed ${ago(node.lastVerifyMs)} · ${verdict.reason ?? "chain broken"}`,
+            text: `Verified ${ago(node.lastVerifyMs)}`,
           }),
       verifyButton,
     ),
+    verdict !== null &&
+      el(
+        "div",
+        { class: "row", style: "margin-top: var(--space-xxs); flex-wrap: wrap; gap: 4px;" },
+        el("span", { class: "badge", text: `${count(verdict.entries_checked)} checked` }),
+        el("span", { class: "badge", text: `${count(verdict.signed_entries)} signed` }),
+        el("span", { class: "badge", text: `${count(verdict.unsigned_entries)} unsigned` }),
+        verdict.verified
+          ? el("span", { class: "badge", "data-tone": "converged", text: "Intact" })
+          : el("span", { class: "badge", "data-tone": "offline", text: verdict.reason ?? "Broken" }),
+      ),
   );
 }
 
@@ -556,6 +596,7 @@ export function createInspector(): InspectorHandles {
         el("span", { class: "tree__group-label", text: "Inspector" }),
         refresh,
       ),
+      heroKpis(node),
       identityCard(node),
       ledgerCard(node, setBusy),
       detail !== undefined && collectionDetailCard(detail),

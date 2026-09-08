@@ -44,7 +44,14 @@ async function exists(path) {
 
 /** The host target triple, straight from rustc -- the only authority on it. */
 function targetTriple() {
-  const output = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
+  const cargoRustc = join(process.env.USERPROFILE || "", ".cargo", "bin", "rustc.exe");
+  const bin = process.platform === "win32" && exists(cargoRustc) ? cargoRustc : "rustc";
+  let output;
+  try {
+    output = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
+  } catch {
+    output = execFileSync(cargoRustc, ["-vV"], { encoding: "utf8" });
+  }
   const line = output.split("\n").find((l) => l.startsWith("host:"));
   if (line === undefined) throw new Error("rustc -vV did not report a host triple");
   return line.slice("host:".length).trim();

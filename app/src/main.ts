@@ -137,12 +137,22 @@ function build(): void {
   // Header ------------------------------------------------------------------
   const title = el("div", {}, el("p", { class: "header__title", text: "De-Sentry" }), el("p", { class: "header__sub" }));
 
+  // Tree ⇄ Mesh Segmented View Switcher in Header
+  const treeModeBtn = el("button", { type: "button", text: "Tree", "aria-pressed": "true" }, icon(Icons.tree, 13), " Tree");
+  const meshModeBtn = el("button", { type: "button", text: "Mesh", "aria-pressed": "false" }, icon(Icons.mesh, 13), " Mesh");
+  on(treeModeBtn, "click", () => store.setCanvasMode("tree"));
+  on(meshModeBtn, "click", () => store.setCanvasMode("mesh"));
+  const viewSegmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" }, treeModeBtn, meshModeBtn);
+
   const themeButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Appearance" });
   const themes: Theme[] = ["system", "light", "dark"];
-  const themeLabel: Record<Theme, string> = { system: "Auto", light: "Light", dark: "Dark" };
   let theme = storedTheme();
   const paintTheme = () => {
-    themeButton.textContent = themeLabel[theme];
+    replace(
+      themeButton,
+      theme === "light" ? icon(Icons.sun, 14) : theme === "dark" ? icon(Icons.moon, 14) : icon(Icons.refresh, 14),
+      theme === "system" ? " Auto" : theme === "light" ? " Light" : " Dark",
+    );
     applyTheme(theme);
   };
   on(themeButton, "click", () => {
@@ -154,7 +164,7 @@ function build(): void {
   const pairButton = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.shield, 14), "Pair");
   on(pairButton, "click", openPairingSheet);
 
-  const refreshButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Refresh everything" }, icon(Icons.refresh, 14));
+  const refreshButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Refresh everything (Ctrl+R)" }, icon(Icons.refresh, 14));
   on(refreshButton, "click", () => {
     void refreshNodeList();
     void refreshTopology();
@@ -163,6 +173,20 @@ function build(): void {
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 14), "New node");
   on(newButton, "click", () => wizard.open());
 
+  let inspectorCollapsed = false;
+  const inspectorToggle = el(
+    "button",
+    { class: "btn btn--sm btn--ghost", type: "button", title: "Toggle Inspector (Ctrl+I)" },
+    icon(Icons.inspector, 14),
+  );
+  const toggleInspector = () => {
+    inspectorCollapsed = !inspectorCollapsed;
+    if (inspectorCollapsed) root.setAttribute("data-inspector", "collapsed");
+    else root.removeAttribute("data-inspector");
+    inspectorToggle.setAttribute("aria-pressed", String(!inspectorCollapsed));
+  };
+  on(inspectorToggle, "click", toggleInspector);
+
   const busyNote = el("span", { class: "muted" });
 
   const header = el(
@@ -170,10 +194,13 @@ function build(): void {
     { class: "header" },
     title,
     el("span", { class: "header__spacer" }),
+    viewSegmented,
+    el("span", { class: "header__spacer" }),
     busyNote,
     themeButton,
     pairButton,
     refreshButton,
+    inspectorToggle,
     newButton,
   );
 
@@ -244,6 +271,9 @@ function build(): void {
     sidebar.render();
     inspector.render();
 
+    treeModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "tree"));
+    meshModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "mesh"));
+
     // The explorer replaces the canvas when a collection is open: they are two
     // ways of looking at the same node, and showing both halves the room each
     // gets.
@@ -280,6 +310,9 @@ function build(): void {
       store.setCanvasMode("tree");
     } else if (event.key === "2") {
       store.setCanvasMode("mesh");
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
+      event.preventDefault();
+      toggleInspector();
     }
   });
 
