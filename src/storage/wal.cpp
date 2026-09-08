@@ -270,6 +270,7 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
 
 Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
   out->clear();
+  malformed_tail_ = false;
   file_.clear();
   file_.seekg(0);
   unparsed_tail_bytes_ = 0;
@@ -290,18 +291,21 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
     if (body_len < 8 || body_len > kMaxRecordBytes) {
       DSN_LOG_WARN("wal", "implausible record length, stopping replay");
       damaged = true;
+      malformed_tail_ = true;
       break;
     }
     std::string body(body_len, '\0');
     file_.read(body.data(), static_cast<std::streamsize>(body_len));
     if (static_cast<uint32_t>(file_.gcount()) < body_len) {
       DSN_LOG_WARN("wal", "torn record tail detected, stopping replay");
+      malformed_tail_ = true;
       break;
     }
     uint32_t stored_crc = GetU32(body.data() + body_len - 4);
     if (stored_crc != Crc32(body.data(), body_len - 4)) {
       DSN_LOG_WARN("wal", "CRC mismatch, stopping replay (crash-torn record)");
       damaged = true;
+      malformed_tail_ = true;
       break;
     }
     const std::string payload = body.substr(0, body_len - 4);
@@ -316,6 +320,7 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
         damaged = true;
+        malformed_tail_ = true;
         break;
       }
     } else {
@@ -323,6 +328,7 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
         damaged = true;
+        malformed_tail_ = true;
         break;
       }
       migrated_from_v1_ = true;
@@ -385,6 +391,15 @@ WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& 
                     ": " + std::to_string(static_cast<long long>(unparsed)) +
                     " byte(s) could not be parsed";
     return result;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (malformed_tail_) {
+      result.ok = false;
+      result.reason = "WAL contains a malformed or torn record tail";
+      return result;
+    }
   }
 
   std::string expected_prev = GenesisHash();
@@ -482,13 +497,10 @@ StatusOr<WriteAheadLog::PruneResult> WriteAheadLog::Prune(lsn_t checkpoint_lsn) 
     return result;
   }
 
-  // LSNs are renumbered densely and the chain re-derived: a chain with gaps
-  // would fail VerifyChain() on every peer, and preserving the removed links
-  // is impossible by construction.
+  // Preserve the original LSNs so a checkpoint remains a meaningful cursor,
+  // while rebuilding the hash chain from the first surviving record.
   std::string prev = GenesisHash();
-  lsn_t next = 0;
   for (WalRecord& rec : kept) {
-    rec.lsn = next++;
     rec.prev_hash = prev;
     rec.entry_hash = crypto::Sha256(BuildContent(rec) + prev);
     // The origin signature covered the *old* LSN, so it no longer applies.
@@ -504,7 +516,7 @@ StatusOr<WriteAheadLog::PruneResult> WriteAheadLog::Prune(lsn_t checkpoint_lsn) 
   st = RewriteLocked(kept);
   if (!st.ok()) return st;
   tip_hash_ = prev;
-  next_lsn_ = next;
+  next_lsn_ = kept.empty() ? 0 : kept.back().lsn + 1;
   last_checkpoint_lsn_ = kInvalidLsn;
   for (const WalRecord& rec : kept) {
     if (rec.type == WalRecordType::kCheckpoint) last_checkpoint_lsn_ = rec.lsn;

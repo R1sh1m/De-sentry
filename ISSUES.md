@@ -25,6 +25,48 @@ The highest-priority work is:
 4. Wire `buffer_pool_pages` through to the KV backend.
 5. Validate packaged sidecar resolution and node-creation rollback.
 
+## Claude Code execution contract
+
+Use this file as an implementation queue. Do not attempt every item in one
+run. Work in priority order and stop when a prerequisite fails.
+
+For each task:
+
+1. Read `AGENTS.md`, the issue's evidence paths, and the relevant tests.
+2. Reproduce the issue with the smallest existing command before editing.
+3. Make the smallest complete fix; do not rewrite unrelated subsystems.
+4. Add or update an existing assert-based test when behavior changes.
+5. Run the issue's acceptance commands and then the nearest broader suite.
+6. Update this file: change the status, record the command and result, and
+   leave unresolved findings unchanged.
+7. Never claim a platform, installer, model, or integration path is verified
+   unless its command actually ran successfully.
+
+### Task queue
+
+| ID | Task | Depends on | Acceptance command |
+|---|---|---|---|
+| `baseline` | Establish a clean macOS C++ baseline and isolate every failure. | None | `cmake -S . -B build-macos -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build-macos -j && ctest --test-dir build-macos --output-on-failure` |
+| `quota` | Fix node/router quota accounting and status codes. | `baseline` | `./build-macos/quota_test && ./build-macos/router_test` |
+| `storage-hang` | Find and bound the `storage_test` hang. | `baseline` | `./build-macos/storage_test` completes without timeout |
+| `wal-recovery` | Make failed WAL/materialization writes recover consistently. | `baseline` | Focused regression test plus `./build-macos/storage_test` |
+| `buffer-pool` | Thread `buffer_pool_pages` into the KV backend. | `baseline` | Configured values change the backend pool and the relevant test passes |
+| `sidecar` | Align staging, Tauri bundling, and runtime sidecar lookup. | `mac-app` | `npm run tauri:build` and launch the produced app |
+| `node-rollback` | Make node creation clean up ports/processes/artifacts on failure. | `mac-app` | Failure-injection tests and repeated create/cancel attempts |
+| `path-allowlist` | Restrict `reveal_path` to approved canonical roots. | `mac-app` | Traversal, symlink, and outside-root tests |
+| `coverage` | Make Docker and repository test commands run all suites. | `baseline` | Container and unified test command run all nine C++ suites |
+| `ci` | Add CI for C++, app, Rust, and bounded integration smoke tests. | `coverage` | Pull-request workflow passes on a clean checkout |
+
+When completing a task, use this record format in the issue entry:
+
+```text
+Status: Fixed / Reproduced / Blocked / Not reproducible
+Changed: exact files
+Reproduction: exact command
+Acceptance: exact command and result
+Remaining: what is still unverified
+```
+
 ## Priority 0 — correctness blockers
 
 | Status | Issue | Evidence | Impact | Next action |
@@ -246,6 +288,183 @@ status:
 - Admission token-bucket behavior has not been measured under load.
 - Installer update/upgrade behavior has not been tested.
 
+## macOS bring-up and release procedure
+
+This is the exact order for achieving a working De-Sentry build on macOS.
+Run commands from the repository root unless the command begins with `cd`.
+Do not skip ahead to the Tauri installer until the engine and sidecar checks
+are green.
+
+### 1. Install prerequisites
+
+```bash
+xcode-select --install
+brew install cmake openssl@3 node rust python
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+```
+
+Confirm the toolchain:
+
+```bash
+clang++ --version
+cmake --version
+openssl version
+node --version
+npm --version
+rustc --version
+cargo --version
+python3 --version
+```
+
+If Homebrew is not installed, install it from
+`https://brew.sh/`, then repeat the package command. Do not install Python
+packages for the repository's standard integration tests; they intentionally
+use the standard library.
+
+### 2. Configure and build the engine
+
+```bash
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+cmake -S . -B build-macos \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DDESENTRY_BUILD_TESTS=ON
+cmake --build build-macos --parallel
+```
+
+Optional SQLite, sqlite-vec, DuckDB, and LMDB backends remain disabled unless
+their sources already exist under `third_party/`. Never make the build fetch
+them automatically.
+
+### 3. Run the C++ validation
+
+Run the complete suite with a bounded shell loop so one hanging binary does
+not block the entire run:
+
+```bash
+for test in acl_test crdt_test crypto_test ledger_v2_test network_test \
+            placement_test quota_test router_test storage_test; do
+  echo "=== $test ==="
+  perl -e 'alarm 120; exec @ARGV' "./build-macos/$test" || exit $?
+done
+```
+
+Then run CTest for the canonical report:
+
+```bash
+ctest --test-dir build-macos --output-on-failure
+```
+
+If a test fails, do not run the full release procedure. Record the exact
+binary, assertion, and command under the corresponding issue. If `perl` is
+unavailable, use a macOS-compatible process timeout or run the binary in a
+separate Terminal and terminate it explicitly.
+
+### 4. Run the local mesh and integration tests
+
+```bash
+cmake --build build-macos --parallel
+./scripts/run_cluster.sh 3 --supervisor --engines kv,ts_rollup
+```
+
+In another terminal, run the standard-library integration suites:
+
+```bash
+python3 tests/integration/transit_replay_test.py
+python3 tests/integration/airplane_mode_test.py
+python3 tests/integration/usb_node_test.py
+python3 tests/integration/soak_test.py --nodes 12 --writes 150 --chaos 3
+```
+
+Run the optional cluster suite only when its pre-start requirement is met:
+
+```bash
+python3 tests/integration/cluster_integration_test.py
+```
+
+Always clean up the mesh:
+
+```bash
+./scripts/stop_cluster.sh
+```
+
+### 5. Build and validate the frontend
+
+```bash
+cd app
+npm install
+npm run typecheck
+npm run check:qr
+npm run check:css
+npm run build
+cd ..
+```
+
+The app must remain dependency-free at runtime. Do not add a frontend
+framework or runtime package to solve an issue.
+
+### 6. Build the macOS desktop app without ONNX first
+
+Use the fallback path to validate the Tauri shell and sidecar independently
+of the model:
+
+```bash
+cd app
+npm run stage-sidecar
+npm run tauri:dev -- -- --no-default-features
+```
+
+Verify that the window opens, the supervisor starts, the hardware scan
+returns volumes, and the UI reports fallback sizing honestly. Stop the app
+with `Ctrl-C` and return to the repository root.
+
+### 7. Validate the ONNX path explicitly
+
+The model is an explicit build-time download, not a runtime dependency:
+
+```bash
+cd app
+npm run fetch-model
+npm run tauri:dev
+```
+
+Confirm model resources exist before building:
+
+```bash
+find resources/model -maxdepth 2 -type f -print
+test -f resources/prototypes.json
+```
+
+Exercise at least two concurrent sizing requests and verify that a missing
+model uses the deterministic fallback instead of pretending to use ONNX.
+
+### 8. Produce and inspect the macOS installer
+
+```bash
+cd app
+npm run tauri:build
+```
+
+The result should include a `.app` and a `.dmg` under `app/src-tauri/target/`.
+Install or open the `.app`, create a node through the wizard, verify the
+supervisor sidecar, then inspect the packaged sidecar name and runtime logs.
+If staging and runtime lookup disagree, stop and fix task `sidecar`.
+
+### 9. macOS completion checklist
+
+Do not mark macOS complete until all of these are true:
+
+- `cmake --build build-macos --parallel` passes.
+- All nine C++ test binaries finish within their timeout.
+- `ctest --test-dir build-macos --output-on-failure` passes.
+- Transit, airplane-mode, USB, and bounded soak tests pass.
+- Frontend typecheck, QR check, CSS check, and build pass.
+- Tauri fallback mode launches and starts the sidecar.
+- ONNX mode loads the model, or the limitation is explicitly recorded.
+- The node-creation wizard succeeds end to end.
+- A `.dmg` is produced and the packaged app starts.
+- `ISSUES.md` records commands that were not run; none are implied green.
+
 ## Documented engine limitations
 
 These are known design limits, not automatically bugs:
@@ -283,8 +502,8 @@ patterns are not guaranteed.
 
 ## Current local worktree
 
-The current branch is aligned with `origin/main`. The remaining unstaged local
-changes are:
+Before this execution pass, the branch was aligned with `origin/main` and the
+following local changes were pending:
 
 ```text
 app/src-tauri/src/ai.rs
@@ -294,7 +513,9 @@ src/storage/wal.cpp
 
 The ONNX change serializes access to the inference session but the ONNX path
 has not been built or run. The WAL changes affect durable recovery, pruning,
-verification, and LSN behavior; they remain unpushed pending focused tests.
+verification, and LSN behavior. Committing these files does not mean those
+paths are fully verified; the task queue and acceptance commands above remain
+authoritative.
 
 ## Recommended execution order
 

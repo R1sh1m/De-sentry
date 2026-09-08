@@ -465,7 +465,7 @@ mod onnx {
     }
 
     pub struct Model {
-        session: ort::session::Session,
+        session: std::sync::Mutex<ort::session::Session>,
         tokenizer: tokenizers::Tokenizer,
     }
 
@@ -492,7 +492,7 @@ mod onnx {
             let tokenizer = tokenizers::Tokenizer::from_file(&resources.tokenizer)
                 .map_err(|error| ModelError::Tokenizer(error.to_string()))?;
 
-            Ok(Self { session, tokenizer })
+            Ok(Self { session: std::sync::Mutex::new(session), tokenizer })
         }
 
         /// One sentence to one L2-normalised 384-dim vector.
@@ -540,8 +540,11 @@ mod onnx {
             let token_type_ids = Value::from_array((shape, types.clone()))
                 .map_err(|error| ModelError::Inference(error.to_string()))?;
 
-            let outputs = self
+            let mut session = self
                 .session
+                .lock()
+                .map_err(|_| ModelError::Inference("ONNX session lock poisoned".to_owned()))?;
+            let outputs = session
                 .run(ort::inputs![
                     "input_ids" => input_ids,
                     "attention_mask" => attention_mask,
