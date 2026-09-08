@@ -1,0 +1,114 @@
+# De-Sentry release builds: engine + desktop app + installers, on every tag.
+#
+# Push a tag (`git tag v2.0.1 && git push origin v2.0.1`) and this produces a
+# draft GitHub Release with the installers attached: MSI (Windows), .dmg
+# (macOS), AppImage/.deb (Linux). No toolchain needed on the user's machine.
+#
+# Windows builds on MSVC (the supported Tauri path); the GNU MinGW toolchain
+# works locally for development but cannot link the mobile `cdylib` target,
+# so CI stays on MSVC everywhere. The Tauri bundler self-provisions WiX.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-engine-test:
+    # The engine and its suites gate the release: no installer is produced
+    # from a tree whose tests are red.
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja openssl@3 pkg-config
+
+      - name: Configure and build the engine
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: Run the C++ test suites
+        run: ctest --test-dir build --output-on-failure
+
+  release:
+    needs: build-engine-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          - os: ubuntu-22.04
+            args: ""
+          - os: macos-latest
+            args: "--target universal-apple-darwin"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja openssl@3 pkg-config
+
+      - name: Install Rust (MSVC on Windows)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust targets for macOS universal binary
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build the engine
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: App setup (deps, sizing model, sidecar staging)
+        working-directory: app
+        run: |
+          npm ci
+          npm run fetch-model
+          npm run stage-sidecar
+
+      - name: Build and release the app
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: "De-Sentry ${{ github.ref_name }}"
+          releaseBody: "See STATUS.md for what was verified in this build."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

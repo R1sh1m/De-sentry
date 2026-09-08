@@ -485,6 +485,31 @@ small, fixable ways.
   `desentryd` on 7701/7801 whose `/_supervisor/topology` returns a real
   volume scan. MSI payload re-verified file-by-file (7 files, 80 MB).
 
+## 4e. Packaging and easy-run work (2026-09-08, later)
+
+- **`scripts/setup.ps1` / `setup.sh`: one-command bootstrap.** Checks
+  prerequisites (with install hints, plus `-Install` via winget on
+  Windows), configures and builds the engine, runs `npm install`,
+  `fetch-model` and `stage-sidecar`, then prints next steps. Idempotent;
+  recovers from a stale CMake cache (generator/toolchain switch) by
+  wiping and retrying once. Verified by running it end to end.
+- **`npm run tauri:dev` stages the sidecar first.** Previously dev ran
+  against whatever sidecar was last staged (possibly weeks stale); the
+  dev loop now rebuilds it every launch, like `tauri:build` always did.
+  Verified: vite up on :5273, debug app compiled, linked and opened its
+  window.
+- **`.github/workflows/release.yml`: tagged releases build installers.**
+  Engine gate (build + `ctest` on Windows/Linux/macOS), then per-OS
+  `tauri-action` producing a draft Release (MSI/.dmg/AppImage/.deb).
+  YAML-validated; runners untested (no CI run yet -- first `v*` tag
+  exercises it).
+- **README quickstart rewritten user-first:** installer download, then
+  one-command setup, then manual steps.
+- Orphan hygiene found during verification: killed leaked `desentryd`
+  processes from earlier interrupted runs (stale `.pid` files had hidden
+  them from `stop_cluster.ps1`) and duplicate GUI instances, keeping one
+  release app + its supervisor.
+
 ## 5. Known limits (stated plainly)
 
 **Engine**

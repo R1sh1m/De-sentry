@@ -137,7 +137,37 @@ bug — please report it.
 
 ## Quickstart
 
-### Build from source
+### Just run it (no toolchain)
+
+Download the installer for your OS from the
+[Releases page](https://github.com/R1sh1m/De-sentry/releases) (Windows MSI,
+macOS .dmg, Linux AppImage/.deb -- published automatically for every `v*`
+tag by `.github/workflows/release.yml`). Install, open De-Sentry, and create
+your first node in the wizard. Everything -- engine, sidecar, sizing model --
+is inside the installer; the app works with no internet.
+
+### One-command setup from source
+
+After cloning, a single script checks prerequisites, builds the engine,
+installs app dependencies, fetches the sizing model once, and stages the
+sidecar. Re-run it after any pull; every step is idempotent:
+
+```powershell
+.\scripts\setup.ps1        # Windows (add -Install to try winget for missing tools)
+```
+
+```bash
+./scripts/setup.sh          # Linux / macOS
+```
+
+Then either a headless mesh or the desktop app:
+
+```powershell
+.\scripts\run_cluster.ps1 -Nodes 3   # API on 7701-7703; stop with .\scripts\stop_cluster.ps1
+cd app; npm run tauri:dev            # desktop control room (dev)
+```
+
+### Build from source (manual steps)
 
 > Prerequisites: see [above](#prerequisites) — CMake ≥ 3.16, a C++17 compiler,
 > and OpenSSL **development headers**.
