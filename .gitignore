@@ -77,7 +77,10 @@ brain_*.json
 # Node config with local IPs/ports (use config/node.example.json instead)
 node_profile.toml
 
-# Routing ledger and change ledger data files
+# Routing ledger and change ledger data files (runtime data -- not the
+# src/ledger/ and include/desentry/ledger/ sources, which are tracked; the
+# leading slash anchors these patterns to the repo root for exactly that
+# reason, since a bare name would match source directories at any depth).
 /ledger/
 /transit/
 

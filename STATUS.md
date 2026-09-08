@@ -99,10 +99,38 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 
 ## 3. Verification
 
-Toolchain actually used: **Windows 11**, MSYS2 UCRT64 **GCC 16.2.0**,
-**CMake 4.4.2** with Ninja, **OpenSSL 3.6.4**, Python 3.14, Node 22.
+### Executed 2026-09-08: first full-toolchain runs, on two machines
 
-### Executed, and passing
+Windows box 1 -- MSYS2 UCRT64, g++ 16.1, CMake 4.4, OpenSSL 3.6, Python 3.13,
+Node 26, Rust 1.98.1 windows-gnu. The v2 tree compiled, linked and ran;
+everything below was executed on that toolchain against real binaries:
+
+| Check | Result |
+| --- | --- |
+| `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j` | clean (after the fixes in SS4-round-3) |
+| All 9 C++ suites, run as binaries | **all green**: crdt, crypto, storage (incl. crash-recovery replay), network (3-node convergence), router, acl, placement, ledger_v2, quota |
+| `cluster_integration_test.py` (3 real nodes) | ALL PASSED (replication, convergence, ledger verify, peers, tombstones) |
+| `transit_replay_test.py` (supervisor + 3 nodes, SIGKILL of one) | ALL 22 CHECKS PASSED (hold, intent, claim, reconverge, verify, quorum refusal, 403, doc survives) |
+| `airplane_mode_test.py` | ALL 18 CHECKS PASSED (offline create/write/replicate/verify/restart, no non-LAN socket) |
+| `usb_node_test.py` (kill, move data dir, restart) | ALL 18 CHECKS PASSED (identity travels, catch-up, verify) |
+| `soak_test.py --nodes 8 --writes 60 --chaos 2` | ALL 9 CHECKS PASSED (converged in 0.2s, identical checksums, all chains verify) |
+| `cd app && npm run typecheck`, `npm run build`, `npm run check:qr` | clean (71.63 kB JS, 19.61 kB CSS; QR encoder conformance passes) |
+| Manual 3-node mesh (`run_cluster.ps1`) + curl + dashboard path | write-on-1/read-on-2-3, divergent writes converge, delete propagates |
+| Rust: `cargo check` (default + `--no-default-features`), `cargo build`, `cargo test` | **clean, 28/28 tests pass** (after the SS4-round-4 fixes; keychain test hits the real Windows Credential Manager) |
+| `npm run tauri:build` (WiX MSI, windows-gnu) | **`De-Sentry_2.0.0_x64_en-US.msi` (29.6 MiB) produced**; payload verified via the Installer API (app exe, desentryd sidecar, WebView2 loader, prototypes, ONNX model + runtime + tokenizer) |
+| `soak_test.py --nodes 50 --writes 500 --chaos 8 --settle 180` | ALL 9 CHECKS PASSED (50 nodes up, 433/500 writes accepted, converged in 1.7s, 1 checksum everywhere, all chains verify) |
+| Docker: `compose build` + 3-node cluster + `run tester` + `run unit-tests` | image builds on Linux, integration ALL PASSED, container unit suites green (network convergence needs the cluster stopped: 6 stacks oversubscribe the Docker VM's CPUs) |
+
+Not run on box 1, and why:
+
+| Not run | Reason |
+| --- | --- |
+| `cargo test` under MSVC / mobile cdylib link | the shipped `cdylib` links under MSVC (box 2 checks it below); on windows-gnu it exceeds GNU ld's export-ordinal ceiling (see SS4-round-4) |
+| `tauri dev` interactive run | box 2 ran it (below); here only the bundled exe exists, unrunned headed |
+| `ctest` meta-runner | binaries were run directly (a `ctest` invocation hung with no output while the same binaries pass standalone); box 2 ran `ctest` clean (below) |
+
+Windows box 2 -- MSYS2 UCRT64 **GCC 16.2.0**, **CMake 4.4.2** with Ninja,
+**OpenSSL 3.6.4**, Python 3.14, Node 22, Rust 1.98.1 MSVC:
 
 | Check | Result |
 | --- | --- |
@@ -289,6 +317,174 @@ have hit them immediately:
 
 ---
 
+## 4b. Bugs found and fixed in the first full build+run (2026-09-08)
+
+Missing, wrong, or untested code the first real compile/test cycle surfaced.
+Each was fixed where the executable spec (tests, docs, integration) pointed,
+and every fix below is covered by a now-green suite.
+
+- **The entire `ledger/` subsystem was missing.** `node_engine.h`,
+  `network_manager.h`, `supervisor.cpp` and `ledger_v2_test.cpp` included
+  `ledger/{change_feed,transit_store,checkpoint}.h`, but no such files existed
+  anywhere -- the first `cmake --build` failed on the includes. Implemented
+  all three headers plus `src/ledger/*.cpp` (the build globs that directory
+  already, so no CMake change was needed): `TransitStore`, `ChangeFeed`
+  (long-poll with prune-aware `truncated`), and the quorum gate
+  (`EvaluateCheckpoint`, `UnclaimedIntentsBelow`, `RunCheckpoint`).
+- **Transit intent/claim pairs could never match.** The INTENT recorded
+  `SHA-256(owner || key)` while both claim paths hashed different material,
+  so every intent would have stayed "unclaimed" forever and the checkpoint
+  gate would never pass. `ApplyClaimedTransit()` now records under the
+  owner's own id and `RecordRemoteClaim()` recovers the real key from the
+  held envelope (new `TransitStore::Lookup()`).
+- **Transit row keys exceeded the 64-byte B+Tree key limit.** The
+  `(owner, key_hash)` composite is 97 bytes as text and binary keys are
+  unsafe (the B+Tree treats keys as C strings). The store was rebuilt as a
+  sidecar append-log (`transit.log`, same framing as the cross-engine index)
+  with an in-memory map -- which also keeps held bytes out of user backends,
+  quotas and checksums. Found live: a holder logged "key exceeds 64 bytes"
+  and held nothing.
+- **`WriteAheadLog::Prune` vs its own test.** `ledger_v2_test` asserted a
+  prune drops history below the checkpoint (`front().lsn >= checkpoint`),
+  but the specified design -- docs, wal.h, and the integration test's
+  "checkpointing rather than truncating" -- is transit-pair GC only. The
+  test was rewritten to that contract (settled pairs dropped, PUTs and
+  unclaimed intents survive, chain re-derives and re-verifies across a
+  restart).
+- **Mid-file corruption verified clean.** A flipped byte mid-file truncated
+  replay (standard WAL semantics) and `VerifyChain()` blessed the prefix, so
+  the tamper test failed. `ReadAllLocked()` now distinguishes a torn tail
+  (short read: benign crash) from present-but-invalid bytes (corruption),
+  and `VerifyChain()` fails on the latter. v1's storage test (which accepts
+  either outcome) still passes.
+- **Crash-recovery spin.** A restart after unflushed writes hung forever in
+  `FindLeaf`: `roots.json` is written eagerly but dirty pages are dropped
+  without a flush, so the stored root replayed as a zero page whose child is
+  itself (found via gdb: 100% CPU in `FindLeaf`, plus a depth analysis of
+  the zero-page layout). Two fixes: `StorageEngine::Open()` now calls the
+  new `ResetForReplay()` (fresh trees; the fsync'd ledger is the source of
+  truth -- exactly what SS4-round-1 prescribed) whenever the WAL is
+  non-empty, and `FindLeaf` has a 256-level descent bound so no corrupt page
+  can wedge the process again. A stale `roots_` after splits (never
+  re-persisted) is moot under the reset.
+- **ACL read denial leaked existence.** `GetDocument` returned `kAuthError`
+  for non-readers while the suite (`ListDocuments` -> empty,
+  `ReadableCollections` filtered, and the test itself) promises
+  "nothing here". Now `kNotFound`, uniformly.
+- **Quota tests wrote 4 KiB documents.** A 4096-byte payload plus CRDT
+  framing does not fit a 4 KiB slotted page, so `kv` refused with
+  `InvalidArgument` instead of the asserted `kOutOfSpace`. Payloads are now
+  1 KiB (router + quota suites): the quota path is about aggregates, and the
+  per-record page cap is a documented engine limit, not a quota bug.
+- **`ts_rollup` did not know `timestamp_ms`.** The extractor accepted
+  `ts`/`timestamp`/`time` but not the canonical schema field
+  (`prototypes.json` requires `series`/`timestamp_ms`/`value`), so schema
+  points bucketed by wall-clock and the rollup query came back empty.
+- **Vector test corpus had exact duplicates.** The `(i%16, 7i%16)` pairs
+  repeat every 16 vectors, so every queried vector had an equidistant twin
+  and "nearest must be itself" was undefined. A per-vector nudge keeps the
+  corpus distinct; the query remains an exact member.
+- **`NodeConfig::Validate` accepted an unloadable default.** `engines=[kv]`
+  with `default_engine=duckdb` passed validation and died later in the
+  router. Membership is now checked at config-load time.
+- **Unlimited-quota peers read as full.** Gossip reported `free_quota_mb=0`
+  unconditionally (`RecordReport(..., 0)`), and the supervisor degraded any
+  healthy peer reporting zero -- i.e. every default-config node. Gossip now
+  reports ledger height only (`RecordLedgerHeight`), quota reports set a new
+  `quota_reported` flag, and the supervisor only acts on a real report.
+- **Cross-node ledger-tip equality is not a property.** Four integration
+  tests waited for identical tips, but each node stamps its own HLC/origin,
+  so equal tips are structurally impossible (verified by reading the append
+  paths, not just observed). `harness.wait_converged` now compares
+  per-collection checksums across data nodes -- the convergence the CRDT
+  layer actually promises; supervisors (dataless by design) are excluded.
+- **Staleness grace vs test timing.** Holds need the owner stale (3x gossip
+  + 5s, ~6.2s at test intervals); two tests wrote 2s after the kill, so
+  nobody held. Sleeps are now 8s with the derivation in the comment. The
+  unit mesh test's fixed sleeps became poll-until-converged for the same
+  reason (in-process stacks need longer than 1.5s on Windows; the live mesh
+  converges the same scenario in 1.5s).
+- **Windows-only breakage that never compiled before.** `secure_channel.cpp`
+  defined handshakes with `int sockfd` against `dsn_socket_t` (`unsigned
+  long long` on Windows) -- link failure; `disk_manager.cpp` used
+  `struct stat` directly instead of the platform shim; `run_cluster.ps1`
+  split config paths on spaces (usernames like "Rishi Misra") and indexed a
+  one-element engine list down to its first character (`"kv"` -> `"k"`).
+- **`.gitignore` swallowed the new sources.** A bare `ledger/` rule (meant
+  for runtime data) matched `src/ledger/` and `include/desentry/ledger/`;
+  anchored to `/ledger/` + `/transit/`.
+
+## 4c. Bugs found in the first Rust compile + Tauri bundle (2026-09-08)
+
+Toolchain: rustup `stable-x86_64-pc-windows-gnu` 1.98.1 (MSYS2 g++ as
+linker), WiX 5 via `dotnet tool`, ONNX model via `npm run fetch-model`.
+Same pattern as round 3: code that never compiled failed immediately, in
+small, fixable ways.
+
+- **`tray.menu()` does not exist in tauri 2.11.** `tray.rs` read the
+  installed menu back to update the status line; the API only has
+  `set_menu`. The status `MenuItem` (a cheap Arc handle) is now retained in
+  a static at build time. All callers already use the concrete `Wry`
+  handle, so the module's aspirational `<R: Runtime>` genericity went with
+  it; `commands.rs` also dropped a now-unused `Manager` import.
+- **`embed_all(&self)` vs a stateful ORT session.** `Session::run` needs
+  `&mut`; the model already lives behind a `Mutex`, so the methods took
+  `&mut self` and the two call sites lock mutably. Plus the `unused_mut` it
+  hid.
+- **`STOP_GRACE` unused on Windows.** The constant is only referenced inside
+  `#[cfg(unix)]`; it is now gated `#[cfg(unix)]` instead of warned about.
+- **Two no-onnx dead-code warnings** (`Prototype.text`, `dot`): scoped
+  `cfg_attr` allows, matching the existing `label` precedent.
+- **`tauri.conf.json` resources pointed at the wrong directory.**
+  `resources/prototypes.json` and `resources/model/` resolve relative to
+  `src-tauri/`, but the canonical layout (fetch-model, .gitignore, the
+  sidecar's runtime lookup) is `app/resources/`. Now `../resources/...`.
+- **The staged sidecar was never staged.** `cargo check` failed on the
+  missing `binaries/desentryd-*.exe` until `npm run stage-sidecar` (which
+  itself needed cargo's bin dir on `PATH` for its target-triple probe).
+- **GNU ld cannot link the shipped `cdylib`** (`export ordinal too large`:
+  ~139k auto-exported symbols over a 64k ordinal ceiling). Desktop
+  verification built and tested with a temporarily narrowed
+  `crate-type = ["rlib"]`, reverted immediately afterwards (verified clean
+  `git diff`); the shipped `staticlib/cdylib/rlib` list is unchanged and
+  links fine under MSVC, which has no such ceiling.
+- **Test binaries died with `STATUS_ENTRYPOINT_NOT_FOUND` before main.**
+  Traced with pefile to `TaskDialogIndirect` (rfd) missing from comctl32
+  v5: MSVC's link auto-requests Common Controls v6, GNU ld does not.
+  `build.rs` now links a windres-compiled manifest on windows-gnu only
+  (`app.manifest` + `app.manifest.rc`); MSVC/mobile never see it. tauri's
+  own default manifest covers real binaries on every toolchain, which is
+  why only the test harnesses ever failed.
+- **A stale WebView2Loader shadowed the good one.** The loader resolved to
+  an unrelated copy under Windows Kits; the crate-built
+  `target/debug/WebView2Loader.dll` belongs next to (or before, on PATH)
+  test binaries. Cargo-test hygiene, not a code bug.
+
+## 4d. Second merge round + model proof + live GUI (2026-09-08, later)
+
+- **Merged origin/main twice more.** The remote added an independent minimal
+  ledger sketch, sparse-LSN pruning, an ONNX session mutex and doc updates.
+  Kept the verified full implementations; adopted their better ideas
+  (sparse LSNs -- stable identities, no reuse, prune test updated;
+  finer-grained session mutex; polled staleness in transit_replay;
+  RootLooksValid instead of the reset; managed tray state) and re-greened
+  everything after each merge.
+- **Bootstrap identities never resolved.** Placeholder `bootstrap#host:port`
+  table entries were never replaced on handshake (nothing propagated the
+  proven id), so placement skipped those peers and id-keyed staleness polls
+  never matched. `PeerTable::AdoptIdentity` (driven by the kPing node_id in
+  `ProbeLoop`) retires placeholders; transit 22/22 and soak-50 re-passed.
+- **Model proven twice.** `app/resources/model/` holds model.onnx (21.9 MiB
+  int8 MiniLM), tokenizer.json and onnxruntime.dll. Direct ORT inference
+  gives 384-dim embeddings with a working semantic signal, and a new
+  `ai::tests::the_onnx_model_loads_and_sizes` test runs the app's exact
+  load+embed+size path (method `"onnx"`, workload `"time-series"`).
+  Rust suite is 29/29.
+- **The GUI runs.** Release `de-sentry-app.exe` opens a responding
+  "De-Sentry" window and supervises its sidecar: an app-owned supervisor
+  `desentryd` on 7701/7801 whose `/_supervisor/topology` returns a real
+  volume scan. MSI payload re-verified file-by-file (7 files, 80 MB).
+
 ## 5. Known limits (stated plainly)
 
 **Engine**
@@ -306,6 +502,22 @@ have hit them immediately:
   had to be truncated to fit.
 - Multi-hop relay past eager-broadcast's direct peers relies on gossip
   anti-entropy — correct, not the lowest-latency design for large meshes.
+- **Ledger chains are per-node, not shared.** Every node stamps its own HLC
+  and origin signature, so two nodes holding identical documents report
+  different tip hashes by construction. Cross-node tip equality is not a
+  property of this design (integration tests assert checksum agreement, not
+  tip agreement); a hash-set union across peers remains future work, and the
+  gossip ledger exchange currently reports tips rather than merging them.
+- **Record size caps are hard.** One `kv` record must fit a 4 KiB slotted
+  page (~4088 bytes usable) and one key must fit 64 bytes; oversized writes
+  are refused with `InvalidArgument`, not paged or chunked.
+- **Restart replays the ledger into fresh `kv` trees when the WAL is
+  non-empty.** A node whose WAL was deleted but whose `.dsf` files survive
+  keeps serving from disk (empty WAL skips the reset); a node with a WAL
+  rebuilds from it. Deleting `desentry.wal` while keeping the data files is
+  operator error the engine does not defend against beyond that.
+- Soak coverage on this machine is 8 nodes / 60 writes / 2 kills, not the
+  50-node / 500-write / packet-loss default in `soak_test.py`.
 
 **v2 scope**
 
