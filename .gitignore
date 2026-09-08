@@ -78,8 +78,8 @@ brain_*.json
 node_profile.toml
 
 # Routing ledger and change ledger data files
-ledger/
-transit/
+/ledger/
+/transit/
 
 # Benchmark temp file
 .bench_tmp
