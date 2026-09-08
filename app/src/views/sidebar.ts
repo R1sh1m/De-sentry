@@ -1,30 +1,24 @@
 /**
- * The sidebar: Device -> Directory/USB -> Node.
+ * The sidebar: Device -> Directory/USB -> Node -> Collection.
  *
  * Grouping is by *where the storage lives*, not by node name, because that is
  * the question an operator actually has when something is wrong -- "which
- * disk, which stick, which machine". Three groups, in a fixed order:
+ * disk, which stick, which machine".
  *
- *   This device   -- nodes whose data directories are siblings under the app's
- *                    data root, grouped by parent directory.
- *   Removable     -- nodes on detected removable mounts, grouped by mount path,
- *                    including mounts with no node yet (a stick you could
- *                    provision onto is worth showing).
- *   On the network -- peers this mesh knows about that we do not run, grouped
- *                    by advertised hostname when there is one and by host
- *                    address when there is not.
- *
- * A group with nothing in it is still drawn if the hardware exists, so an
- * empty USB stick is visible as an offer rather than an absence.
+ * Includes instant search filtering and expandable collection trees.
  */
 
 import type { MountPoint, TopologyPeer } from "../api.js";
 import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
-import { bytes, shortNode } from "../util/format.js";
+import { bytes, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 
 /** Collapsed groups, remembered for the session only. */
 const collapsed = new Set<string>();
+/** Expanded nodes showing their collections. */
+const expandedNodes = new Set<string>();
+/** Current search query for filtering sidebar items. */
+let filterQuery = "";
 
 interface Group {
   id: string;
@@ -36,7 +30,6 @@ interface Group {
   peers: TopologyPeer[];
 }
 
-/** The last path segment of a data directory, for a compact group label. */
 function parentDir(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
   const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
@@ -63,7 +56,6 @@ function buildGroups(): Group[] {
     return group;
   };
 
-  // Removable mounts first, so a stick with no node still appears.
   for (const mount of topology?.mounts ?? []) {
     if (!mount.removable) continue;
     const group = ensure(`mount:${mount.path}`, mount.label || mount.path, mount.path, "mount");
@@ -71,7 +63,7 @@ function buildGroups(): Group[] {
   }
 
   for (const node of state.nodes.values()) {
-    if (node.process.supervisor) continue; // control plane; shown in the header, not the tree
+    if (node.process.supervisor) continue;
     if (node.process.removable) {
       const mount = (topology?.mounts ?? []).find(
         (m) => m.removable && node.process.data_dir.startsWith(m.path),
@@ -87,7 +79,6 @@ function buildGroups(): Group[] {
     }
   }
 
-  // LAN peers we do not run ourselves.
   const ours = new Set([...state.nodes.keys()]);
   for (const peer of topology?.lan_peers ?? []) {
     if (ours.has(peer.node_id) || peer.supervisor) continue;
@@ -119,23 +110,33 @@ function statusLabel(status: Convergence): string {
   }
 }
 
-/** The dot's data-status attribute reuses the four hues; diverged rings offline. */
 function dot(status: Convergence): HTMLElement {
   const node = el("span", { class: "dot", "data-status": status, role: "img" });
   node.setAttribute("aria-label", statusLabel(status));
   return node;
 }
 
-function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement {
+function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[] {
   const selection = store.state.selection;
-  const selected = selection.kind === "node" && selection.nodeId === node.process.node_id;
+  const isNodeSelected = selection.kind === "node" && selection.nodeId === node.process.node_id;
   const status = convergenceOf(node, tip);
   const name = node.process.node_name || shortNode(node.process.node_id);
+  const collections = node.brain?.collections ?? [];
+  const isExpanded = expandedNodes.has(node.process.node_id) || (filterQuery !== "" && collections.length > 0);
 
   const meta =
     status === "offline"
       ? node.unreachableReason || node.process.last_error || "not running"
-      : `${node.status?.collections ?? node.brain?.collections.length ?? 0} collections`;
+      : `${collections.length} coll`;
+
+  const chevron = collections.length > 0
+    ? (() => {
+        const c = icon(Icons.chevronRight);
+        c.setAttribute("class", "tree__chevron");
+        c.setAttribute("data-expanded", String(isExpanded));
+        return c;
+      })()
+    : el("span", { style: "width: 10px; flex: none;" });
 
   const row = el(
     "div",
@@ -144,28 +145,75 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement {
       "data-depth": "2",
       role: "treeitem",
       tabindex: "0",
-      "aria-selected": String(selected),
-      title: node.process.data_dir,
+      "aria-selected": String(isNodeSelected),
+      title: `${name} — ${node.process.data_dir}`,
     },
+    chevron,
     dot(status),
     el("span", { class: "tree__label", text: name }),
     el("span", { class: "tree__meta", text: meta }),
   );
 
-  const select = () => store.select({ kind: "node", nodeId: node.process.node_id });
-  on(row, "click", select);
+  const toggleOrSelect = (e: MouseEvent | KeyboardEvent) => {
+    // If clicking the chevron, toggle expansion; otherwise select node
+    const target = e.target as HTMLElement;
+    if (target.closest(".tree__chevron") && collections.length > 0) {
+      e.stopPropagation();
+      if (expandedNodes.has(node.process.node_id)) expandedNodes.delete(node.process.node_id);
+      else expandedNodes.add(node.process.node_id);
+      store.notify();
+      return;
+    }
+    store.select({ kind: "node", nodeId: node.process.node_id });
+  };
+
+  on(row, "click", (e) => toggleOrSelect(e));
   on(row, "keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      select();
+      toggleOrSelect(event);
     }
   });
-  return row;
+
+  const rows: HTMLElement[] = [row];
+
+  // If expanded, render collections under this node
+  if (isExpanded && collections.length > 0) {
+    for (const c of collections) {
+      if (filterQuery && !c.name.toLowerCase().includes(filterQuery.toLowerCase()) && !name.toLowerCase().includes(filterQuery.toLowerCase())) {
+        continue;
+      }
+      const isColSelected = selection.kind === "collection" && selection.nodeId === node.process.node_id && selection.collection === c.name;
+      const colRow = el(
+        "div",
+        {
+          class: "tree__row",
+          "data-depth": "3",
+          role: "treeitem",
+          tabindex: "0",
+          "aria-selected": String(isColSelected),
+          title: `${c.name} (${engineLabel(c.engine)}) — ${c.document_count} documents`,
+        },
+        el("span", { class: "dot", style: "background: var(--color-primary); width: 6px; height: 6px;" }),
+        el("span", { class: "tree__label mono", text: c.name }),
+        el("span", { class: "badge", text: `${c.document_count}d` }),
+      );
+
+      const openCol = () => {
+        store.select({ kind: "collection", nodeId: node.process.node_id, collection: c.name });
+      };
+      on(colRow, "click", openCol);
+      on(colRow, "keydown", (e) => {
+        if (e.key === "Enter") openCol();
+      });
+      rows.push(colRow);
+    }
+  }
+
+  return rows;
 }
 
 function peerRow(peer: TopologyPeer): HTMLElement {
-  // A peer we do not run is informational: we can see its state and freshness
-  // but cannot open, stop or edit it, so the row is not selectable.
   const status: Convergence = peer.state === "running" ? "converged" : "offline";
   return el(
     "div",
@@ -177,6 +225,7 @@ function peerRow(peer: TopologyPeer): HTMLElement {
       "aria-disabled": "true",
       title: `${peer.host}:${peer.p2p_port} — not managed by this device`,
     },
+    el("span", { style: "width: 10px; flex: none;" }),
     dot(status),
     el("span", { class: "tree__label", text: shortNode(peer.node_id, 12) }),
     el("span", { class: "tree__meta", text: `entry ${peer.ledger_entry_id}` }),
@@ -184,7 +233,7 @@ function peerRow(peer: TopologyPeer): HTMLElement {
 }
 
 function groupRow(group: Group): HTMLElement {
-  const isCollapsed = collapsed.has(group.id);
+  const isCollapsed = collapsed.has(group.id) && !filterQuery;
   const chevron = icon(Icons.chevronRight);
   chevron.setAttribute("class", "tree__chevron");
   chevron.setAttribute("data-expanded", String(!isCollapsed));
@@ -219,8 +268,6 @@ function groupRow(group: Group): HTMLElement {
   const toggle = () => {
     if (collapsed.has(group.id)) collapsed.delete(group.id);
     else collapsed.add(group.id);
-    // Selecting the mount as well as toggling: clicking a USB stick should
-    // show what is on it, not merely fold a list.
     if (group.kind === "mount" && group.mount) {
       store.select({ kind: "mount", mountPath: group.mount.path });
     } else {
@@ -253,19 +300,39 @@ export interface SidebarHandles {
 export function createSidebar(onNewNode: () => void): SidebarHandles {
   const tree = el("div", { class: "stack", role: "tree", "aria-label": "Devices and nodes" });
 
+  const searchInput = el("input", {
+    class: "sidebar__search-input",
+    type: "search",
+    placeholder: "Filter nodes or collections…",
+    "aria-label": "Filter storage",
+  }) as HTMLInputElement;
+
+  on(searchInput, "input", () => {
+    filterQuery = searchInput.value.trim();
+    render();
+  });
+
+  const searchBox = el(
+    "div",
+    { class: "sidebar__search" },
+    el("span", { class: "sidebar__search-icon" }, icon(Icons.search, 13)),
+    searchInput,
+  );
+
   const element = el(
     "aside",
     { class: "sidebar", "data-open": "false" },
     el(
       "div",
-      { class: "row row--between" },
-      el("span", { class: "tree__group-label", text: "Storage" }),
+      { class: "row row--between", style: "margin-bottom: var(--space-xs);" },
+      el("span", { class: "tree__group-label", text: "Topology" }),
       (() => {
-        const button = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.plus), "New node");
+        const button = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.plus, 13), "New");
         on(button, "click", onNewNode);
         return button;
       })(),
     ),
+    searchBox,
     tree,
   );
 
@@ -290,19 +357,41 @@ export function createSidebar(onNewNode: () => void): SidebarHandles {
 
     let lastKind: Group["kind"] | null = null;
     for (const group of groups) {
+      // Filter logic
+      const filteredNodes = group.nodes.filter((node) => {
+        if (!filterQuery) return true;
+        const q = filterQuery.toLowerCase();
+        const name = (node.process.node_name || node.process.node_id).toLowerCase();
+        const hasMatchingCol = (node.brain?.collections ?? []).some((c) => c.name.toLowerCase().includes(q));
+        return name.includes(q) || node.process.data_dir.toLowerCase().includes(q) || hasMatchingCol;
+      });
+
+      const filteredPeers = group.peers.filter((p) => {
+        if (!filterQuery) return true;
+        const q = filterQuery.toLowerCase();
+        return p.node_id.toLowerCase().includes(q) || p.host.toLowerCase().includes(q);
+      });
+
+      if (filterQuery && filteredNodes.length === 0 && filteredPeers.length === 0) {
+        continue;
+      }
+
       if (group.kind !== lastKind) {
         children.push(el("p", { class: "tree__group-label", text: GROUP_HEADINGS[group.kind] }));
         lastKind = group.kind;
       }
-      children.push(groupRow(group));
-      if (collapsed.has(group.id)) continue;
 
-      const sorted = [...group.nodes].sort((a, b) =>
+      children.push(groupRow(group));
+      if (collapsed.has(group.id) && !filterQuery) continue;
+
+      const sorted = [...filteredNodes].sort((a, b) =>
         (a.process.node_name || a.process.node_id).localeCompare(b.process.node_name || b.process.node_id),
       );
-      for (const node of sorted) children.push(nodeRow(node, tip));
-      for (const peer of group.peers) children.push(peerRow(peer));
-      if (sorted.length === 0 && group.peers.length === 0 && group.kind === "mount") {
+      for (const node of sorted) {
+        children.push(...nodeRow(node, tip));
+      }
+      for (const peer of filteredPeers) children.push(peerRow(peer));
+      if (sorted.length === 0 && filteredPeers.length === 0 && group.kind === "mount") {
         children.push(emptyMountRow());
       }
     }

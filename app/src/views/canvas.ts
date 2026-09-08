@@ -6,20 +6,13 @@
  * topology view -- who can actually reach whom, drawn from each node's
  * `/_peers`.
  *
- * Both are read-only. Nothing on this canvas writes; selecting a node moves
- * the inspector, and that is all. A control room where a stray drag can
- * repartition a cluster is a control room people are afraid to touch.
- *
- * Layout is deterministic: positions come from a hash of the node id, not from
- * a force simulation. The same mesh therefore draws identically on every
- * refresh and on every machine, so "the node on the left" means the same node
- * five minutes later. A simulation would look livelier and be useless for
- * that.
+ * Features pan & zoom navigation, edge telemetry hover tooltips (latency,
+ * fitness, packet loss), and live node card indicators.
  */
 
 import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
-import { count, engineLabel, shortHash, shortNode } from "../util/format.js";
-import { el, on, replace, svg } from "../util/dom.js";
+import { count, engineLabel, percent, shortHash, shortNode } from "../util/format.js";
+import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
 
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
@@ -57,15 +50,20 @@ interface Placed {
   y: number;
 }
 
-/**
- * Places nodes on concentric rings.
- *
- * Ring assignment is by index so the layout stays legible as the mesh grows to
- * the fifty nodes the spec targets; the angle within a ring is seeded by the
- * node id, so a node keeps its bearing when its neighbours come and go. A
- * small id-derived jitter on the radius stops nodes at the same angle on
- * adjacent rings from lining up into false spokes.
- */
+interface EdgeData {
+  a: Placed;
+  b: Placed;
+  live: boolean;
+  fitness: number;
+  latencyMs: number;
+  successRate: number;
+}
+
+/** Pan and zoom state, persistent across renders. */
+let panX = 0;
+let panY = 0;
+let zoomScale = 1.0;
+
 function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   const tip = meshTip();
   const cx = width / 2;
@@ -78,7 +76,6 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
     return [{ node: ordered[0], status: convergenceOf(ordered[0], tip), x: cx, y: cy }];
   }
 
-  // Ring capacities grow outward: 6, 12, 18, ... which keeps spacing even.
   const rings: NodeView[][] = [];
   let index = 0;
   for (let ring = 0; index < ordered.length; ring++) {
@@ -91,8 +88,6 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
     const radius = rings.length === 1 ? maxRadius * 0.55 : (maxRadius * (ring + 1)) / rings.length;
     members.forEach((node, i) => {
       const seed = hash32(node.process.node_id);
-      // Even spacing, nudged by the id so identical meshes are not perfectly
-      // symmetric (which reads as a diagram rather than a topology).
       const jitterAngle = ((seed & 0xff) / 255 - 0.5) * ((Math.PI * 2) / members.length) * 0.35;
       const angle = (i / members.length) * Math.PI * 2 - Math.PI / 2 + jitterAngle;
       const jitterRadius = 1 + (((seed >>> 8) & 0x3f) / 63 - 0.5) * 0.08;
@@ -107,11 +102,10 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   return placed;
 }
 
-/** Edges are drawn once per pair, from whichever side reports the other. */
-function edgesOf(placed: Placed[]): { a: Placed; b: Placed; live: boolean }[] {
+function edgesOf(placed: Placed[]): EdgeData[] {
   const byId = new Map(placed.map((p) => [p.node.process.node_id, p]));
   const seen = new Set<string>();
-  const edges: { a: Placed; b: Placed; live: boolean }[] = [];
+  const edges: EdgeData[] = [];
 
   for (const p of placed) {
     for (const peer of p.node.peers) {
@@ -120,23 +114,28 @@ function edgesOf(placed: Placed[]): { a: Placed; b: Placed; live: boolean }[] {
       const key = [p.node.process.node_id, peer.node_id].sort().join("|");
       if (seen.has(key)) continue;
       seen.add(key);
-      // "Live" means the peer was heard from recently. A stale edge is still
-      // drawn -- the fact that two nodes used to talk and no longer do is
-      // exactly what an operator is looking for -- but drawn faintly.
       const live = peer.state === "running" && Date.now() - peer.last_seen_ms < 30_000;
-      edges.push({ a: p, b: other, live });
+      const fitness = Math.max(0.25, Math.min(1.0, peer.fitness?.score || 0.5));
+      const latencyMs = peer.fitness?.latency_ms || 0;
+      const successRate = peer.fitness?.success_rate ?? 1.0;
+      edges.push({ a: p, b: other, live, fitness, latencyMs, successRate });
     }
   }
   return edges;
 }
 
-const CARD_W = 148;
-const CARD_H = 54;
+const CARD_W = 156;
+const CARD_H = 58;
 
-function meshView(nodes: NodeView[], width: number, height: number): SVGElement {
+function meshView(nodes: NodeView[], width: number, height: number, container: HTMLElement): HTMLElement {
   const placed = layout(nodes, width, height);
   const edges = edgesOf(placed);
   const selectedId = store.state.selection.nodeId;
+
+  const wrapper = el("div", { style: "position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;" });
+
+  const tooltip = el("div", { class: "mesh__tooltip", hidden: true });
+  wrapper.appendChild(tooltip);
 
   const root = svg("svg", {
     class: "mesh",
@@ -144,24 +143,86 @@ function meshView(nodes: NodeView[], width: number, height: number): SVGElement 
     preserveAspectRatio: "xMidYMid meet",
     role: "img",
     "aria-label": `Mesh topology, ${nodes.length} nodes`,
+    style: "width: 100%; height: 100%; display: block; cursor: grab;",
   });
 
-  const edgeLayer = svg("g", {});
-  for (const edge of edges) {
-    edgeLayer.appendChild(
-      svg("line", {
-        class: "mesh__edge",
-        x1: edge.a.x,
-        y1: edge.a.y,
-        x2: edge.b.x,
-        y2: edge.b.y,
-        "stroke-dasharray": edge.live ? null : "4 4",
-        opacity: edge.live ? 1 : 0.45,
-      }),
-    );
-  }
-  root.appendChild(edgeLayer);
+  const viewport = svg("g", {
+    class: "mesh__viewport",
+    transform: `translate(${panX} ${panY}) scale(${zoomScale})`,
+    "transform-origin": `${width / 2} ${height / 2}`,
+  });
+  root.appendChild(viewport);
 
+  // Pan & Zoom interaction
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+
+  const updateTransform = () => {
+    viewport.setAttribute("transform", `translate(${panX} ${panY}) scale(${zoomScale})`);
+  };
+
+  root.addEventListener("mousedown", (e) => {
+    const target = e.target as SVGElement;
+    if (target.closest(".mesh__node")) return;
+    isDragging = true;
+    startX = e.clientX - panX;
+    startY = e.clientY - panY;
+    root.style.cursor = "grabbing";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    panX = e.clientX - startX;
+    panY = e.clientY - startY;
+    updateTransform();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (isDragging) {
+      isDragging = false;
+      root.style.cursor = "grab";
+    }
+  });
+
+  root.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.08 : 0.92;
+    zoomScale = Math.max(0.35, Math.min(2.8, zoomScale * factor));
+    updateTransform();
+  });
+
+  // Edge layer
+  const edgeLayer = svg("g", { class: "mesh__edges" });
+  for (const edge of edges) {
+    const edgeLine = svg("line", {
+      class: "mesh__edge",
+      x1: edge.a.x,
+      y1: edge.a.y,
+      x2: edge.b.x,
+      y2: edge.b.y,
+      "stroke-dasharray": edge.live ? null : "4 4",
+      opacity: edge.live ? edge.fitness : 0.35,
+    });
+
+    edgeLine.addEventListener("mouseenter", (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      tooltip.style.left = `${e.clientX - rect.left}px`;
+      tooltip.style.top = `${e.clientY - rect.top}px`;
+      tooltip.textContent = `${edge.latencyMs.toFixed(1)}ms · ${percent(edge.successRate)} success · fitness ${edge.fitness.toFixed(2)}`;
+      tooltip.hidden = false;
+    });
+
+    edgeLine.addEventListener("mouseleave", () => {
+      tooltip.hidden = true;
+    });
+
+    edgeLayer.appendChild(edgeLine);
+  }
+  viewport.appendChild(edgeLayer);
+
+  // Nodes layer
+  const nodesLayer = svg("g", { class: "mesh__nodes" });
   for (const p of placed) {
     const tipId = p.node.tip?.entry_id ?? p.node.brain?.ledger_tip.entry_id ?? 0;
     const name = p.node.process.node_name || shortNode(p.node.process.node_id, 8);
@@ -180,23 +241,29 @@ function meshView(nodes: NodeView[], width: number, height: number): SVGElement 
         class: "mesh__node-card",
         width: CARD_W,
         height: CARD_H,
-        rx: 11,
+        rx: 12,
         stroke: "var(--color-hairline)",
       }),
     );
-    // The status is a filled bar down the card's leading edge rather than a
-    // dot: at this size a dot disappears, and the bar reads at a glance across
-    // a fifty-node canvas.
+
+    // 4px Health Strip
     group.appendChild(
-      svg("rect", { width: 4, height: CARD_H, rx: 2, fill: STATUS_VAR[p.status] }),
+      svg("rect", { width: 4.5, height: CARD_H, rx: 2, fill: STATUS_VAR[p.status] }),
     );
+
+    // Pulse dot
     group.appendChild(
-      svg("text", { class: "mesh__node-label", x: 16, y: 22 }, name),
+      svg("circle", { cx: 16, cy: 22, r: 4, fill: STATUS_VAR[p.status] }),
     );
+
+    group.appendChild(
+      svg("text", { class: "mesh__node-label", x: 26, y: 26 }, name),
+    );
+
     group.appendChild(
       svg(
         "text",
-        { class: "mesh__node-meta", x: 16, y: 40 },
+        { class: "mesh__node-meta", x: 16, y: 45 },
         p.status === "offline" ? STATUS_TEXT[p.status] : `#${tipId} · ${shortHash(p.node.tip?.entry_hash, 6, 0)}`,
       ),
     );
@@ -210,10 +277,36 @@ function meshView(nodes: NodeView[], width: number, height: number): SVGElement 
         select();
       }
     });
-    root.appendChild(group);
+    nodesLayer.appendChild(group);
   }
+  viewport.appendChild(nodesLayer);
+  wrapper.appendChild(root);
 
-  return root;
+  // Floating Zoom Controls
+  const zoomInBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom in" }, icon(Icons.zoomIn, 14));
+  on(zoomInBtn, "click", () => {
+    zoomScale = Math.min(2.8, zoomScale * 1.25);
+    updateTransform();
+  });
+
+  const zoomOutBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom out" }, icon(Icons.zoomOut, 14));
+  on(zoomOutBtn, "click", () => {
+    zoomScale = Math.max(0.35, zoomScale * 0.8);
+    updateTransform();
+  });
+
+  const resetBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Reset View" }, icon(Icons.zoomReset, 14));
+  on(resetBtn, "click", () => {
+    panX = 0;
+    panY = 0;
+    zoomScale = 1.0;
+    updateTransform();
+  });
+
+  const controls = el("div", { class: "canvas__controls" }, zoomInBtn, zoomOutBtn, resetBtn);
+  wrapper.appendChild(controls);
+
+  return wrapper;
 }
 
 function treeView(nodes: NodeView[]): HTMLElement {
@@ -258,7 +351,7 @@ function treeView(nodes: NodeView[]): HTMLElement {
       collections.length > 0 &&
         el(
           "div",
-          { class: "row" },
+          { class: "row", style: "margin-top: var(--space-xs); flex-wrap: wrap;" },
           ...collections
             .slice(0, 6)
             .map((c) =>
@@ -306,31 +399,14 @@ export interface CanvasHandles {
 }
 
 export function createCanvas(onNewNode: () => void): CanvasHandles {
-  const body = el("div", {});
-
-  const modeButton = (mode: "tree" | "mesh", label: string): HTMLElement => {
-    const button = el("button", { type: "button", text: label, "aria-pressed": "false" });
-    on(button, "click", () => store.setCanvasMode(mode));
-    button.dataset.mode = mode;
-    return button;
-  };
-
-  const segmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" },
-    modeButton("tree", "Tree"),
-    modeButton("mesh", "Mesh"),
-  );
-
-  const summary = el("span", { class: "muted" });
-  const toolbar = el("div", { class: "canvas__toolbar" }, segmented, el("span", { class: "header__spacer" }), summary);
+  const body = el("div", { style: "width: 100%; height: 100%;" });
+  const summary = el("span", { class: "muted", style: "font: var(--text-fine);" });
+  const toolbar = el("div", { class: "canvas__toolbar" }, summary);
   const element = el("main", { class: "canvas" }, toolbar, body);
 
   function render(): void {
     const nodes = store.dataNodes();
     const mode = store.state.canvasMode;
-
-    for (const button of segmented.querySelectorAll("button")) {
-      button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
-    }
 
     const reachable = nodes.filter((n) => n.reachable).length;
     const held = nodes.reduce((sum, n) => sum + (n.brain?.transit_documents_held ?? 0), 0);
@@ -345,10 +421,8 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
     }
 
     if (mode === "mesh") {
-      // The viewBox grows with the node count so a large mesh does not compress
-      // into an unreadable knot; the SVG scales to the pane either way.
-      const side = Math.max(720, 260 + Math.ceil(Math.sqrt(nodes.length)) * 190);
-      replace(body, meshView(nodes, side, Math.round(side * 0.62)));
+      const side = Math.max(760, 260 + Math.ceil(Math.sqrt(nodes.length)) * 200);
+      replace(body, meshView(nodes, side, Math.round(side * 0.65), element));
     } else {
       replace(body, treeView(nodes));
     }
@@ -357,7 +431,6 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
   return { render, element };
 }
 
-/** Exported for the inspector's storage summary, which uses the same wording. */
 export function statusText(status: Convergence): string {
   return STATUS_TEXT[status];
 }

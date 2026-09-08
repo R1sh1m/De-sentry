@@ -116,6 +116,29 @@ function section(title: string, ...children: (Node | string | false | null)[]): 
   return el("section", { class: "wizard__section" }, el("h3", { class: "card__title", text: title }), ...children);
 }
 
+const STEP_NAMES = ["Placement", "Shape", "Proposal", "Review", "Recovery Key"];
+
+function stepper(currentStep: number): HTMLElement {
+  const container = el("div", { class: "wizard__stepper", role: "tablist", "aria-label": "Creation steps" });
+  STEP_NAMES.forEach((name, idx) => {
+    const stepNum = idx + 1;
+    const isActive = stepNum === currentStep;
+    const isComplete = stepNum < currentStep;
+    const indicator = el(
+      "div",
+      {
+        class: "wizard__step-indicator",
+        "data-active": String(isActive),
+        "data-complete": String(isComplete),
+      },
+      el("span", { class: "wizard__step-num", text: isComplete ? "✓" : String(stepNum) }),
+      el("span", { text: name }),
+    );
+    container.appendChild(indicator);
+  });
+  return container;
+}
+
 /** A confidence bar. Below the floor it is drawn as a warning, not a score. */
 function confidenceMeter(value: number): HTMLElement {
   const low = value < CONFIDENCE_FLOOR;
@@ -766,6 +789,7 @@ export function createWizard(): WizardHandles {
 
     replace(
       body,
+      stepper(draft.step),
       steps[draft.step](),
       el("div", { class: "wizard__footer" }, back, el("span", { class: "header__spacer" }), next),
     );

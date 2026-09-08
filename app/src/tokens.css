@@ -114,6 +114,19 @@
   --chrome-header-height: 52px;
   --sidebar-width: 280px;
   --inspector-width: 340px;
+
+  /* -- canvas grid & selection -------------------------------------------- */
+  --canvas-grid-dot: rgba(0, 0, 0, 0.05);
+  --tree-row-selected-bg: rgba(0, 102, 204, 0.10);
+  --tree-row-selected-color: var(--color-primary);
+
+  /* -- json syntax -------------------------------------------------------- */
+  --syntax-key: #0066cc;
+  --syntax-string: #1d7f4e;
+  --syntax-number: #8a6100;
+  --syntax-boolean: #5a4bb8;
+  --syntax-null: #7a7a7a;
+  --syntax-punct: #333333;
 }
 
 /*
@@ -157,6 +170,17 @@
     --elev-hairline: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
     --elev-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.36);
     --elev-popover: 0 4px 12px rgba(0, 0, 0, 0.40), 0 16px 48px rgba(0, 0, 0, 0.50);
+
+    --canvas-grid-dot: rgba(255, 255, 255, 0.06);
+    --tree-row-selected-bg: rgba(41, 151, 255, 0.16);
+    --tree-row-selected-color: var(--color-primary);
+
+    --syntax-key: #4aa8ff;
+    --syntax-string: #30d158;
+    --syntax-number: #ffd60a;
+    --syntax-boolean: #bf5af2;
+    --syntax-null: #8e8e93;
+    --syntax-punct: #cccccc;
   }
 }
 
@@ -194,6 +218,17 @@
   --elev-hairline: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
   --elev-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.36);
   --elev-popover: 0 4px 12px rgba(0, 0, 0, 0.40), 0 16px 48px rgba(0, 0, 0, 0.50);
+
+  --canvas-grid-dot: rgba(255, 255, 255, 0.06);
+  --tree-row-selected-bg: rgba(41, 151, 255, 0.16);
+  --tree-row-selected-color: var(--color-primary);
+
+  --syntax-key: #4aa8ff;
+  --syntax-string: #30d158;
+  --syntax-number: #ffd60a;
+  --syntax-boolean: #bf5af2;
+  --syntax-null: #8e8e93;
+  --syntax-punct: #cccccc;
 }
 
 /* The mesh canvas never animates continuously; this collapses the rest. */
