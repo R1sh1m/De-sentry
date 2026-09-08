@@ -64,7 +64,9 @@ New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 Get-ChildItem -Path $runDir -Filter *.pid -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $engineList = ($Engines -split ",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$defaultEngine = $engineList[0]
+# Select-Object rather than [0]: a one-element pipeline unrolls to a scalar
+# string, and [0] on a string is its first character ("kv" -> "k").
+$defaultEngine = $engineList | Select-Object -First 1
 
 function Start-DesentryNode {
     param(
@@ -130,8 +132,10 @@ function Start-DesentryNode {
     # it as a type name and the node would silently fall back to defaults.
     $config | ConvertTo-Json -Depth 5 | Out-File -FilePath $configPath -Encoding utf8
 
+    # The config path is quoted: Start-Process splits unquoted array elements
+    # on spaces, which breaks for data dirs under a profile like "Rishi Misra".
     $process = Start-Process -FilePath $bin `
-        -ArgumentList @("--config", $configPath) `
+        -ArgumentList @("--config", "`"$configPath`"") `
         -RedirectStandardOutput (Join-Path $runDir "$Name.log") `
         -RedirectStandardError  (Join-Path $runDir "$Name.err.log") `
         -WindowStyle Hidden -PassThru
