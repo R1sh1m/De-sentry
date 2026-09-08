@@ -1,0 +1,10 @@
+# Build-time Python tooling for the desktop app. Not needed to run anything,
+# and not needed to build the app from a clean checkout -- the generated icons
+# are committed. Install this only if you are regenerating them.
+#
+#     python -m pip install -r app/scripts/requirements.txt
+#     npm run icons          # -> app/src-tauri/icons/*
+#
+# Pillow is what make-icons.py uses to draw and rasterise the icon set
+# (ModuleNotFoundError: No module named 'PIL' means this was not installed).
+Pillow>=10.0.0

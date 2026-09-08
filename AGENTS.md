@@ -84,6 +84,13 @@ still never on the data path.
 
 ## 3. Build and test
 
+Per-OS prerequisites (and the error → fix table for when one is missing) live
+in `README.md` § Prerequisites / Troubleshooting. The short version: OpenSSL
+**development headers** for the engine; Rust ≥ 1.77, Node ≥ 18 and — on Linux
+— the webkit2gtk / appindicator / rsvg packages for the app. Python needs
+nothing installed; `clients/python/requirements.txt` is empty on purpose, and
+`app/scripts/requirements.txt` (Pillow) is only for regenerating icons.
+
 ### Engine (C++17, OpenSSL is the only required dependency)
 
 ```bash
@@ -126,16 +133,19 @@ the script prints.
 ### Integration tests
 
 ```bash
-python3 tests/integration/cluster_integration_test.py
 python3 tests/integration/transit_replay_test.py
 python3 tests/integration/airplane_mode_test.py
 python3 tests/integration/usb_node_test.py
-python3 tests/integration/soak_test.py --nodes 50 --loss 0.05
+python3 tests/integration/soak_test.py --nodes 50 --chaos 8 --settle 180
+
+./scripts/run_cluster.sh 3        # cluster_integration_test wants one already up
+python3 tests/integration/cluster_integration_test.py
 ```
 
 They spawn real `desentryd` processes through `tests/integration/harness.py`
-and talk to them over HTTP with the standard library only. Build first; they
-locate the binary the same way the cluster scripts do.
+and talk to them over HTTP with the standard library only — nothing to `pip
+install`, which is why `clients/python/requirements.txt` is empty. Build
+first; they locate the binary the same way the cluster scripts do.
 
 ### Desktop app
 

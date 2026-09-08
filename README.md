@@ -44,11 +44,108 @@ with no internet, which is an acceptance test
 
 ---
 
+## Prerequisites
+
+Install these **before** the first build. Most "library not found" failures on
+this project are one of these missing, and the compiler's message rarely names
+the package you actually need — [Troubleshooting](#troubleshooting) maps the
+common errors back to a fix.
+
+Nothing here is needed to *use* a running node — the REST API and the Python
+client have no dependencies at all. This is what it takes to build.
+
+### What each part needs
+
+| To build | You need |
+|---|---|
+| **Engine** (`desentryd`, `desentry_cli`, tests) | CMake ≥ 3.16, a C++17 compiler, **OpenSSL development headers** (not just the runtime library), a threads library |
+| **Desktop app** (`app/`) | the above, plus Rust ≥ 1.77 (MSVC toolchain on Windows), Node ≥ 18 or bun, a webview + tray stack (Linux only, see below) |
+| **Python client / integration tests** | Python ≥ 3.8. **No packages** — everything is stdlib. `clients/python/requirements.txt` exists and is deliberately empty |
+| **Regenerating the app icons** (rare) | `python -m pip install -r app/scripts/requirements.txt` (Pillow). The icons are committed, so you can skip this |
+
+OpenSSL is the one that catches people out: distributions ship the runtime
+library and the headers as **separate packages**, and CMake needs the headers.
+`libssl.so` being present is not enough.
+
+### Ubuntu / Debian (22.04+)
+
+```bash
+# Engine
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libssl-dev git python3
+
+# Desktop app (Tauri v2 needs a webview, a tray backend, and an SVG rasteriser)
+sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+                    libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+                    patchelf curl wget file
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
+# Node ≥ 18 via your distro, nvm, or NodeSource
+```
+
+On Linux the app stores node keys in the **Secret Service**, so a keyring
+daemon (`gnome-keyring` or `kwalletmanager`) must be running at runtime or key
+custody will fail with a D-Bus error. Headless machines: run `dbus-run-session`
+or build the engine only.
+
+### macOS 14+
+
+```bash
+xcode-select --install                      # C/C++ toolchain
+brew install cmake openssl@3 node rust      # or rustup, or MacPorts
+
+# Homebrew's OpenSSL is keg-only, so CMake will not find it by itself:
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+```
+
+Export `OPENSSL_ROOT_DIR` in your shell profile, or pass it per-configure with
+`-DOPENSSL_ROOT_DIR=...`. Without it you get
+`Could NOT find OpenSSL` even though `brew list` shows it installed.
+
+### Windows 11
+
+Install, in this order:
+
+1. **Visual Studio 2022 Build Tools** with the *Desktop development with C++*
+   workload (this is the C++ compiler, the Windows SDK, and the MSVC linker).
+2. **CMake ≥ 3.16** — <https://cmake.org/download/>, or `winget install Kitware.CMake`.
+3. **OpenSSL**, one of:
+   - *vcpkg (recommended)*
+     ```powershell
+     git clone https://github.com/microsoft/vcpkg C:\vcpkg
+     C:\vcpkg\bootstrap-vcpkg.bat
+     C:\vcpkg\vcpkg install openssl:x64-windows
+     ```
+     then configure with
+     `-DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake`
+   - *or* the Win64 OpenSSL installer (**not** the "Light" build — it has no
+     headers), then `setx OPENSSL_ROOT_DIR "C:\Program Files\OpenSSL-Win64"`.
+4. **Rust (MSVC toolchain)** — <https://rustup.rs>, then
+   `rustup default stable-x86_64-pc-windows-msvc`. The GNU toolchain will not
+   link against an MSVC-built OpenSSL.
+5. **Node ≥ 18** — `winget install OpenJS.NodeJS.LTS`.
+6. **WebView2** — already present on Windows 11; on older builds install the
+   Evergreen Runtime.
+
+MSYS2/MinGW works for the engine if you `pacman -S mingw-w64-x86_64-openssl
+mingw-w64-x86_64-cmake`, but the desktop app expects the MSVC toolchain.
+
+### One thing that is *not* a prerequisite
+
+Nothing in this project downloads a dependency at build or run time by
+itself. The vendored storage backends are off by default and CMake **fails**
+rather than fetching them; `npm run fetch-model` is the single explicit,
+opt-in network step, and the app runs without it on a deterministic keyword
+fallback. If a build ever tries to reach the network unprompted, that is a
+bug — please report it.
+
+---
+
 ## Quickstart
 
 ### Build from source
 
-> Prerequisites: CMake ≥ 3.16, a C++17 compiler (GCC/Clang), OpenSSL dev headers
+> Prerequisites: see [above](#prerequisites) — CMake ≥ 3.16, a C++17 compiler,
+> and OpenSSL **development headers**.
 
 ```bash
 # Build
@@ -69,7 +166,8 @@ explicitly (`-DDESENTRY_WITH_SQLITE=ON`, `…_SQLITE_VEC`, `…_DUCKDB`,
 
 ### Build the desktop app
 
-> Prerequisites: the above, plus Rust/cargo and Node ≥ 18 (or bun)
+> Prerequisites: the above, plus Rust ≥ 1.77, Node ≥ 18 (or bun), and on Linux
+> the webview/tray packages listed in [Prerequisites](#prerequisites).
 
 ```bash
 cd app
@@ -79,6 +177,19 @@ npm run build            # typecheck + frontend bundle
 npm run tauri:dev        # run the control room
 npm run tauri:build      # MSI / .dmg / AppImage with versioned desentryd sidecars
 ```
+
+The engine must be built first — `npm run tauri:build` stages `desentryd` from
+`build/` as a versioned sidecar and will stop if it is not there.
+
+If `ort` (the ONNX runtime binding) will not build in your environment, the
+sizing model is separable:
+
+```bash
+npm run tauri:build -- --no-default-features   # keyword heuristic instead
+```
+
+The app then sizes collections with the deterministic keyword fallback and
+says so in the UI rather than presenting a fallback as a model result.
 
 ### Run a 3-node cluster
 
@@ -118,12 +229,53 @@ docker compose run tester          # re-run integration tests against a running 
 
 ### Python client
 
+Python ≥ 3.8, and **nothing to install** — the client is stdlib-only. There is
+a `requirements.txt` next to it so `pip install -r` works and tells you that
+plainly:
+
+```bash
+python -m pip install -r clients/python/requirements.txt   # a no-op, by design
+```
+
+It is a single module, not an installed package, so put it on the path rather
+than importing it as `clients.python.desentry_client` (there are no
+`__init__.py` files — that import raises `ModuleNotFoundError`):
+
+```bash
+export PYTHONPATH="$PWD/clients/python"      # Windows: $env:PYTHONPATH = "$PWD\clients\python"
+```
+
 ```python
-from clients.python.desentry_client import DesentryClient
+from desentry_client import DesentryClient
+
 node = DesentryClient("http://127.0.0.1:7701")
 node.put("users", "u1", {"name": "Asha"})
 print(node.get("users", "u1"))
 print(node.verify_ledger())   # {"verified": true, "entries_checked": N}
+```
+
+Or, without touching the environment:
+
+```python
+import sys; sys.path.insert(0, "clients/python")
+from desentry_client import DesentryClient
+```
+
+### Integration tests
+
+Also stdlib-only. Build the engine first — these start real `desentryd`
+processes and find the binary the same way the cluster scripts do.
+
+```bash
+# Start their own cluster and tear it down again:
+python3 tests/integration/transit_replay_test.py
+python3 tests/integration/airplane_mode_test.py
+python3 tests/integration/usb_node_test.py
+python3 tests/integration/soak_test.py --nodes 50 --chaos 8 --settle 180
+
+# Runs against an already-running cluster (the Docker Compose `tester` job):
+./scripts/run_cluster.sh 3
+python3 tests/integration/cluster_integration_test.py
 ```
 
 ### Dashboard
@@ -132,6 +284,35 @@ Open `tools/dashboard.html` directly in a browser (no build step, no server)
 and point it at a running node's API address to see live node status, the
 signed ledger tip, per-collection checksums, known peers, and a scrolling
 ledger-entry table with one-click ledger verification.
+
+---
+
+## Troubleshooting
+
+Every one of these is a missing prerequisite, not a bug in the tree.
+
+| What you see | What it means | Fix |
+|---|---|---|
+| `Could NOT find OpenSSL (missing: OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR)` | CMake cannot find OpenSSL | Linux: `apt install libssl-dev`. macOS: `export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`. Windows: vcpkg toolchain file, or set `OPENSSL_ROOT_DIR` |
+| `fatal error: openssl/evp.h: No such file or directory` | The runtime library is installed, the **headers** are not | Install the `-dev` / `-devel` package, not just the library |
+| `LNK1181: cannot open input file 'libcrypto.lib'` | MSVC found headers but no import library, or a MinGW build of OpenSSL | Use the vcpkg `openssl:x64-windows` package and pass `-DCMAKE_TOOLCHAIN_FILE=…\vcpkg.cmake` |
+| `'cmake' is not recognized` / `command not found` | CMake is not installed or not on PATH | Install it, and reopen the shell so PATH is picked up |
+| `error: linker 'cc' not found` | No C toolchain | `apt install build-essential`, or `xcode-select --install` |
+| `Package webkit2gtk-4.1 was not found` · `failed to run custom build command for 'soup3-sys'` | Tauri's Linux webview dependencies are missing | Install the desktop-app packages in [Prerequisites](#prerequisites) |
+| `failed to run custom build command for 'libappindicator-sys'` | No tray backend | `apt install libayatana-appindicator3-dev` |
+| Rust build fails on `onig_sys` | `tokenizers` builds a small C library | Install a C compiler (`build-essential` / Xcode CLT / MSVC) |
+| `ort` fails to build, or `libonnxruntime` is missing | The ONNX runtime is not available in your environment | Either `npm run fetch-model`, or build without it: `npm run tauri:build -- --no-default-features` |
+| `ModuleNotFoundError: No module named 'clients'` | The Python client is a module, not an installed package | `export PYTHONPATH="$PWD/clients/python"` and `from desentry_client import …` |
+| `ModuleNotFoundError: No module named 'PIL'` | Only `app/scripts/make-icons.py` needs Pillow | `python -m pip install -r app/scripts/requirements.txt` — or skip it; the icons are committed |
+| `CMake Error … DESENTRY_WITH_SQLITE=ON but third_party/…/sqlite3.c is missing` | **Working as intended.** The build never downloads | Vendor the sources per `third_party/README.md`, or leave the option `OFF` |
+| `could not find desentryd. Build it first:` / `error: …/build/desentryd not found` | The engine is not built, or sits in a build directory these do not check | Build it. They look in `build/`, `build/RelWithDebInfo/`, `build/Release/`, `build/Debug/`; the Python tests also honour `DESENTRY_ENGINE=/path/to/desentryd` |
+| Node starts, then `Address already in use` | Another mesh is still running on 770x/780x | `./scripts/stop_cluster.sh` (or `.\scripts\stop_cluster.ps1`) |
+| App reports a keychain / D-Bus error on Linux | No Secret Service is running | Start `gnome-keyring` or KWallet; on headless boxes use `dbus-run-session` |
+| Every test passes suspiciously fast after a manual build tweak | `assert()` was compiled out by `NDEBUG` | Test targets need `-UNDEBUG` (`/UNDEBUG` on MSVC) — see `CMakeLists.txt` |
+
+If you hit something not on this list, `STATUS.md` records what has and has
+not actually been executed, which is usually the fastest way to tell a
+missing prerequisite from an unverified code path.
 
 ---
 
@@ -269,10 +450,11 @@ De-Sentry/
 │   ├── src-tauri/src/              ← Rust sidecar: ports, config, supervision, keychain, AI
 │   ├── resources/                  ← Engine prototypes; the sizing model lands here
 │   └── scripts/                    ← Icon generation, model fetch, sidecar staging
+│       └── requirements.txt        ← Pillow, only for regenerating icons
 │
 ├── tests/                          ← Assert-based C++ suites (9 binaries, one per file)
 │   └── integration/                ← Python: cluster, transit replay, airplane mode, USB, 50-node soak
-├── clients/python/                 ← Zero-dependency Python client
+├── clients/python/                 ← Zero-dependency Python client (+ an empty requirements.txt)
 ├── tools/dashboard.html            ← Browser dashboard (no build step)
 ├── config/                         ← Example node config (JSON)
 │

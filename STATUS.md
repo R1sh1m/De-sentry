@@ -92,7 +92,7 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 | `transit_replay_test.py` | transit store TTL, replay to a returning node |
 | `airplane_mode_test.py` | full lifecycle with no network egress available |
 | `usb_node_test.py` | removable node: password-KDF unlock, detach/attach |
-| `soak_test.py` | 50 nodes on one LAN with injected packet loss |
+| `soak_test.py` | 50 nodes on one LAN, with nodes killed and restarted mid-write (`--nodes`, `--chaos`, `--settle`) |
 
 ---
 

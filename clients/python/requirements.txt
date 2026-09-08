@@ -1,0 +1,25 @@
+# De-Sentry Python client -- runtime requirements
+#
+# There are none. This file exists so that `pip install -r requirements.txt`
+# is a valid thing to run and tells you the truth, rather than failing with
+# "no such file" and leaving you guessing which package you are missing.
+#
+# The client talks to a node over plain HTTP using urllib and json from the
+# standard library. That is deliberate: an AI agent using this may be on a
+# different machine and OS from the node, with no compiler and no ability to
+# install anything. Same reason the rest of the project fetches nothing at
+# runtime. See the module docstring in desentry_client.py.
+#
+# Requires: Python 3.8 or newer. Nothing else.
+#
+# Usage:
+#     python -m pip install -r clients/python/requirements.txt   # a no-op, by design
+#     export PYTHONPATH=clients/python                           # then just import it
+#     python -c "from desentry_client import DesentryClient; print(DesentryClient('http://127.0.0.1:7701').status())"
+#
+# The Python integration tests under tests/integration/ are also stdlib-only
+# and need nothing from this file; what they do need is a built `desentryd`
+# binary. See README.md > Prerequisites.
+#
+# If you add a dependency here, you have changed what the client costs to
+# deploy. Say why in the same commit.
