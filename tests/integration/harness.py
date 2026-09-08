@@ -293,29 +293,31 @@ class Cluster:
         raise TimeoutError(f"timed out waiting for {label} (last error: {last})\n{logs}")
 
     def wait_converged(self, timeout_s: float = 60.0) -> None:
-        """Waits until every running node holds the same data.
+        """Waits until every running data node holds identical collections.
 
-        Convergence is compared on the per-collection checksums from /_brain,
-        not on ledger tips. Each node's ledger is its own append-ordered,
-        self-signed hash chain, so two nodes that received the same writes in a
-        different order have different tips *by construction* and always will
-        -- what the design says peers converge on is the SET of entry hashes
-        (see the header comment in storage/wal.h), and what a replication test
-        actually cares about is that the documents match. Comparing tips would
-        fail on a healthy mesh and pass on an empty one.
+        Compares the per-collection checksums from /_brain: two nodes with the
+        same checksums hold the same documents, which is the convergence the
+        CRDT layer promises. Ledger tips are deliberately NOT compared here:
+        each node stamps its own HLC and origin signature, so two nodes with
+        byte-identical documents still report different tip hashes -- per-node
+        chains are each internally verifiable (see verify_ledger), but there
+        is no cross-node tip equality to wait for. Supervisors are excluded:
+        they hold no data by design.
         """
         def same_data() -> bool:
-            states = set()
+            maps = []
             for node in self.running_nodes():
-                brain = node.client.brain()
-                fingerprint = tuple(sorted(
-                    (c["name"], c["document_count"], c["checksum"])
-                    for c in brain.get("collections", [])
-                ))
-                states.add(fingerprint)
-            return len(states) == 1
+                try:
+                    if node.client.status().get("supervisor"):
+                        continue
+                    brain = node.client.brain()
+                except Exception:
+                    return False
+                maps.append({c["name"]: c.get("checksum")
+                             for c in brain.get("collections", [])})
+            return len(maps) > 0 and all(m == maps[0] for m in maps)
 
-        self.wait_for(same_data, timeout_s, "every node to hold the same collections")
+        self.wait_for(same_data, timeout_s, "every data node to hold identical collections")
 
     def wait_visible(self, collection: str, key: str, timeout_s: float = 45.0,
                      nodes: Optional[List[Node]] = None) -> None:

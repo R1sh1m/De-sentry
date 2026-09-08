@@ -151,15 +151,14 @@ void RunQuotaContract(const std::string& engine_name) {
   auto made = MakeBackend(engine_name);
   assert(made.ok());
   auto backend = std::move(made.value());
-  // One MiB: small enough that a few hundred KiB of documents exceeds it,
-  // large enough that a backend's own metadata pages fit.
+  // One MiB: small enough that roughly a megabyte of documents exceeds it,
+  // large enough that a backend's own metadata pages fit. The payload stays
+  // well under a 4 KiB slotted page so every backend -- including `kv`, which
+  // cannot store a single record larger than a page -- accepts it; the quota
+  // path under test is about aggregate use, not oversized records.
   assert(backend->Open(dir, 1).ok());
   assert(backend->QuotaLimit() == 1ull * 1024 * 1024);
 
-  // One KiB, not one page's worth: a document lives inside a single 4 KiB
-  // page and a 4096-byte payload plus its envelope cannot fit one, so the
-  // backend would refuse every write as InvalidArgument and quota would never
-  // be reached.
   const std::string payload(1024, 'x');
   bool refused = false;
   for (int i = 0; i < 4000 && !refused; ++i) {
@@ -432,12 +431,12 @@ void TestVectorSearch() {
   for (int i = 0; i < kCount; ++i) {
     std::vector<float> v(kDim, 0.0f);
     v[i % kDim] = 1.0f;
-    v[(i * 7) % kDim] += 0.5f;
-    // Both terms above have period kDim, so with kCount > kDim they repeat:
-    // vectors 0, 16 and 32 would be byte-identical, and "the nearest
-    // neighbour of v0 is v0" would then be asserting a coin flip. This term
-    // is what makes all forty distinct.
-    v[(i * 5 + 3) % kDim] += 0.01f * static_cast<float>(i + 1);
+    // A per-vector nudge keeps every corpus vector distinct: without it the
+    // (i % kDim, 7i % kDim) pairs repeat every kDim vectors, so a query has
+    // two equidistant nearest neighbours and "itself" is undefined. The
+    // query is still an exact corpus member, so it must remain uniquely
+    // nearest to itself.
+    v[(i * 7) % kDim] += 0.5f + static_cast<float>(i) * 0.01f;
     vectors.push_back(v);
 
     JsonValue::Array components;

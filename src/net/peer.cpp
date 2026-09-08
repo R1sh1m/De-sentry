@@ -149,6 +149,40 @@ void PeerTable::RecordReport(const std::string& node_id, lsn_t ledger_entry_id,
   if (it == peers_.end()) return;
   it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
   it->second.fitness.free_quota_mb = free_quota_mb;
+  it->second.fitness.quota_reported = true;
+}
+
+void PeerTable::RecordLedgerHeight(const std::string& node_id, lsn_t ledger_entry_id) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = peers_.find(node_id);
+  if (it == peers_.end()) return;
+  it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
+}
+
+bool PeerTable::AdoptIdentity(const std::string& old_id, const std::string& real_id) {
+  if (old_id.rfind("bootstrap#", 0) != 0 || real_id.empty() || old_id == real_id) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = peers_.find(old_id);
+  if (it == peers_.end()) return false;
+  auto existing = peers_.find(real_id);
+  if (existing != peers_.end()) {
+    // Both a placeholder and a real entry for one peer (e.g. bootstrap plus
+    // a discovery packet): fold the placeholder's liveness into the real one
+    // and drop the duplicate, keeping accumulated fitness either way.
+    PeerInfo& keep = existing->second;
+    const PeerInfo& drop = it->second;
+    keep.last_seen_ms = std::max(keep.last_seen_ms, drop.last_seen_ms);
+    if (keep.host.empty()) keep.host = drop.host;
+    if (keep.p2p_port == 0) keep.p2p_port = drop.p2p_port;
+    if (keep.ed25519_pubkey.empty()) keep.ed25519_pubkey = drop.ed25519_pubkey;
+    peers_.erase(it);
+    return true;
+  }
+  PeerInfo moved = std::move(it->second);
+  peers_.erase(it);
+  moved.node_id = real_id;
+  peers_[real_id] = std::move(moved);
+  return true;
 }
 
 void PeerTable::SetState(const std::string& node_id, NodeLifecycleState state) {

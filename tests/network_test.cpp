@@ -30,22 +30,21 @@ const std::string kNetRoot = AppDataDir() + "/desentry_test_net";
 std::string NetPath(const std::string& leaf) { return kNetRoot + "/" + leaf; }
 
 void RmRf(const std::string& path) { RemoveTree(path); }
-
-// Waits for a condition instead of sleeping a guessed interval. Replication
-// is asynchronous, so the only honest form of "it converged" is "it converged
-// within a bound" -- and a fixed sleep sized for an idle machine turns into a
-// flaky failure on a busy one, which is a test that lies in both directions.
-// The bound is deliberately far larger than the gossip interval: it decides
-// how long a genuine failure takes to report, not how long a pass takes.
-template <typename Predicate>
-bool WaitFor(Predicate done, int timeout_ms = 15000) {
+// Polls until `ready()` is true or `timeout_ms` elapses. Replication is
+// asynchronous -- eager broadcast plus gossip anti-entropy -- so a fixed
+// sleep either wastes time when the mesh is fast or flakes when the host is
+// slow (notably with three full stacks sharing one CI process). Polling
+// asserts eventual convergence, which is what the test means.
+template <typename Ready>
+static bool PollFor(Ready ready, int timeout_ms) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   for (;;) {
-    if (done()) return true;
+    if (ready()) return true;
     if (std::chrono::steady_clock::now() >= deadline) return false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 }
+
 }  // namespace
 
 static void TestSecureChannelHandshake() {
@@ -136,36 +135,41 @@ static void TestThreeNodeMeshConverges() {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   assert(engA->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin"})"), engA->SelfRequestor()).ok());
-  assert(WaitFor([&] {
-    return engB->GetDocument("users", "u1", engB->SelfRequestor()).ok() &&
-           engC->GetDocument("users", "u1", engC->SelfRequestor()).ok();
-  }));
+  assert(PollFor(
+      [&] {
+        return engB->GetDocument("users", "u1", engB->SelfRequestor()).ok() &&
+               engC->GetDocument("users", "u1", engC->SelfRequestor()).ok();
+      },
+      10000));
 
   // Concurrent divergent writes on B and C to the same document.
   assert(engB->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin","dept":"eng"})"), engB->SelfRequestor()).ok());
   assert(engC->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha Khan","role":"admin"})"), engC->SelfRequestor()).ok());
-  assert(WaitFor([&] {
-    auto x = engA->GetDocument("users", "u1", engA->SelfRequestor());
-    auto y = engB->GetDocument("users", "u1", engB->SelfRequestor());
-    auto z = engC->GetDocument("users", "u1", engC->SelfRequestor());
-    if (!x.ok() || !y.ok() || !z.ok()) return false;
-    return x.value().CanonicalDump() == y.value().CanonicalDump() &&
-           y.value().CanonicalDump() == z.value().CanonicalDump();
-  }));
 
+  std::string canon_a, canon_b, canon_c;
+  assert(PollFor(
+      [&] {
+        auto a = engA->GetDocument("users", "u1", engA->SelfRequestor());
+        auto b = engB->GetDocument("users", "u1", engB->SelfRequestor());
+        auto c = engC->GetDocument("users", "u1", engC->SelfRequestor());
+        if (!a.ok() || !b.ok() || !c.ok()) return false;
+        canon_a = a.value().CanonicalDump();
+        canon_b = b.value().CanonicalDump();
+        canon_c = c.value().CanonicalDump();
+        return canon_a == canon_b && canon_b == canon_c;
+      },
+      30000));
   auto a = engA->GetDocument("users", "u1", engA->SelfRequestor()).ValueOrDie();
-  auto b = engB->GetDocument("users", "u1", engB->SelfRequestor()).ValueOrDie();
-  auto c = engC->GetDocument("users", "u1", engC->SelfRequestor()).ValueOrDie();
-  assert(a.CanonicalDump() == b.CanonicalDump());
-  assert(b.CanonicalDump() == c.CanonicalDump());
   std::cout << "[network_test] 3-node concurrent-write convergence -> " << a.Dump() << std::endl;
 
   // Gossip-only propagation path (new collection+key reaches every node).
   assert(engC->PutDocument("items", "i1", JsonValue::Parse(R"({"sku":"X1","qty":5})"), engC->SelfRequestor()).ok());
-  assert(WaitFor([&] {
-    return engA->GetDocument("items", "i1", engA->SelfRequestor()).ok() &&
-           engB->GetDocument("items", "i1", engB->SelfRequestor()).ok();
-  }));
+  assert(PollFor(
+      [&] {
+        return engA->GetDocument("items", "i1", engA->SelfRequestor()).ok() &&
+               engB->GetDocument("items", "i1", engB->SelfRequestor()).ok();
+      },
+      15000));
 
   netA.Stop(); netB.Stop(); netC.Stop();
   std::cout << "[network_test] 3-node P2P mesh (eager broadcast + gossip anti-entropy): PASS" << std::endl;

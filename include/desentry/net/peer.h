@@ -61,6 +61,11 @@ struct PeerFitness {
   double success_rate = 1.0;           // EW mean of probe outcomes, in [0, 1]
   lsn_t ledger_freshness_entry_id = kInvalidLsn;  // peer's reported ledger tip
   uint64_t free_quota_mb = 0;          // peer's reported remaining budget
+  // True once the peer actually reported a quota figure (RecordReport).
+  // Guards the supervisor's out-of-space marking: without it, "no report
+  // yet" (zero) is indistinguishable from "no space left" (zero), and every
+  // healthy peer -- including every unlimited-quota node -- reads as full.
+  bool quota_reported = false;
   uint64_t probes = 0;
   int64_t updated_ms = 0;
 
@@ -100,6 +105,20 @@ class PeerTable {
 
   // Records the capacity/freshness figures a peer reported via /_brain.
   void RecordReport(const std::string& node_id, lsn_t ledger_entry_id, uint64_t free_quota_mb);
+
+  // Records only the peer's ledger height, without touching its quota
+  // figures. Used by the gossip path, which learns heights from ledger
+  // deltas but never sees a quota report there.
+  void RecordLedgerHeight(const std::string& node_id, lsn_t ledger_entry_id);
+
+  // Re-keys a `bootstrap#host:port` placeholder under the identity a
+  // handshake proved for that address. Without this, bootstrap entries keep
+  // their synthetic ids forever: placement skips them (so the peer is never
+  // a replica target), staleness polls by real id never match, and the
+  // public-key resolver never finds them. Merges into an existing real entry
+  // when one is already there rather than duplicating the peer. Returns false
+  // when there is nothing to adopt (unknown old id, or already real).
+  bool AdoptIdentity(const std::string& old_id, const std::string& real_id);
 
   void SetState(const std::string& node_id, NodeLifecycleState state);
 

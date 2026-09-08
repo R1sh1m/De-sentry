@@ -168,8 +168,11 @@ size_t Supervisor::EnforceQuota() {
     if (peer.fitness.probes == 0) continue;
     // A peer reporting zero free quota while otherwise healthy is out of
     // space, not unreachable -- a distinction that matters because the fix
-    // is different.
-    if (peer.fitness.free_quota_mb == 0 && peer.fitness.success_rate > 0.5) {
+    // is different. The report must actually exist: an unreported figure is
+    // also zero, and "no data" must never read as "no space" (it would mark
+    // every healthy peer -- unlimited-quota nodes included -- degraded).
+    if (peer.fitness.quota_reported && peer.fitness.free_quota_mb == 0 &&
+        peer.fitness.success_rate > 0.5) {
       ++over;
       network_->peers().SetState(peer.node_id, NodeLifecycleState::kDegraded);
       DSN_LOG_WARN("supervisor", "peer " << peer.node_id << " reports no free quota (fitness "

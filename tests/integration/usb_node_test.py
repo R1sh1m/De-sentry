@@ -79,7 +79,11 @@ def main() -> int:
         print("[2] unplugging")
         stick.stop()
         report.check(not stick.running(), "the portable node is gone")
-        time.sleep(2.0)
+        # The mesh only treats the stick as offline once it is stale (3x the
+        # gossip interval + 5s, ~6.2s here). Writing before that grace period
+        # would go out with the stick still "reachable" and nobody would hold
+        # it -- the same timing the transit test documents.
+        time.sleep(8.0)
 
         print("[3] writing while it is unplugged")
         host.client.put(COLLECTION, "sample-3", {"reading": 30.1, "where": "roof"})

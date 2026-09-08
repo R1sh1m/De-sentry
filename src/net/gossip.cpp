@@ -180,8 +180,10 @@ void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
   if (delta.entries.empty()) return;
 
   // Record what the peer's ledger height is, which feeds the freshness term
-  // of its fitness score and the supervisor's checkpoint quorum.
-  peers_->RecordReport(peer.node_id, delta.entries.back().entry_id, 0);
+  // of its fitness score and the supervisor's checkpoint quorum. Height only:
+  // a ledger delta carries no quota figure, and reporting 0 here would make
+  // every peer look out of space to the supervisor.
+  peers_->RecordLedgerHeight(peer.node_id, delta.entries.back().entry_id);
 
   // Transit intents naming this node are the trigger for a claim pass: the
   // whole point of the hash-only exchange is that a returning node discovers

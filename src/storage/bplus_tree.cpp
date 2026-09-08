@@ -92,6 +92,11 @@ StatusOr<page_id_t> BPlusTree::CreateNew(BufferPoolManager* bpm) {
 }
 
 page_id_t BPlusTree::FindLeaf(const std::string& key) const {
+  // A descent visits one page per tree level; a legitimate height is a
+  // handful of pages (fanout is in the hundreds). Anything past this bound
+  // is a cycle through a corrupt or never-flushed page -- and without the
+  // bound that cycle spins forever, wedging the whole node process.
+  constexpr int kMaxDescent = 256;
   page_id_t cur = root_page_id_;
   // A descent is bounded by the tree's height, and the height is bounded by
   // log(fanout) of anything that fits on this disk -- 64 hops is orders of

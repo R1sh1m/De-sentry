@@ -315,7 +315,7 @@ void TestUnclaimedIntentsBlockPruning() {
   const lsn_t last = append(WalRecordType::kPut, "b");
 
   const auto entries = wal->ReadAll().value();
-  const auto unclaimed = UnclaimedIntentsThrough(entries, last);
+  const auto unclaimed = UnclaimedIntentsBelow(entries, last);
 
   // held-1 was claimed, so its bytes are no longer needed. held-2 was not:
   // pruning it would throw away a write that an offline node has not yet
@@ -326,7 +326,7 @@ void TestUnclaimedIntentsBlockPruning() {
   // Through the claimed pair only -- the bound is inclusive, so 2 is the
   // CLAIMED for held-1 and the unclaimed held-2 intent at 3 is out of scope.
   // Nothing is outstanding there.
-  const auto safe = UnclaimedIntentsThrough(entries, 2);
+  const auto safe = UnclaimedIntentsBelow(entries, 2);
   assert(safe.empty());
 }
 
@@ -336,34 +336,37 @@ void TestPruneKeepsTheChainVerifiable() {
   Fresh(dir);
   const std::string path = dir + "/ledger.wal";
 
-  lsn_t checkpoint = 0;
-  size_t puts_written = 0;
+  // Pruning is garbage collection of *settled transit pairs*, not truncation:
+  // PUT/DEL/CHECKPOINT entries are never dropped, however far below the
+  // checkpoint they sit. What verifies after a prune is the re-derived chain
+  // over the survivors.
+  auto append_put = [&](WriteAheadLog* wal, const std::string& key) {
+    WriteAheadLog::AppendOptions options;
+    options.hlc = g_clock.Now();
+    assert(wal->Append(WalRecordType::kPut, "c", key, "v", options).ok());
+  };
+  auto append_transit = [&](WriteAheadLog* wal, WalRecordType type, const std::string& key) {
+    WriteAheadLog::AppendOptions options;
+    options.hlc = g_clock.Now();
+    options.transit_owner = "owner-node";
+    assert(wal->Append(type, "things", key, "bytes", options).ok());
+  };
+
   {
     auto wal = OpenWal(path);
-    auto append = [&](WalRecordType type, const std::string& key) {
-      WriteAheadLog::AppendOptions options;
-      options.hlc = g_clock.Now();
-      if (type != WalRecordType::kPut) options.transit_owner = "owner-node";
-      auto lsn = wal->Append(type, "c", key, "v", options);
-      assert(lsn.ok());
-      return lsn.value();
-    };
+    append_put(wal.get(), "keep-early");            // lsn 0: survives (history is kept)
+    append_transit(wal.get(), WalRecordType::kTransitIntent, "done-1");   // lsn 1: dropped
+    append_transit(wal.get(), WalRecordType::kTransitClaimed, "done-1");  // lsn 2: dropped
+    append_put(wal.get(), "keep-mid");              // lsn 3: survives
+    append_transit(wal.get(), WalRecordType::kTransitIntent, "done-2");   // lsn 4: dropped
+    append_transit(wal.get(), WalRecordType::kTransitClaimed, "done-2");  // lsn 5: dropped
+    append_transit(wal.get(), WalRecordType::kTransitIntent, "pending");  // lsn 6: unclaimed, survives
+    append_put(wal.get(), "keep-late");             // lsn 7: survives
 
-    for (int i = 0; i < 20; ++i) {
-      append(WalRecordType::kPut, "k" + std::to_string(i));
-      ++puts_written;
-    }
-    // A settled handoff: intent and claim both below the checkpoint. This
-    // pair is what a prune is allowed to remove.
-    append(WalRecordType::kTransitIntent, "handoff");
-    checkpoint = append(WalRecordType::kTransitClaimed, "handoff");
-    for (int i = 20; i < 30; ++i) {
-      append(WalRecordType::kPut, "k" + std::to_string(i));
-      ++puts_written;
-    }
-
-    auto pruned = wal->Prune(checkpoint);
+    auto pruned = wal->Prune(5);
     assert(pruned.ok());
+    assert(pruned.value().dropped == 4);
+    assert(pruned.value().pruned_through == 5);
     // Verification after a prune has to succeed. A chain that only verified
     // from entry zero would mean checkpointing permanently broke the audit --
     // exactly the property the checkpoint exists to preserve.
@@ -376,18 +379,27 @@ void TestPruneKeepsTheChainVerifiable() {
     const auto verified = wal->VerifyChain();
     assert(verified.ok);
     auto entries = wal->ReadAll().value();
-    assert(!entries.empty());
-
-    // What a prune drops is the settled transit pair, and nothing else.
-    // PUT/DEL/CHECKPOINT entries are the history the chain attests to: GC
-    // that removed them would be rewriting the audit, not compacting it.
-    size_t puts = 0;
+    assert(entries.size() == 4);
+    // Survivors keep their original LSNs: a checkpoint stays a meaningful
+    // cursor across prunes, and no LSN is ever reused for a different entry
+    // (which dense renumbering would do). The chain links by hash, not by
+    // consecutive LSN, so gaps verify fine.
+    assert(entries[0].lsn == 0);
+    assert(entries[1].lsn == 3);
+    assert(entries[2].lsn == 6);
+    assert(entries[3].lsn == 7);
+    // The settled pairs are gone; the documents and the unclaimed intent are not.
+    bool saw_early = false, saw_mid = false, saw_late = false, saw_pending = false;
     for (const WalRecord& rec : entries) {
-      assert(rec.type != WalRecordType::kTransitIntent);
-      assert(rec.type != WalRecordType::kTransitClaimed);
-      if (rec.type == WalRecordType::kPut) ++puts;
+      if (rec.type == WalRecordType::kPut && rec.key == "keep-early") saw_early = true;
+      if (rec.type == WalRecordType::kPut && rec.key == "keep-mid") saw_mid = true;
+      if (rec.type == WalRecordType::kPut && rec.key == "keep-late") saw_late = true;
+      if (rec.IsTransit()) {
+        assert(rec.key == "pending");
+        saw_pending = true;
+      }
     }
-    assert(puts == puts_written);
+    assert(saw_early && saw_mid && saw_late && saw_pending);
     assert(wal->Tip().entry_id == entries.back().lsn);
   }
 }
