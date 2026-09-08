@@ -571,7 +571,19 @@ void NetworkManager::ProbeLoop() {
       const bool ok = response.ok() && response.value().type == MessageType::kPong;
       peer_table_.RecordProbe(peer.node_id, rtt, ok);
       if (ok) {
-        PeerInfo seen = peer;
+        // The kPing response carries the responder's handshake-proven
+        // node_id, so a successful probe is also an identification: retire a
+        // `bootstrap#host:port` placeholder under the real identity. The id
+        // is trusted because it arrived over the authenticated channel, not
+        // because the peer claims it.
+        const std::string proven = response.value().payload;
+        std::string key = peer.node_id;
+        if (!proven.empty() && proven != key) {
+          if (peer_table_.AdoptIdentity(key, proven)) key = proven;
+        }
+        PeerInfo seen;
+        if (!peer_table_.Get(key, &seen)) seen = peer;
+        seen.node_id = key;
         seen.last_seen_ms = NowMs();
         if (seen.state == NodeLifecycleState::kDegraded) seen.state = NodeLifecycleState::kRunning;
         peer_table_.Upsert(seen);

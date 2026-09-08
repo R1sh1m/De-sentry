@@ -46,8 +46,8 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
     return identity->Sign(message);
   });
 
-  auto transit_or = TransitStore::Open(&engine->storage_->router(), options.transit_ttl_seconds,
-                                        engine->identity_->node_id());
+  auto transit_or = TransitStore::Open(options.data_dir, options.transit_ttl_seconds,
+                                         engine->identity_->node_id());
   if (!transit_or.ok()) return transit_or.status();
   engine->transit_ = std::move(transit_or.value());
 
@@ -144,11 +144,12 @@ Status NodeEngine::DeleteDocument(const std::string& collection, const std::stri
 StatusOr<JsonValue> NodeEngine::GetDocument(const std::string& collection, const std::string& key,
                                              const Requestor& who) {
   if (!CanRead(collection, who)) {
-    // NotFound, not AuthError: an error that distinguishes "you may not read
-    // this" from "this does not exist" tells the stranger the collection is
-    // there. ListDocuments() hides the keys for the same reason
-    // (docs/architecture-v2.md Sec 6.3).
-    return Status::NotFound("no such collection: " + collection);
+    // Deliberately kNotFound, not kAuthError: an error that distinguishes
+    // "you may not read this" from "this does not exist" tells a stranger
+    // the collection is there. ListDocuments() and ReadableCollections()
+    // already answer "nothing here" to non-readers; GetDocument() must not
+    // be the oracle that contradicts them.
+    return Status::NotFound("no such document: " + collection + "/" + key);
   }
   auto raw_or = storage_->GetRaw(collection, key);
   if (!raw_or.ok()) return raw_or.status();
@@ -178,11 +179,15 @@ std::vector<std::pair<std::string, JsonValue>> NodeEngine::ListDocuments(
 Status NodeEngine::MergeRemote(const std::string& collection, const std::string& key,
                                 const std::string& remote_encoded_doc, const Requestor& who) {
   if (collection == kTransitCollection) {
-    // Transit envelopes do replicate between replicas -- that is how a second
-    // holder learns it is also holding -- but only from an authenticated peer,
+    // Transit envelopes replicate between holders through the sidecar log,
+    // not through document storage -- but only from an authenticated peer,
     // never from a local API caller pretending to be one.
     if (who.is_local) return Status::InvalidArgument("transit envelopes are not locally writable");
-  } else if (!CanWrite(collection, who)) {
+    auto env_or = TransitStore::Decode(remote_encoded_doc);
+    if (!env_or.ok()) return env_or.status();
+    return transit_->MergeRemoteEnvelope(env_or.value());
+  }
+  if (!CanWrite(collection, who)) {
     return Status::AuthError("node " + who.node_id + " may not write to collection " + collection);
   }
 
@@ -309,7 +314,14 @@ Status NodeEngine::ApplyClaimedTransit(const std::string& collection, const std:
   Status st = MergeRemote(collection, key, encoded_doc, Requestor::Peer(identity_->node_id()));
   if (!st.ok()) return st;
   const HLCTimestamp ts = clock_->Now();
-  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitClaimed, collection, key,
+  // The claim is recorded under this node's own id as the collection, so its
+  // key_hash -- SHA-256(self || key) -- is the same value the holder's
+  // TRANSIT_INTENT for these bytes carries (the holder records the owner in
+  // its collection field too). Recording it under the document's collection
+  // instead would hash differently and the pair would never match, leaving
+  // every intent permanently "unclaimed" as far as the checkpoint gate can
+  // tell.
+  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitClaimed, identity_->node_id(), key,
                                           LedgerKeyHash(collection, key), ts);
   if (!lsn_or.ok()) return lsn_or.status();
   DSN_LOG_INFO("transit", "claimed held document " << collection << "/" << key);
@@ -323,9 +335,22 @@ Status NodeEngine::RecordRemoteClaim(const std::string& owner_node, const std::s
   const HLCTimestamp ts = clock_->Now();
   // The owner is recorded in the collection field, matching the INTENT this
   // claim settles -- RunCheckpoint() reads it back from there to release the
-  // envelope.
-  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitClaimed, owner_node,
-                                          HexEncode(key_hash), key_hash, ts);
+  // envelope. The key must be the real key, recovered from the envelope, so
+  // the stored key_hash -- SHA-256(owner || key) -- equals the intent's. A
+  // hex-of-hash placeholder would hash differently and never match.
+  std::string key = HexEncode(key_hash);
+  auto env_or = transit_->Lookup(owner_node, key_hash);
+  if (env_or.ok()) {
+    key = env_or.value().key;
+  } else {
+    // Best effort: the envelope is already gone (expired or released), so
+    // there is nothing left to match against. The claim is still recorded --
+    // the ledger is the audit trail, and a missing envelope is itself
+    // information -- but it settles no pair.
+    DSN_LOG_WARN("transit", "claim from " << owner_node << " names bytes this node no longer holds");
+  }
+  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitClaimed, owner_node, key, key_hash,
+                                          ts);
   if (!lsn_or.ok()) return lsn_or.status();
   return Status::OK();
 }

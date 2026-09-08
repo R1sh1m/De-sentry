@@ -1,7 +1,7 @@
 #include "desentry/storage/disk_manager.h"
 
-
 #include "desentry/common/logger.h"
+#include "desentry/common/platform.h"
 
 namespace desentry {
 
@@ -24,11 +24,10 @@ StatusOr<std::unique_ptr<DiskManager>> DiskManager::Open(const std::string& db_f
     return Status::IOError("cannot open data file: " + db_file);
   }
 
-  struct stat st{};
-  int64_t next_page_id = 0;
-  if (::stat(db_file.c_str(), &st) == 0) {
-    next_page_id = static_cast<int64_t>(st.st_size) / static_cast<int64_t>(kPageSize);
-  }
+  // Size via the platform shim (platform.h is the only file that touches
+  // stat/chmod APIs, so this stays portable to Windows).
+  const int64_t next_page_id =
+      static_cast<int64_t>(FileSize(db_file)) / static_cast<int64_t>(kPageSize);
 
   std::unique_ptr<DiskManager> mgr(new DiskManager(std::move(file), db_file, next_page_id));
   DSN_LOG_INFO("disk", "opened " << db_file << " with " << next_page_id << " existing pages");

@@ -189,8 +189,7 @@ std::vector<EngineRow> KvBPlusBackend::Scan(const std::string& collection,
   return out;
 }
 
-Status KvBPlusBackend::Verify() {
-  // Every key the index reports must resolve to a readable record. This
+Status KvBPlusBackend::Verify() {  // Every key the index reports must resolve to a readable record. This
   // catches exactly the failure the v1 crash-recovery bug produced (an
   // index entry pointing at a page that was never flushed) rather than
   // waiting for a reader to hit it.

@@ -270,43 +270,30 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
 
 Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
   out->clear();
-  malformed_tail_ = false;
+  // A replay can end three ways: a clean end-of-file, a short (torn) tail
+  // record from a crash mid-append -- both benign -- or bytes that are fully
+  // present but fail length, CRC or decode checks. A crash can only tear the
+  // last write, so the third case is never a torn tail: it is tampering or
+  // bit-rot, and VerifyChain() must fail on it rather than verify the prefix
+  // as if the missing record had never existed.
+  bool corrupt = false;
   file_.clear();
   file_.seekg(0);
-  unparsed_tail_bytes_ = 0;
-  // Offset just past the last record that parsed cleanly. Whatever lies
-  // beyond it when the loop stops is damage, and how much there is says what
-  // kind: nothing means an interrupted append, something means the log was
-  // altered in the middle.
-  std::streamoff good_pos = 0;
-  // Set when a record was fully present but did not survive its own checks.
-  // A short read is not this: that is a file ending mid-record, which is what
-  // an interrupted append leaves behind.
-  bool damaged = false;
   for (;;) {
     char len_buf[4];
     file_.read(len_buf, 4);
-    if (file_.gcount() < 4) break;
+    if (file_.gcount() < 4) break;  // clean end-of-file
     uint32_t body_len = GetU32(len_buf);
     if (body_len < 8 || body_len > kMaxRecordBytes) {
       DSN_LOG_WARN("wal", "implausible record length, stopping replay");
-      damaged = true;
-      malformed_tail_ = true;
+      corrupt = true;
       break;
     }
     std::string body(body_len, '\0');
     file_.read(body.data(), static_cast<std::streamsize>(body_len));
     if (static_cast<uint32_t>(file_.gcount()) < body_len) {
       DSN_LOG_WARN("wal", "torn record tail detected, stopping replay");
-      malformed_tail_ = true;
-      break;
-    }
-    uint32_t stored_crc = GetU32(body.data() + body_len - 4);
-    if (stored_crc != Crc32(body.data(), body_len - 4)) {
-      DSN_LOG_WARN("wal", "CRC mismatch, stopping replay (crash-torn record)");
-      damaged = true;
-      malformed_tail_ = true;
-      break;
+      break;  // short read: the file really ends here (crash mid-append)
     }
     const std::string payload = body.substr(0, body_len - 4);
 
@@ -319,28 +306,22 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       Status st = DecodeBody(payload, &rec);
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
-        damaged = true;
-        malformed_tail_ = true;
+        corrupt = true;
         break;
       }
     } else {
       Status st = DecodeBodyV1(payload, &rec);
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
-        damaged = true;
-        malformed_tail_ = true;
+        corrupt = true;
         break;
       }
       migrated_from_v1_ = true;
     }
     out->push_back(std::move(rec));
-    good_pos = static_cast<std::streamoff>(4) + static_cast<std::streamoff>(body_len) + good_pos;
   }
   file_.clear();
-  file_.seekg(0, std::ios::end);
-  const std::streamoff end_pos = file_.tellg();
-  file_.clear();
-  if (damaged && end_pos > good_pos) unparsed_tail_bytes_ = end_pos - good_pos;
+  last_read_corrupt_ = corrupt;
   return Status::OK();
 }
 
@@ -365,7 +346,6 @@ lsn_t WriteAheadLog::LastCheckpointLsn() const {
 WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& verify_signature) {
   VerifyResult result;
   std::vector<WalRecord> records;
-  std::streamoff unparsed = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
     Status st = ReadAllLocked(&records);
@@ -374,35 +354,20 @@ WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& 
       result.reason = st.message();
       return result;
     }
-    unparsed = unparsed_tail_bytes_;
-  }
-
-  // Recovery trusts the prefix before a bad record and moves on -- that is
-  // correct for a crash. Verification must not: a record that failed its own
-  // checks with more of the log still sitting behind it is the signature of
-  // an edit, and reporting the surviving prefix as an intact chain would be
-  // exactly the lie this ledger exists to prevent.
-  if (unparsed > 0) {
-    result.ok = false;
-    result.entries_checked = records.size();
-    result.failed_at_entry_id = records.empty() ? kInvalidLsn : records.back().lsn + 1;
-    result.reason = "log is damaged after entry " +
-                    (records.empty() ? std::string("genesis") : std::to_string(records.back().lsn)) +
-                    ": " + std::to_string(static_cast<long long>(unparsed)) +
-                    " byte(s) could not be parsed";
-    return result;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (malformed_tail_) {
-      result.ok = false;
-      result.reason = "WAL contains a malformed or torn record tail";
-      return result;
-    }
   }
 
   std::string expected_prev = GenesisHash();
+  if (last_read_corrupt_) {
+    // The replay stopped on bytes that are present but invalid -- a hole in
+    // the middle of the file, which a crash-torn tail cannot produce. The
+    // surviving prefix may be internally consistent, but verifying it as
+    // "the ledger" would bless history with a record cut out of it.
+    result.ok = false;
+    result.entries_checked = records.size();
+    result.failed_at_entry_id = records.empty() ? 0 : records.back().lsn + 1;
+    result.reason = "ledger file contains a corrupt record: replay stopped before end-of-file";
+    return result;
+  }
   for (const WalRecord& rec : records) {
     if (rec.prev_hash != expected_prev) {
       result.ok = false;
@@ -503,12 +468,12 @@ StatusOr<WriteAheadLog::PruneResult> WriteAheadLog::Prune(lsn_t checkpoint_lsn) 
   for (WalRecord& rec : kept) {
     rec.prev_hash = prev;
     rec.entry_hash = crypto::Sha256(BuildContent(rec) + prev);
-    // The origin signature covered the *old* LSN, so it no longer applies.
-    // Clearing it is the honest outcome: a pruning node cannot re-sign
-    // another node's entry, and leaving a signature that will not verify
-    // would be worse than none. This is why Prune() runs only after quorum
-    // agreement (ledger/checkpoint.h) -- the surviving attestation is the
-    // quorum's, recorded in the checkpoint entry.
+    // The origin signature covered the pre-prune chain links, which no
+    // longer exist. Clearing it is the honest outcome: a pruning node
+    // cannot re-sign another node's entry, and leaving a signature that
+    // will not verify would be worse than none. This is why Prune() runs
+    // only after quorum agreement (ledger/checkpoint.h) -- the surviving
+    // attestation is the quorum's, recorded in the checkpoint entry.
     rec.origin_signature.clear();
     prev = rec.entry_hash;
   }

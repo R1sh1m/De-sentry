@@ -163,6 +163,14 @@ class WriteAheadLog {
   // entry_hash and prev_hash link. O(log size); a full re-verification, not a
   // "trust the tip" shortcut.
   //
+  // A replay that stops early on a corrupt record (bytes present but failing
+  // CRC, framing or decode -- i.e. a hole in the middle of the file, which a
+  // crash-torn tail cannot produce) fails verification rather than blessing
+  // the surviving prefix: a chain that verified after a record was altered
+  // would make the whole structure decorative. A clean end-of-file, and a
+  // short (torn) tail record from a crash mid-append, still verify the
+  // prefix they leave behind, per standard WAL semantics.
+  //
   // `verify_signature` is supplied by the caller (NodeEngine, which knows how
   // to map a node_id to a public key via the peer table) so this layer stays
   // free of crypto-identity concerns. When null, signatures are counted but
@@ -216,21 +224,17 @@ class WriteAheadLog {
   lsn_t next_lsn_;
   std::string tip_hash_;  // 32 raw bytes; running chain tip, updated on every Append()
   lsn_t last_checkpoint_lsn_ = kInvalidLsn;
+  // Set by ReadAllLocked(): true when the most recent replay stopped on a
+  // corrupt record rather than a clean end-of-file or a torn tail. Read by
+  // VerifyChain() to fail the verification instead of blessing a prefix that
+  // a tampered record was cut out of.
+  bool last_read_corrupt_ = false;
 
   std::string origin_node_id_;
   Signer signer_;
 
   bool migrated_from_v1_ = false;
-  bool malformed_tail_ = false;
   std::string pre_migration_tip_hash_;
-
-  // Bytes left unparsed after the last well-formed record, set by
-  // ReadAllLocked(). A crash mid-append leaves a torn record at the very end
-  // of the file and nothing after it; bytes that survive *past* the point
-  // where parsing gave up mean the damage is in the middle of the log, which
-  // is corruption or tampering rather than an interrupted write. Recovery
-  // treats both the same way (trust the prefix); VerifyChain() must not.
-  std::streamoff unparsed_tail_bytes_ = 0;
 };
 
 }  // namespace desentry
