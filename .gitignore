@@ -175,4 +175,5 @@ app/src-tauri/binaries/
 # The sizing model and the ONNX Runtime are fetched once as a build step
 # (`npm run fetch-model`) and bundled into the installer. ~40 MB of binaries
 # nobody can review does not belong in a source tree.
-app/resources/model/
+app/resources/model/*
+!app/resources/model/README.md

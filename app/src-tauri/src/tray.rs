@@ -31,6 +31,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, state: Arc<AppState>) -> tauri::Res
 
     let menu = Menu::with_items(app, &[&status, &separator, &show, &background, &separator, &quit])?;
 
+    // Hold on to the status item. `TrayIcon` exposes `set_menu` but no getter
+    // for the menu it already has, so there is no way to walk back to this
+    // item later from the tray -- and rebuilding the whole menu on every node
+    // state change to edit one line would be silly. Managed state keyed by
+    // type is the cheapest handle that outlives this function.
+    app.manage(status.clone());
+
     let handler_state = Arc::clone(&state);
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
@@ -101,11 +108,7 @@ pub fn update_status<R: Runtime>(app: &AppHandle<R>, running: usize, total: usiz
 
     // The tooltip needs a hover; the disabled first menu item is what someone
     // sees the moment they open the menu, so it carries the same line.
-    if let Some(menu) = tray.menu() {
-        if let Some(item) = menu.get("status") {
-            if let Some(item) = item.as_menuitem() {
-                let _ = item.set_text(&text);
-            }
-        }
+    if let Some(status) = app.try_state::<MenuItem<R>>() {
+        let _ = status.set_text(&text);
     }
 }

@@ -45,6 +45,8 @@ const READY_POLL: Duration = Duration::from_millis(150);
 const MAX_RESTARTS: u32 = 5;
 const RESTART_WINDOW: Duration = Duration::from_secs(120);
 /// Grace period between asking a node to stop and killing it.
+// Only the Unix path asks politely before killing, so this is only used there.
+#[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Captured log lines kept per node. Enough to see a startup failure in full.
 const LOG_CAPACITY: usize = 2000;

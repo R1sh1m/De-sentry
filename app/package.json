@@ -14,6 +14,7 @@
     "tauri:build": "node scripts/stage-sidecar.mjs && tauri build",
     "fetch-model": "node scripts/fetch-model.mjs",
     "check:qr": "node tests/qr.check.mjs",
+    "check:css": "node tests/css.check.mjs",
     "icons": "python scripts/make-icons.py",
     "stage-sidecar": "node scripts/stage-sidecar.mjs"
   },

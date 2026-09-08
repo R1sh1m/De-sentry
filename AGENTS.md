@@ -154,6 +154,7 @@ cd app
 npm install            # dev-time only; the shipped app fetches nothing
 npm run typecheck      # tsc --noEmit
 npm run check:qr       # QR encoder vs the ISO published constants
+npm run check:css      # the [hidden] reset that keeps hidden elements hidden
 npm run build          # typecheck + vite build
 npm run tauri:dev      # dev shell (expects desentryd on PATH or staged)
 npm run fetch-model    # one-time: pull MiniLM into app/resources/
@@ -223,6 +224,10 @@ ClickHouse/QuestDB). Anything vendored must be permissive and must sit under
 - Never `innerHTML` with anything a peer or a user typed — collection names and
   document keys arrive from the mesh. Use the DOM helpers in `util/dom.ts`, or
   escape. (v1's `tools/dashboard.html` got this wrong; it now escapes.)
+- **`[hidden] { display: none !important }` must stay in the `styles.css`
+  reset.** The `hidden` attribute works only through the user-agent
+  stylesheet, which loses to any author rule that sets `display` -- so without
+  it, hiding an element does nothing. `npm run check:css` enforces this.
 - Design tokens come from `app/src/tokens.css` and are documented in
   `DESIGN.md`. Only the status hues (converged / lagging / offline /
   supervisor) are allowed to carry meaning through colour.

@@ -11,14 +11,15 @@ knowingly unfinished. The design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
-> **Read this first — what has actually been run.** The engine now builds and
-> runs: on Windows 11 with MSYS2 UCRT64 GCC 16.2, CMake 4.4.2 + Ninja and
-> OpenSSL 3.6.4, `ctest` is **9/9 green** and four Python integration suites
-> pass against real `desentryd` processes. The **Rust sidecar and the Tauri
-> app have still never been compiled** (no cargo on that machine), and nothing
-> has been built on Linux, macOS, or MSVC. [§3](#3-verification) lists
-> exactly what was executed and what was not; treat anything not listed there
-> as designed, not observed.
+> **Read this first — what has actually been run.** Both halves now build and
+> run on Windows 11. The engine: MSYS2 UCRT64 GCC 16.2 + CMake 4.4.2 + Ninja +
+> OpenSSL 3.6.4, `ctest` **9/9 green**, four Python integration suites passing
+> against real `desentryd` processes. The desktop app: Rust 1.98.1 MSVC,
+> `cargo check` clean, and the app **runs** — window up, supervisor sidecar
+> spawned, hardware scan returning real volumes. Not yet done: **no installer
+> has been produced** (`tauri build` has never run), the ONNX sizing path has
+> never been compiled, and nothing has been built on Linux, macOS, or with
+> MSVC for the C++ side. [§3](#3-verification) is the exact list.
 
 ---
 
@@ -114,6 +115,9 @@ Toolchain actually used: **Windows 11**, MSYS2 UCRT64 **GCC 16.2.0**,
 | `python tests/integration/soak_test.py --nodes 12 --writes 150 --chaos 3` | ALL 9 CHECKS PASSED — 12 real processes, 3 killed mid-write, all converged, every hash chain verified |
 | A live single node (`desentryd --config node.json`) | identity generated, 5 engines loaded, P2P listener + UDP discovery + REST API up; PUT/GET/scan, `_collection/.../engine` binding to `ts_rollup`, `_collection/.../acl`, `_quota`, `_brain`, `_ledger/verify` all correct; **data and the signed ledger survived a restart** |
 | `npx tsc --noEmit` and `npx vite build` in `app/` | clean: 71.63 kB JS, 19.61 kB CSS |
+| `cargo check --no-default-features` (Rust 1.98.1 MSVC) | **0 errors**, 2 dead-code warnings, both from the deliberately-excluded ONNX path |
+| `tauri dev` debug build | compiled 408 crates in 1m 12s |
+| The desktop app itself | window opens (1376×919, responding), spawns its supervisor sidecar on 7701/7801, and `/_supervisor/topology` returns a real hardware scan of the machine's volumes |
 | `node app/tests/qr.check.mjs` | ALL CHECKS PASSED against the ISO/IEC 18004 published constants |
 | `python -m py_compile` on the client, the harness and all 5 integration tests | clean |
 
@@ -121,27 +125,26 @@ Toolchain actually used: **Windows 11**, MSYS2 UCRT64 **GCC 16.2.0**,
 
 | Not run | Reason |
 | --- | --- |
-| `cargo check` / `cargo build` — **no Rust has ever been compiled** | cargo/rustc are not installed on the machine used |
-| `npm run tauri:build` — no installer has been produced | needs cargo |
-| The desktop app end to end | same |
+| `npm run tauri:build` — **no installer has been produced** | not attempted; only the dev build has run |
+| The app's node-creation flow end to end | the window renders and the supervisor answers, but creating a node through the wizard has not been driven |
+| The ONNX sizing path | built with `--no-default-features`; `ort` and the model have never been compiled or loaded |
 | `cluster_integration_test.py` | wants a cluster started separately; the other four suites cover the same ground through the harness |
 | `soak_test.py` at the full 50 nodes | run at 12; 50 was not attempted on this machine |
 | Any build on Linux, macOS, or MSVC | only the MSYS2 UCRT64 toolchain was available |
 | The vendored backends (SQLite / DuckDB / LMDB / sqlite-vec) | `OFF` by default; their sources are not vendored here |
 | The ONNX sizing path | the model is a build-step download that was not run; the keyword fallback is what has been exercised |
 
-The Rust sidecar is therefore the largest unverified surface in the tree.
-Known hazards in it were handled deliberately (`checked_sub` on `Instant`,
-`libc::kill` rather than a hand-declared extern, never holding the node-map
-mutex across a restart wait) — but as the C++ side just demonstrated, code
-that has never been compiled has never been checked. Expect the first
-`cargo check` to find things.
+The Rust survived first contact with a compiler far better than the C++ did:
+one API error against eleven defects. The bugs the app build did surface were
+all in its **configuration** rather than its code — and every one of them
+would have stopped anyone building from a clean checkout (see §4).
 
-**Next, on a machine with the full toolchain:**
+**Next:**
 
-1. `cd app && cargo check --manifest-path src-tauri/Cargo.toml`
-2. `npm run tauri:build`
-3. The same `cmake` + `ctest` run on Linux and macOS, and once under MSVC.
+1. `npm run tauri:build` — produce and install the MSI.
+2. Drive the creation wizard: make a node through the app, not by hand.
+3. `npm run fetch-model` and build with ONNX enabled.
+4. The same `cmake` + `ctest` on Linux and macOS, and once under MSVC.
 
 ---
 
@@ -227,6 +230,38 @@ than reading it.
   which is what a replication test actually cares about.
 - **`network_test` slept fixed intervals** and failed on a busy machine. It
   now waits on the condition with a generous bound.
+
+**v2, found by building the desktop app for the first time.** All three were
+in the app's build configuration rather than its Rust, and each one stopped
+the build before a line of code compiled — so anyone cloning the repo would
+have hit them immediately:
+
+- **The build hard-failed without the optional AI model.**
+  `tauri.conf.json` bundles `resources/model/` unconditionally, and Tauri's
+  build script aborts on a missing resource path. The app is designed to run
+  without the model on a keyword fallback, so requiring a ~100 MB download to
+  compile at all contradicted its own design. A committed
+  `app/resources/model/README.md` now keeps the directory present, and
+  `.gitignore` keeps the binaries out.
+- **Both resource paths pointed at nothing.** Tauri resolves `bundle.resources`
+  relative to `tauri.conf.json` — that is `src-tauri/` — while the assets live
+  in `app/resources/`. Neither `resources/prototypes.json` nor
+  `resources/model/` could ever have resolved; both needed `../`.
+- **An invisible overlay covered the entire app.** The wizard sheet is
+  appended to `<body>` at startup and hidden with the `hidden` attribute --
+  but `hidden` acts only through the user-agent stylesheet's
+  `[hidden] { display: none }`, and a user-agent declaration loses to *any*
+  author declaration for the same property. `.sheet { display: grid }` won, so
+  a full-window blurred scrim at `inset: 0; z-index: 40` was painted over
+  everything and swallowed every click. The app started, drew the real UI
+  underneath, and was completely unusable. `styles.css` now carries
+  `[hidden] { display: none !important }` in its reset block, and
+  `npm run check:css` fails the build if it is ever removed or weakened --
+  the defect is invisible in review and total at runtime, which is exactly
+  the combination worth a guard.
+- **`TrayIcon::menu()` does not exist** in Tauri 2.11 (there is only
+  `set_menu`), so the tray's status line did not compile. The status
+  `MenuItem` is now kept in managed state and updated directly.
 
 **v2, found while writing it:**
 

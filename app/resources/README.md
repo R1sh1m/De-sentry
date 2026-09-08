@@ -63,3 +63,25 @@ dependencies entirely. The app builds smaller and faster, sizing uses the
 keyword path, and the UI reports `this build was compiled without the onnx
 feature`. Useful on a machine where the native runtime will not build; not what
 a release should ship.
+
+
+## How these files reach the app
+
+`src-tauri/tauri.conf.json` lists them under `bundle.resources`, and **its
+source paths are relative to that file** -- i.e. to `src-tauri/`, not to
+`app/`. These assets live one directory up, so the entries read:
+
+    "../resources/prototypes.json": "resources/prototypes.json"
+    "../resources/model/":          "resources/model/"
+
+The `../` is load-bearing. Without it the build fails before compiling a line
+of Rust, with `resource path 'resources\model' doesn't exist`.
+
+The value of each entry is where the file lands *inside the bundle*, and that
+is what `src-tauri/src/ai.rs` resolves against the resource directory at run
+time -- so the targets stay `resources/...` even though the sources are
+`../resources/...`. Do not "simplify" the two sides to match.
+
+Note also that tauri.conf.json is validated against a strict schema: unlike
+`config/node.example.json`, it rejects `"//"` comment keys outright. Notes
+about that file belong here.

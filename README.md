@@ -180,7 +180,11 @@ If `ort` (the ONNX runtime binding) will not build in your environment, the
 sizing model is separable:
 
 ```bash
-npm run tauri:build -- --no-default-features   # keyword heuristic instead
+# `--` twice: npm strips the first, and the Tauri CLI forwards what follows
+# the second to cargo. `tauri build --no-default-features` is rejected by the
+# CLI's own argument parser.
+npm run tauri:build -- -- --no-default-features   # keyword heuristic instead
+npm run tauri:dev   -- -- --no-default-features
 ```
 
 The app then sizes collections with the deterministic keyword fallback and
@@ -296,7 +300,9 @@ Every one of these is a missing prerequisite, not a bug in the tree.
 | `Package webkit2gtk-4.1 was not found` · `failed to run custom build command for 'soup3-sys'` | Tauri's Linux webview dependencies are missing | Install the desktop-app packages in [Prerequisites](#prerequisites) |
 | `failed to run custom build command for 'libappindicator-sys'` | No tray backend | `apt install libayatana-appindicator3-dev` |
 | Rust build fails on `onig_sys` | `tokenizers` builds a small C library | Install a C compiler (`build-essential` / Xcode CLT / MSVC) |
-| `ort` fails to build, or `libonnxruntime` is missing | The ONNX runtime is not available in your environment | Either `npm run fetch-model`, or build without it: `npm run tauri:build -- --no-default-features` |
+| `ort` fails to build, or `libonnxruntime` is missing | The ONNX runtime is not available in your environment | Either `npm run fetch-model`, or build without it: `npm run tauri:build -- -- --no-default-features` (two `--`; see above) |
+| `error: unexpected argument '--no-default-features' found` | The flag reached the Tauri CLI instead of cargo | Add the second `--`: `npm run tauri:dev -- -- --no-default-features` |
+| `resource path 'resources\model' doesn't exist` | `app/resources/model/` is missing — it is a build-step download | It only needs to *exist*; the committed `app/resources/model/README.md` keeps it there. Restore that file, or run `npm run fetch-model` |
 | `ModuleNotFoundError: No module named 'clients'` | The Python client is a module, not an installed package | `export PYTHONPATH="$PWD/clients/python"` and `from desentry_client import …` |
 | `ModuleNotFoundError: No module named 'PIL'` | Only `app/scripts/make-icons.py` needs Pillow | `python -m pip install -r app/scripts/requirements.txt` — or skip it; the icons are committed |
 | `CMake Error … DESENTRY_WITH_SQLITE=ON but third_party/…/sqlite3.c is missing` | **Working as intended.** The build never downloads | Vendor the sources per `third_party/README.md`, or leave the option `OFF` |
@@ -495,11 +501,11 @@ airplane-mode, USB-node and soak integration suites all pass against real
 scans, engine binding, ACLs, quota, a verified signed ledger, and everything
 intact across a restart.
 
-**The desktop app has not been built.** The Rust sidecar has never been
-compiled — no cargo on the machine used — so no installer exists and the
-control room has not been run. The frontend typechecks and bundles, and the QR
-encoder passes conformance checks against the ISO published constants, but
-that is the whole of it.
+**The desktop app builds and runs** (Rust 1.98.1 MSVC): `cargo check` is
+clean, the dev build compiles in about a minute, and the app opens, starts its
+supervisor sidecar, and reports a real hardware scan of the machine. **No
+installer has been produced yet** — `tauri build` has not been run — and the
+ONNX sizing path has never been compiled; the app uses the keyword fallback.
 
 Nothing here has been built on Linux, macOS, or with MSVC.
 

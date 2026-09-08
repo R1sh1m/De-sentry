@@ -10,6 +10,23 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute has to actually hide things.
+ *
+ * `hidden` works only through the user-agent stylesheet's `[hidden] { display:
+ * none }`, and a UA declaration loses to *any* author declaration for the same
+ * property. So a class that sets `display` -- `.sheet { display: grid }`, and
+ * every other component here -- silently overrides it, and an element the code
+ * marked hidden stays on screen. The wizard sheet is a full-window scrim at
+ * `inset: 0`, so getting this wrong put an unclickable overlay over the whole
+ * app.
+ *
+ * `!important` rather than relying on specificity: `[hidden]` and a single
+ * class have the same weight, which would make correctness depend on which
+ * rule happens to come later in the file. This must not be that fragile. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;

@@ -56,8 +56,8 @@
     "copyright": "",
     "externalBin": ["binaries/desentryd"],
     "resources": {
-      "resources/prototypes.json": "resources/prototypes.json",
-      "resources/model/": "resources/model/"
+      "../resources/prototypes.json": "resources/prototypes.json",
+      "../resources/model/": "resources/model/"
     },
     "windows": {
       "wix": {
