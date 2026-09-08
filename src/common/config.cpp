@@ -1,5 +1,6 @@
 #include "desentry/common/config.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -143,6 +144,14 @@ std::string NodeConfig::Validate() const {
   }
   for (const std::string& e : engines) {
     if (!IsKnownEngine(e)) return "unknown engine in engines[]: " + e;
+  }
+  // A default the node never loads leaves every unbound collection
+  // unroutable, and the failure would surface at first write rather than at
+  // boot. IsKnownEngine() above only says the name exists; this says this
+  // node actually has it.
+  if (!engines.empty() &&
+      std::find(engines.begin(), engines.end(), default_engine) == engines.end()) {
+    return "default_engine \"" + default_engine + "\" is not listed in engines[]";
   }
   if (replication_factor == 0) return "replication_factor must be >= 1";
   return std::string();

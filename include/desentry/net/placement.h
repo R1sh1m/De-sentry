@@ -75,6 +75,12 @@ struct PlacementPlan {
   uint32_t requested_rf = 0;
   bool under_replicated = false;         // fewer live nodes than requested_rf
   std::vector<std::string> skipped;      // candidates filtered out, for the UI to explain
+  // Nodes that would be replicas for this key if they were reachable right
+  // now. A node that goes away is dropped from the ring, so `replicas` names
+  // only the peers that can take the write -- which leaves nobody to notice
+  // that an absent owner is owed it. These are the owners the transit store
+  // holds bytes for (net/network_manager.cpp, ledger/transit_store.h).
+  std::vector<std::string> displaced_owners;
 
   const std::string& primary() const {
     static const std::string kNone;
@@ -125,6 +131,13 @@ class PlacementPolicy {
   std::string local_node_id_;
   PlacementOptions options_;
   ConsistentHashRing ring_;
+  // The same ring plus the peers that were only excluded for being absent
+  // (stale or degraded). Placement never uses it; it exists to answer "who
+  // *should* have had this write", which is the question the transit store
+  // is the answer to. Peers excluded for what they are rather than for being
+  // away -- supervisors, reclaimed nodes, un-handshaked placeholders -- are
+  // not in it: nothing is ever owed to them.
+  ConsistentHashRing ring_with_absent_;
   std::vector<std::string> skipped_;
 };
 

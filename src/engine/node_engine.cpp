@@ -144,11 +144,11 @@ Status NodeEngine::DeleteDocument(const std::string& collection, const std::stri
 StatusOr<JsonValue> NodeEngine::GetDocument(const std::string& collection, const std::string& key,
                                              const Requestor& who) {
   if (!CanRead(collection, who)) {
-    // Deliberately kAuthError, not kNotFound: this API is loopback-only and
-    // the peer path is authenticated, so there is no oracle worth hiding
-    // behind a lie, and "you may not read this" is far easier to act on than
-    // a phantom 404.
-    return Status::AuthError("node " + who.node_id + " may not read collection " + collection);
+    // NotFound, not AuthError: an error that distinguishes "you may not read
+    // this" from "this does not exist" tells the stranger the collection is
+    // there. ListDocuments() hides the keys for the same reason
+    // (docs/architecture-v2.md Sec 6.3).
+    return Status::NotFound("no such collection: " + collection);
   }
   auto raw_or = storage_->GetRaw(collection, key);
   if (!raw_or.ok()) return raw_or.status();
@@ -219,7 +219,11 @@ std::vector<DigestEntryOut> NodeEngine::LocalDigest(const std::string& collectio
   auto raw = storage_->Scan(collection, "", 0);
   out.reserve(raw.size());
   for (auto& [key, bytes] : raw) {
-    out.push_back(DigestEntryOut{key, DecodeDocument(bytes).MaxTimestamp()});
+    // Eight bytes is plenty: this only has to distinguish two copies of the
+    // same key on two peers, and a collision costs a skipped exchange that
+    // the next write repairs -- not a wrong merge.
+    out.push_back(DigestEntryOut{key, DecodeDocument(bytes).MaxTimestamp(),
+                                 crypto::Sha256(bytes).substr(0, 8)});
   }
   return out;
 }

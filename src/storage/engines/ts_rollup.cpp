@@ -43,7 +43,11 @@ int64_t TsRollupBackend::ExtractTimestampMs(const std::string& encoded_doc) {
     return 0;
   }
   JsonValue json = doc.ToJson();
-  const JsonValue* ts = FindNumeric(json, {"ts", "timestamp", "time"});
+  // The explicit-unit spellings are listed too, and deliberately: a point
+  // whose field is named timestamp_ms would otherwise fall through to the
+  // write-time fallback below and bucket by when it arrived instead of when
+  // it happened -- a wrong answer that looks like a working one.
+  const JsonValue* ts = FindNumeric(json, {"ts", "timestamp", "time", "timestamp_ms", "ts_ms", "time_ms"});
   if (ts != nullptr) return ts->AsInt();
   // Documented fallback: the document's own HLC physical time. A collection
   // whose points carry no explicit timestamp still buckets sensibly by when

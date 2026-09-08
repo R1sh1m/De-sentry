@@ -122,12 +122,16 @@ impl NodeConfigSpec {
 
             "supervisor": self.supervisor,
             "quota_mb": self.quota_mb,
+            // The JSON keys have no _pct suffix. The C++ struct fields do
+            // (config.h), and NodeConfig::Parse() reads the un-suffixed
+            // names -- a mismatch here is silent: the node boots, ignores the
+            // block, and runs on defaults that happen to also sum to 100.
             "quota_split": {
-                "db_pct": self.quota_split.db_pct,
-                "transit_store_pct": self.quota_split.transit_store_pct,
-                "cache_hash_pct": self.quota_split.cache_hash_pct,
-                "ledger_pct": self.quota_split.ledger_pct,
-                "net_buffers_pct": self.quota_split.net_buffers_pct,
+                "db": self.quota_split.db_pct,
+                "transit_store": self.quota_split.transit_store_pct,
+                "cache_hash": self.quota_split.cache_hash_pct,
+                "ledger": self.quota_split.ledger_pct,
+                "net_buffers": self.quota_split.net_buffers_pct,
             },
             "engines": self.engines,
             "default_engine": self.default_engine,

@@ -272,6 +272,16 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
   out->clear();
   file_.clear();
   file_.seekg(0);
+  unparsed_tail_bytes_ = 0;
+  // Offset just past the last record that parsed cleanly. Whatever lies
+  // beyond it when the loop stops is damage, and how much there is says what
+  // kind: nothing means an interrupted append, something means the log was
+  // altered in the middle.
+  std::streamoff good_pos = 0;
+  // Set when a record was fully present but did not survive its own checks.
+  // A short read is not this: that is a file ending mid-record, which is what
+  // an interrupted append leaves behind.
+  bool damaged = false;
   for (;;) {
     char len_buf[4];
     file_.read(len_buf, 4);
@@ -279,6 +289,7 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
     uint32_t body_len = GetU32(len_buf);
     if (body_len < 8 || body_len > kMaxRecordBytes) {
       DSN_LOG_WARN("wal", "implausible record length, stopping replay");
+      damaged = true;
       break;
     }
     std::string body(body_len, '\0');
@@ -290,6 +301,7 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
     uint32_t stored_crc = GetU32(body.data() + body_len - 4);
     if (stored_crc != Crc32(body.data(), body_len - 4)) {
       DSN_LOG_WARN("wal", "CRC mismatch, stopping replay (crash-torn record)");
+      damaged = true;
       break;
     }
     const std::string payload = body.substr(0, body_len - 4);
@@ -303,19 +315,26 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       Status st = DecodeBody(payload, &rec);
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
+        damaged = true;
         break;
       }
     } else {
       Status st = DecodeBodyV1(payload, &rec);
       if (!st.ok()) {
         DSN_LOG_WARN("wal", "stopping replay: " << st.message());
+        damaged = true;
         break;
       }
       migrated_from_v1_ = true;
     }
     out->push_back(std::move(rec));
+    good_pos = static_cast<std::streamoff>(4) + static_cast<std::streamoff>(body_len) + good_pos;
   }
   file_.clear();
+  file_.seekg(0, std::ios::end);
+  const std::streamoff end_pos = file_.tellg();
+  file_.clear();
+  if (damaged && end_pos > good_pos) unparsed_tail_bytes_ = end_pos - good_pos;
   return Status::OK();
 }
 
@@ -340,6 +359,7 @@ lsn_t WriteAheadLog::LastCheckpointLsn() const {
 WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& verify_signature) {
   VerifyResult result;
   std::vector<WalRecord> records;
+  std::streamoff unparsed = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
     Status st = ReadAllLocked(&records);
@@ -348,6 +368,23 @@ WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& 
       result.reason = st.message();
       return result;
     }
+    unparsed = unparsed_tail_bytes_;
+  }
+
+  // Recovery trusts the prefix before a bad record and moves on -- that is
+  // correct for a crash. Verification must not: a record that failed its own
+  // checks with more of the log still sitting behind it is the signature of
+  // an edit, and reporting the surviving prefix as an intact chain would be
+  // exactly the lie this ledger exists to prevent.
+  if (unparsed > 0) {
+    result.ok = false;
+    result.entries_checked = records.size();
+    result.failed_at_entry_id = records.empty() ? kInvalidLsn : records.back().lsn + 1;
+    result.reason = "log is damaged after entry " +
+                    (records.empty() ? std::string("genesis") : std::to_string(records.back().lsn)) +
+                    ": " + std::to_string(static_cast<long long>(unparsed)) +
+                    " byte(s) could not be parsed";
+    return result;
   }
 
   std::string expected_prev = GenesisHash();

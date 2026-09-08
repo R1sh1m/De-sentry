@@ -23,11 +23,11 @@ std::string CanonicalSalt(const std::string& a, const std::string& b) {
   return (a < b) ? (a + b) : (b + a);
 }
 
-Status SendPlain(int sockfd, const WireMessage& msg) {
+Status SendPlain(dsn_socket_t sockfd, const WireMessage& msg) {
   return WriteFrame(sockfd, EncodeMessage(msg));
 }
 
-StatusOr<WireMessage> RecvPlain(int sockfd, size_t max_len) {
+StatusOr<WireMessage> RecvPlain(dsn_socket_t sockfd, size_t max_len) {
   auto bytes_or = ReadFrame(sockfd, max_len);
   if (!bytes_or.ok()) return bytes_or.status();
   return DecodeMessage(bytes_or.value());
@@ -47,7 +47,7 @@ Status VerifyHello(const HelloPayload& hello) {
 
 }  // namespace
 
-StatusOr<HandshakeResult> ClientHandshake(int sockfd, const NodeIdentity& identity, uint16_t our_p2p_port) {
+StatusOr<HandshakeResult> ClientHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port) {
   auto eph = crypto::GenerateX25519();
 
   HelloPayload our_hello;
@@ -82,7 +82,7 @@ StatusOr<HandshakeResult> ClientHandshake(int sockfd, const NodeIdentity& identi
   return result;
 }
 
-StatusOr<HandshakeResult> ServerHandshake(int sockfd, const NodeIdentity& identity, uint16_t our_p2p_port) {
+StatusOr<HandshakeResult> ServerHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port) {
   auto req_or = RecvPlain(sockfd, kMaxHandshakeFrame);
   if (!req_or.ok()) return req_or.status();
   if (req_or.value().type != MessageType::kHello) return Status::AuthError("expected HELLO from client");
@@ -116,14 +116,14 @@ StatusOr<HandshakeResult> ServerHandshake(int sockfd, const NodeIdentity& identi
   return result;
 }
 
-Status SendEncrypted(int sockfd, SessionKeys* keys, const WireMessage& msg) {
+Status SendEncrypted(dsn_socket_t sockfd, SessionKeys* keys, const WireMessage& msg) {
   std::string plaintext = EncodeMessage(msg);
   std::string nonce = CounterNonce(keys->send_counter++);
   std::string sealed = crypto::AesGcmSeal(keys->send_key, nonce, plaintext, "");
   return WriteFrame(sockfd, sealed);
 }
 
-StatusOr<WireMessage> RecvEncrypted(int sockfd, SessionKeys* keys, size_t max_len) {
+StatusOr<WireMessage> RecvEncrypted(dsn_socket_t sockfd, SessionKeys* keys, size_t max_len) {
   auto sealed_or = ReadFrame(sockfd, max_len);
   if (!sealed_or.ok()) return sealed_or.status();
   std::string nonce = CounterNonce(keys->recv_counter++);

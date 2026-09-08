@@ -39,6 +39,7 @@ std::string DigestPayload::Encode() const {
   for (auto& e : entries) {
     w.Bytes(e.key);
     w.Bytes(e.top_ts_encoded);
+    w.Bytes(e.content_hash);
   }
   return w.TakeString();
 }
@@ -52,6 +53,7 @@ DigestPayload DigestPayload::Decode(const std::string& bytes) {
     DigestEntry e;
     e.key = r.Bytes();
     e.top_ts_encoded = r.Bytes();
+    e.content_hash = r.Bytes();
     d.entries.push_back(std::move(e));
   }
   return d;

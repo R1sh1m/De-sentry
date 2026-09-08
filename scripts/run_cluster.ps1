@@ -104,11 +104,11 @@ function Start-DesentryNode {
         supervisor  = [bool]$IsSupervisor
         quota_mb    = 0
         quota_split = [ordered]@{
-            db_pct            = 60
-            transit_store_pct = 15
-            cache_hash_pct    = 10
-            ledger_pct        = 10
-            net_buffers_pct   = 5
+            db            = 60
+            transit_store = 15
+            cache_hash    = 10
+            ledger        = 10
+            net_buffers   = 5
         }
         engines             = @($engineList)
         default_engine      = $defaultEngine

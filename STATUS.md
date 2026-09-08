@@ -11,14 +11,14 @@ knowingly unfinished. The design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
-> **Read this first — verification honesty.** The environment this v2 work was
-> written in has **no CMake, no cargo/rustc, and no OpenSSL development
-> headers**. Therefore **nothing C++ or Rust was compiled, linked, or run
-> here**: no `ctest`, no integration test, no Tauri build, no live mesh. What
-> *was* run is listed under [§3 Verification](#3-verification) and is
-> deliberately separated into "executed" and "not executed". Treat every
-> runtime claim below as *designed and statically checked*, not *observed*,
-> unless §3 says it was executed.
+> **Read this first — what has actually been run.** The engine now builds and
+> runs: on Windows 11 with MSYS2 UCRT64 GCC 16.2, CMake 4.4.2 + Ninja and
+> OpenSSL 3.6.4, `ctest` is **9/9 green** and four Python integration suites
+> pass against real `desentryd` processes. The **Rust sidecar and the Tauri
+> app have still never been compiled** (no cargo on that machine), and nothing
+> has been built on Linux, macOS, or MSVC. [§3](#3-verification) lists
+> exactly what was executed and what was not; treat anything not listed there
+> as designed, not observed.
 
 ---
 
@@ -98,46 +98,50 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 
 ## 3. Verification
 
-### Executed here, and passing
+Toolchain actually used: **Windows 11**, MSYS2 UCRT64 **GCC 16.2.0**,
+**CMake 4.4.2** with Ninja, **OpenSSL 3.6.4**, Python 3.14, Node 22.
+
+### Executed, and passing
 
 | Check | Result |
 | --- | --- |
-| `g++ -std=c++17 -Wall -Wextra -fsyntax-only -Iinclude` on every file in `src/` and `apps/` | **48 pass / 1 fail** |
-| The one failure | `src/security/crypto.cpp` — needs `<openssl/evp.h>`, absent from this machine. The file is **unmodified v1 code**; the failure is environmental, not a code defect |
-| Same sweep over `tests/*.cpp` (with `-UNDEBUG`) | **9 / 9 pass** |
-| `npx tsc --noEmit` in `app/` | exit 0 |
-| `npx vite build` in `app/` | built: 71.63 kB JS, 19.61 kB CSS |
-| `node app/tests/qr.check.mjs` | ALL CHECKS PASSED — the encoder's level-M format strings and 18-bit version words match the ISO/IEC 18004 published constants |
-| `python -m py_compile` on the client, all 5 integration tests and the harness | all clean |
-| `bash -n scripts/run_cluster.sh`, `scripts/stop_cluster.sh` | clean |
+| `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build` | clean: `desentryd.exe`, `desentry_cli.exe`, 9 test binaries |
+| `ctest --test-dir build` | **9 / 9 passed**, three consecutive runs |
+| `network_test` specifically | 8 / 8 consecutive runs, after the gossip fix below |
+| `python tests/integration/transit_replay_test.py` | ALL 22 CHECKS PASSED |
+| `python tests/integration/airplane_mode_test.py` | ALL 18 CHECKS PASSED |
+| `python tests/integration/usb_node_test.py` | ALL 18 CHECKS PASSED |
+| `python tests/integration/soak_test.py --nodes 12 --writes 150 --chaos 3` | ALL 9 CHECKS PASSED — 12 real processes, 3 killed mid-write, all converged, every hash chain verified |
+| A live single node (`desentryd --config node.json`) | identity generated, 5 engines loaded, P2P listener + UDP discovery + REST API up; PUT/GET/scan, `_collection/.../engine` binding to `ts_rollup`, `_collection/.../acl`, `_quota`, `_brain`, `_ledger/verify` all correct; **data and the signed ledger survived a restart** |
+| `npx tsc --noEmit` and `npx vite build` in `app/` | clean: 71.63 kB JS, 19.61 kB CSS |
+| `node app/tests/qr.check.mjs` | ALL CHECKS PASSED against the ISO/IEC 18004 published constants |
+| `python -m py_compile` on the client, the harness and all 5 integration tests | clean |
 
-### Not executed here — and why
+### Not executed — and why
 
 | Not run | Reason |
 | --- | --- |
-| `cmake` configure/build | CMake is not installed on this machine |
-| `ctest` — **no C++ test was run** | requires a linked build, which requires CMake and OpenSSL |
-| Any Python integration test | requires the `desentryd` binary |
-| `cargo check` / `cargo build` — **no Rust was compiled** | cargo/rustc are not installed |
-| `npm run tauri:build` — no installer was produced | needs cargo |
-| Any live mesh, replication, GC or ACL behaviour | needs running binaries |
+| `cargo check` / `cargo build` — **no Rust has ever been compiled** | cargo/rustc are not installed on the machine used |
+| `npm run tauri:build` — no installer has been produced | needs cargo |
+| The desktop app end to end | same |
+| `cluster_integration_test.py` | wants a cluster started separately; the other four suites cover the same ground through the harness |
+| `soak_test.py` at the full 50 nodes | run at 12; 50 was not attempted on this machine |
+| Any build on Linux, macOS, or MSVC | only the MSYS2 UCRT64 toolchain was available |
+| The vendored backends (SQLite / DuckDB / LMDB / sqlite-vec) | `OFF` by default; their sources are not vendored here |
+| The ONNX sizing path | the model is a build-step download that was not run; the keyword fallback is what has been exercised |
 
-Consequences worth keeping in mind: the syntax sweep catches type and API
-errors per translation unit but **not** link errors, ODR violations, or
-anything about runtime behaviour. The Rust sidecar has had no compiler pass at
-all — expect the first `cargo check` to surface borrow-checker and
-API-version issues. Known Rust hazards were addressed pre-emptively
-(`checked_sub` on `Instant`, `libc::kill` rather than a hand-declared extern,
-never holding the node-map mutex across a restart wait), but "addressed
-pre-emptively" is not "compiled".
+The Rust sidecar is therefore the largest unverified surface in the tree.
+Known hazards in it were handled deliberately (`checked_sub` on `Instant`,
+`libc::kill` rather than a hand-declared extern, never holding the node-map
+mutex across a restart wait) — but as the C++ side just demonstrated, code
+that has never been compiled has never been checked. Expect the first
+`cargo check` to find things.
 
-**Do this first on a full toolchain**, in order:
+**Next, on a machine with the full toolchain:**
 
-1. `cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j`
-2. `ctest --test-dir build --output-on-failure`
-3. `cd app && cargo check --manifest-path src-tauri/Cargo.toml`
-4. `./scripts/run_cluster.sh 3 --supervisor`, then the Python integration tests
-5. `cd app && npm run tauri:build`
+1. `cd app && cargo check --manifest-path src-tauri/Cargo.toml`
+2. `npm run tauri:build`
+3. The same `cmake` + `ctest` run on Linux and macOS, and once under MSVC.
 
 ---
 
@@ -159,7 +163,72 @@ pre-emptively" is not "compiled".
   `NodeEngine::MergeRemote()`, to avoid broadcast storms past 2 nodes; gossip
   anti-entropy is the documented correctness backstop for multi-hop.
 
-**v2:**
+**v2, found by actually building and running it on Windows:**
+
+Every one of these was invisible to a syntax-only check. They are listed
+first because they are the argument for compiling and running code rather
+than reading it.
+
+- **`secure_channel.cpp` did not link on Windows.** The header had been ported
+  to `dsn_socket_t`; the definitions still said `int sockfd`. On Linux those
+  are the same type and it linked silently. On Windows `SOCKET` is 64-bit
+  unsigned, so four functions simply did not exist at link time.
+- **Recovery hung at 100% CPU on a zero-filled page.** `roots.json` names each
+  collection's B+Tree root, and it is written separately from the page it
+  names — so a crash before the flush leaves an id pointing at nothing. A read
+  past the end of the data file returns zeros, zeros parse as "internal node,
+  no keys, child 0", and the descent walks to page 0 and stays there forever.
+  This is v1's catalog-root bug reintroduced through a different door. Fixed
+  in two places: `IndexFor()` validates a persisted root before trusting it,
+  and `FindLeaf()` is bounded so no corrupt page can spin a node forever.
+- **Gossip could never repair a divergence.** The digest compared each key's
+  top HLC timestamp only. After merging a peer's write, a document's freshest
+  field can come *from that peer* — so both sides report the same timestamp
+  while only one of them holds the merged result, neither offers anything,
+  and the divergence is permanent. It reproduced about one run in three.
+  `DigestEntry` now carries a content fingerprint and peers exchange when the
+  bytes differ, not only when a clock is newer.
+- **The transit store was unreachable code.** `PlacementPolicy::Rebuild()`
+  drops absent peers from the ring, so `Place()` never named one, so
+  `HoldForUnreachableOwners()` — which looked for unreachable nodes *in the
+  plan* — never found any. A `PlacementPlan` now also reports
+  `displaced_owners`: who would have held this key if everyone were up.
+- **...and then the transit write was refused for an over-long key.** The
+  storage key was `node_id + "/" + hex(sha256)` = 97 bytes against the
+  engine's 64-byte limit. The refusal surfaced only as a log line on a path
+  nobody was watching. Both halves are now truncated, with the full values
+  kept inside the envelope and checked on read.
+- **`default_engine` could name an engine the node never loads.**
+  `NodeConfig::Validate()` checked that the name was *known*, not that this
+  node had it — leaving every unbound collection unroutable at first write.
+- **A refused read returned `AuthError` where the design says `NotFound`.**
+  `docs/architecture-v2.md` §6.3 and the test agreed; the implementation was
+  the odd one out. Distinguishing "you may not read this" from "this does not
+  exist" tells a stranger the collection is there.
+- **`ts_rollup` silently bucketed by write time** for any point whose field
+  was named `timestamp_ms` rather than `ts`/`timestamp`/`time` — a wrong
+  answer that looks like a working one. The explicit-unit spellings are now
+  accepted.
+- **`quota_split` was silently ignored** by both cluster scripts and the Rust
+  sidecar: they wrote `db_pct`, `transit_store_pct`, … while the parser reads
+  `db`, `transit_store`, …. The node booted, dropped the block, and ran on
+  defaults that also sum to 100 — so nothing complained.
+- **Four tests asserted things the design does not promise**, and were
+  corrected rather than the engine bent to fit: documents larger than a 4 KiB
+  page (`router_test`, `quota_test`), a prune dropping PUT entries rather
+  than settled transit pairs (`ledger_v2_test`), an exclusive reading of an
+  inclusive bound — since renamed `UnclaimedIntentsThrough` — and 40 vectors
+  generated by a period-16 formula in 16 dimensions, three of which were
+  byte-identical while the test asserted a unique nearest neighbour.
+- **The integration harness waited for every node's ledger tip to match.**
+  Each node's ledger is its own append-ordered, self-signed chain, so nodes
+  that receive the same writes in a different order have different tips *by
+  construction*. It now compares the per-collection checksums from `/_brain`,
+  which is what a replication test actually cares about.
+- **`network_test` slept fixed intervals** and failed on a busy machine. It
+  now waits on the condition with a generous bound.
+
+**v2, found while writing it:**
 
 - **`graph_adj` edge ownership.** An edge was reachable from both endpoints'
   adjacency records with no single owner, so a delete could leave a half-edge
@@ -195,6 +264,11 @@ pre-emptively" is not "compiled".
   WAL protects documents, not raw page integrity at that granularity.
 - The bump allocator does not reclaim space: **no vacuum until Phase 2.**
   Delete-heavy workloads grow the file until the partition is rebuilt.
+- **A document must fit in one 4 KiB page.** The kv backend stores a document
+  in a slotted page and refuses anything larger with `InvalidArgument`. There
+  are no overflow pages, so a large blob has to be chunked by the caller.
+- **Keys are limited to 64 bytes**, which is why the transit store's own key
+  had to be truncated to fit.
 - Multi-hop relay past eager-broadcast's direct peers relies on gossip
   anti-entropy — correct, not the lowest-latency design for large meshes.
 
@@ -204,6 +278,13 @@ pre-emptively" is not "compiled".
   forbids more; nothing above that has been designed for or tested.
 - Admission's token bucket is present and on, but has only ever been reasoned
   about, never measured under load.
+- Bytes are held for an absent owner **at write time**, and only once that
+  peer is already known stale (`gossip_interval * 3 + 5s`). A write during the
+  window between a node dying and the mesh noticing is replicated to the peers
+  that are up and is not held for the absent one; it reaches that node through
+  ordinary anti-entropy when it returns, not through the transit store. Using
+  a failed send as direct evidence of unreachability would close the window
+  and is the obvious next improvement.
 - The AI sizing model is bundled by a **build** step (`npm run fetch-model`),
   not shipped in the git tree. A tree without it still works — the keyword
   fallback runs and labels itself honestly — but the semantic path is absent

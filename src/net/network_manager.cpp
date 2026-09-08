@@ -201,22 +201,41 @@ WireMessage NetworkManager::HandleDigest(const std::string& peer_node_id,
     return WireMessage{MessageType::kDeltaResponse, response.Encode()};
   }
 
-  std::unordered_map<std::string, HLCTimestamp> remote;
-  for (const DigestEntry& e : digest.entries) remote[e.key] = HLCTimestamp::Decode(e.top_ts_encoded);
+  struct Fingerprint {
+    HLCTimestamp top_ts;
+    std::string content_hash;
+  };
+  std::unordered_map<std::string, Fingerprint> remote;
+  for (const DigestEntry& e : digest.entries) {
+    remote[e.key] = Fingerprint{HLCTimestamp::Decode(e.top_ts_encoded), e.content_hash};
+  }
 
-  std::unordered_map<std::string, HLCTimestamp> local;
-  for (const DigestEntryOut& e : engine_->LocalDigest(digest.collection)) local[e.key] = e.top_ts;
+  std::unordered_map<std::string, Fingerprint> local;
+  for (const DigestEntryOut& e : engine_->LocalDigest(digest.collection)) {
+    local[e.key] = Fingerprint{e.top_ts, e.content_hash};
+  }
 
-  for (const auto& [key, local_ts] : local) {
+  // Two copies need reconciling when one is newer OR when they carry the same
+  // top timestamp but different bytes. The second case is not hypothetical:
+  // merging a peer's write can leave a document whose freshest field came
+  // from that peer, so both sides report that peer's timestamp while only one
+  // of them holds the merged result. Comparing timestamps alone, neither side
+  // offers anything and the divergence is permanent. Merge is idempotent and
+  // commutative, so exchanging on an inconclusive comparison is always safe.
+  auto differs = [](const Fingerprint& a, const Fingerprint& b) {
+    return a.top_ts > b.top_ts || (!(b.top_ts > a.top_ts) && a.content_hash != b.content_hash);
+  };
+
+  for (const auto& [key, mine] : local) {
     auto it = remote.find(key);
-    if (it == remote.end() || local_ts > it->second) {
+    if (it == remote.end() || differs(mine, it->second)) {
       auto raw_or = engine_->GetRawEncoded(digest.collection, key);
       if (raw_or.ok()) response.pushed.push_back(DocEntry{key, raw_or.value()});
     }
   }
-  for (const auto& [key, remote_ts] : remote) {
+  for (const auto& [key, theirs] : remote) {
     auto it = local.find(key);
-    if (it == local.end() || remote_ts > it->second) response.wanted_keys.push_back(key);
+    if (it == local.end() || differs(theirs, it->second)) response.wanted_keys.push_back(key);
   }
   return WireMessage{MessageType::kDeltaResponse, response.Encode()};
 }
@@ -403,7 +422,17 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
   const int64_t stale_ms = StaleThresholdMs(config_);
   const int64_t now = NowMs();
 
-  for (const std::string& replica : plan.replicas) {
+  // Two sources, because an owner can be absent in two different ways.
+  // `displaced_owners` is the important one: a peer that has been away long
+  // enough is dropped from the ring entirely, so it never appears in
+  // `replicas` again -- and holding bytes only for unreachable *replicas*
+  // would mean holding them for nobody, which is how this whole path came to
+  // be unreachable in the first place. `replicas` still has to be scanned
+  // too, for an owner that is on the ring but has just stopped answering.
+  std::vector<std::string> candidates = plan.displaced_owners;
+  candidates.insert(candidates.end(), plan.replicas.begin(), plan.replicas.end());
+
+  for (const std::string& replica : candidates) {
     if (replica == engine_->identity().node_id()) continue;
     PeerInfo info;
     if (!peer_table_.Get(replica, &info)) continue;

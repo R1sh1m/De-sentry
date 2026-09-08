@@ -73,9 +73,19 @@ BPlusTree* KvBPlusBackend::IndexFor(const std::string& collection) {
 
   page_id_t root = kInvalidPageId;
   auto root_it = roots_.find(collection);
-  if (root_it != roots_.end() && root_it->second != kInvalidPageId) {
+  // roots.json is written separately from the pages it names, so a root id
+  // can survive a crash that its page did not: the id is in the file, the
+  // page was never flushed, and the read comes back zero-filled. Descending
+  // into that is how the same class of bug bit the catalog in v1. The id is
+  // therefore checked, not trusted -- and a root that is gone means an empty
+  // tree, which WAL replay then refills.
+  if (root_it != roots_.end() && BPlusTree::RootLooksValid(pool_.get(), root_it->second)) {
     root = root_it->second;
   } else {
+    if (root_it != roots_.end() && root_it->second != kInvalidPageId) {
+      DSN_LOG_WARN("kv", "root page " << root_it->second << " for collection " << collection
+                                       << " is not a valid node; rebuilding the index from the ledger");
+    }
     auto root_or = BPlusTree::CreateNew(pool_.get());
     if (!root_or.ok()) return nullptr;
     root = root_or.value();

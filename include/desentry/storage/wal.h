@@ -222,6 +222,14 @@ class WriteAheadLog {
 
   bool migrated_from_v1_ = false;
   std::string pre_migration_tip_hash_;
+
+  // Bytes left unparsed after the last well-formed record, set by
+  // ReadAllLocked(). A crash mid-append leaves a torn record at the very end
+  // of the file and nothing after it; bytes that survive *past* the point
+  // where parsing gave up mean the damage is in the middle of the log, which
+  // is corruption or tampering rather than an interrupted write. Recovery
+  // treats both the same way (trust the prefix); VerifyChain() must not.
+  std::streamoff unparsed_tail_bytes_ = 0;
 };
 
 }  // namespace desentry

@@ -23,8 +23,8 @@ with no internet, which is an acceptance test
 > **Course project** — validated at 3 nodes running locally in a full mesh.
 > See [Project Statement](Project_Statement/project_statement.md) for the
 > original brief and scope. Read [`STATUS.md`](STATUS.md) before trusting any
-> claim here: it separates what was executed and observed from what was only
-> designed and statically checked.
+> claim here: the engine is built and tested, the desktop app is not yet
+> compiled, and STATUS.md says exactly which is which.
 
 ---
 
@@ -488,16 +488,20 @@ Key papers underpinning the design — full annotated bibliography in
 
 ## Status
 
-**v1** was validated end-to-end with real compiled binaries: four test suites
-passing with live assertions, and a 3-node mesh of real OS processes
-replicating over real sockets on one host.
+**The engine builds and runs.** On Windows 11 (MSYS2 UCRT64 GCC 16.2, CMake
+4.4.2 + Ninja, OpenSSL 3.6.4): `ctest` is 9/9 green, and the transit-replay,
+airplane-mode, USB-node and soak integration suites all pass against real
+`desentryd` processes. A single node has been run end to end — writes, reads,
+scans, engine binding, ACLs, quota, a verified signed ledger, and everything
+intact across a restart.
 
-**v2** — the desktop app, supervisors, storage router, ledger v2, ACLs and the
-onboard sizing model — was written in an environment with no CMake, no cargo
-and no OpenSSL headers, so **none of it has been compiled, linked or run**.
-The frontend typechecks and builds, the QR encoder passes conformance checks
-against the ISO published constants, and every C++ source and test passes a
-`-fsyntax-only` sweep — but that is not the same as a passing `ctest`.
+**The desktop app has not been built.** The Rust sidecar has never been
+compiled — no cargo on the machine used — so no installer exists and the
+control room has not been run. The frontend typechecks and bundles, and the QR
+encoder passes conformance checks against the ISO published constants, but
+that is the whole of it.
+
+Nothing here has been built on Linux, macOS, or with MSVC.
 
 [`STATUS.md`](STATUS.md) says exactly what was executed and what was not, plus
 the bugs found, the known limits, and the order to build things in on a full

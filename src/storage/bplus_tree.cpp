@@ -93,7 +93,15 @@ StatusOr<page_id_t> BPlusTree::CreateNew(BufferPoolManager* bpm) {
 
 page_id_t BPlusTree::FindLeaf(const std::string& key) const {
   page_id_t cur = root_page_id_;
-  while (true) {
+  // A descent is bounded by the tree's height, and the height is bounded by
+  // log(fanout) of anything that fits on this disk -- 64 hops is orders of
+  // magnitude more than reachable. The bound exists because a page read past
+  // the end of the data file comes back zero-filled, and a zero-filled page
+  // parses as "internal node, no keys, child 0": follow that and the descent
+  // walks to page 0 and stays there, spinning at full CPU forever. Recovery
+  // must fail, not hang.
+  for (int hop = 0; hop < 64; ++hop) {
+    if (cur == kInvalidPageId) return kInvalidPageId;
     Page* p = bpm_->FetchPage(cur);
     if (p == nullptr) return kInvalidPageId;
     if (IsLeaf(p)) {
@@ -107,8 +115,26 @@ page_id_t BPlusTree::FindLeaf(const std::string& key) const {
     }
     page_id_t child = GetChildAt(p, idx);
     bpm_->UnpinPage(cur, false);
+    if (child == cur) return kInvalidPageId;  // self-loop: the node is not a node
     cur = child;
   }
+  DSN_LOG_ERROR("bplustree", "descent exceeded 64 levels from root " << root_page_id_
+                                                                     << " -- treating the tree as corrupt");
+  return kInvalidPageId;
+}
+
+bool BPlusTree::RootLooksValid(BufferPoolManager* bpm, page_id_t root_id) {
+  if (root_id == kInvalidPageId) return false;
+  Page* p = bpm->FetchPage(root_id);
+  if (p == nullptr) return false;
+  // An initialised root is either a leaf (which may legitimately be empty) or
+  // an internal node with at least one key. A zero-filled page -- what a read
+  // past the end of the data file returns -- is neither, so a root id that
+  // survived in metadata while its page never reached disk is rejected here
+  // instead of being descended into.
+  const bool valid = IsLeaf(p) || NumKeys(p) > 0;
+  bpm->UnpinPage(root_id, false);
+  return valid;
 }
 
 bool BPlusTree::Search(const std::string& key, RID* out_rid) const {

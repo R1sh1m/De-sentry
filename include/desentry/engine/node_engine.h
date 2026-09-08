@@ -41,6 +41,9 @@ namespace desentry {
 struct DigestEntryOut {
   std::string key;
   HLCTimestamp top_ts;
+  // Short fingerprint of the stored bytes; see DigestEntry in
+  // net/wire_protocol.h for why a timestamp is not enough on its own.
+  std::string content_hash;
 };
 
 // A compact, cheap-to-compute per-collection fingerprint -- the "brain file"

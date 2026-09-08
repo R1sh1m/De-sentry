@@ -111,6 +111,7 @@ std::string PlacementHashInput(const std::string& collection, const std::string&
 
 void PlacementPolicy::Rebuild(const PeerTable& peers) {
   ring_.Clear();
+  ring_with_absent_.Clear();
   skipped_.clear();
 
   const int64_t now = options_.now_ms != 0 ? options_.now_ms : NowMs();
@@ -118,7 +119,10 @@ void PlacementPolicy::Rebuild(const PeerTable& peers) {
   // The local node is always a candidate: it is reachable by definition, and
   // excluding it would make a single-node (airplane-mode) deployment have
   // nowhere to place anything.
-  if (!local_node_id_.empty()) ring_.AddNode(local_node_id_);
+  if (!local_node_id_.empty()) {
+    ring_.AddNode(local_node_id_);
+    ring_with_absent_.AddNode(local_node_id_);
+  }
 
   for (const PeerInfo& peer : peers.List()) {
     if (peer.node_id.empty()) continue;
@@ -142,13 +146,16 @@ void PlacementPolicy::Rebuild(const PeerTable& peers) {
     }
     if (peer.state == NodeLifecycleState::kDegraded && !options_.include_degraded) {
       skipped_.push_back(peer.node_id + " (degraded)");
+      ring_with_absent_.AddNode(peer.node_id);  // away, not gone: still owed writes
       continue;
     }
     if (peer.last_seen_ms != 0 && now - peer.last_seen_ms > options_.stale_after_ms) {
       skipped_.push_back(peer.node_id + " (stale)");
+      ring_with_absent_.AddNode(peer.node_id);
       continue;
     }
     ring_.AddNode(peer.node_id);
+    ring_with_absent_.AddNode(peer.node_id);
   }
 }
 
@@ -160,6 +167,18 @@ PlacementPlan PlacementPolicy::Place(const std::string& collection, const std::s
   plan.skipped = skipped_;
   plan.replicas = ring_.Replicas(plan.key, options_.replication_factor);
   plan.under_replicated = plan.replicas.size() < options_.replication_factor;
+
+  // Who would have held this key if everyone were up. The difference between
+  // the two rings is exactly the set of owners that are owed these bytes --
+  // computed here because the live ring no longer contains them, so nothing
+  // downstream could work it out on its own.
+  if (ring_with_absent_.NodeCount() > ring_.NodeCount()) {
+    for (const std::string& node : ring_with_absent_.Replicas(plan.key, options_.replication_factor)) {
+      if (std::find(plan.replicas.begin(), plan.replicas.end(), node) == plan.replicas.end()) {
+        plan.displaced_owners.push_back(node);
+      }
+    }
+  }
   return plan;
 }
 

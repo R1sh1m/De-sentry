@@ -41,6 +41,10 @@ void Fresh(const std::string& path) {
   MakeDirs(path);
 }
 
+// Document payload size. A document has to fit inside one 4 KiB page --
+// the kv backend stores it in a slotted page and refuses anything larger
+// with InvalidArgument -- so 1 KiB leaves room for the CRDT envelope and
+// still crosses a 1-2 MiB quota within the loops below.
 JsonValue Blob(size_t bytes) {
   JsonValue::Object fields;
   fields.emplace_back("payload", JsonValue(std::string(bytes, 'x')));
@@ -151,7 +155,7 @@ void TestNodeQuotaRefusesCleanly() {
   std::string refused_key;
   for (int i = 0; i < 5000 && refused_key.empty(); ++i) {
     const std::string key = "k" + std::to_string(i);
-    Status st = engine.PutDocument("bulk", key, Blob(4096), local);
+    Status st = engine.PutDocument("bulk", key, Blob(1024), local);
     if (!st.ok()) {
       assert(st.code() == StatusCode::kOutOfSpace);
       refused_key = key;
@@ -201,7 +205,7 @@ void TestUnlimitedQuotaIsUnlimited() {
   // Writing well past what a 2 MiB node would refuse must succeed.
   const Requestor local = engine.SelfRequestor();
   for (int i = 0; i < 800; ++i) {
-    assert(engine.PutDocument("bulk", "k" + std::to_string(i), Blob(4096), local).ok());
+    assert(engine.PutDocument("bulk", "k" + std::to_string(i), Blob(1024), local).ok());
   }
   assert(!engine.Quota().over_limit);
 
@@ -227,7 +231,7 @@ void TestMergeIsNeverRefusedForQuota() {
   // Fill it until local writes are refused.
   bool full = false;
   for (int i = 0; i < 5000 && !full; ++i) {
-    full = !engine.PutDocument("bulk", "k" + std::to_string(i), Blob(4096), local).ok();
+    full = !engine.PutDocument("bulk", "k" + std::to_string(i), Blob(1024), local).ok();
   }
   assert(full);
 

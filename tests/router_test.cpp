@@ -156,7 +156,11 @@ void RunQuotaContract(const std::string& engine_name) {
   assert(backend->Open(dir, 1).ok());
   assert(backend->QuotaLimit() == 1ull * 1024 * 1024);
 
-  const std::string payload(4096, 'x');
+  // One KiB, not one page's worth: a document lives inside a single 4 KiB
+  // page and a 4096-byte payload plus its envelope cannot fit one, so the
+  // backend would refuse every write as InvalidArgument and quota would never
+  // be reached.
+  const std::string payload(1024, 'x');
   bool refused = false;
   for (int i = 0; i < 4000 && !refused; ++i) {
     Status st = backend->Put("bulk", "key" + std::to_string(i),
@@ -419,7 +423,7 @@ void TestVectorSearch() {
   VectorHnswLiteBackend backend;
   assert(backend.Open(dir, 0).ok());
 
-  // Ten orthogonal-ish vectors in a small space: each one's nearest
+  // Forty orthogonal-ish vectors in a small space: each one's nearest
   // neighbour must be itself, which is the weakest useful correctness claim
   // an ANN index can make and the one a broken index fails.
   constexpr int kDim = 16;
@@ -429,6 +433,11 @@ void TestVectorSearch() {
     std::vector<float> v(kDim, 0.0f);
     v[i % kDim] = 1.0f;
     v[(i * 7) % kDim] += 0.5f;
+    // Both terms above have period kDim, so with kCount > kDim they repeat:
+    // vectors 0, 16 and 32 would be byte-identical, and "the nearest
+    // neighbour of v0 is v0" would then be asserting a coin flip. This term
+    // is what makes all forty distinct.
+    v[(i * 5 + 3) % kDim] += 0.01f * static_cast<float>(i + 1);
     vectors.push_back(v);
 
     JsonValue::Array components;

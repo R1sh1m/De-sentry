@@ -293,20 +293,29 @@ class Cluster:
         raise TimeoutError(f"timed out waiting for {label} (last error: {last})\n{logs}")
 
     def wait_converged(self, timeout_s: float = 60.0) -> None:
-        """Waits until every running node reports the same ledger tip.
+        """Waits until every running node holds the same data.
 
-        Compares the hash as well as the entry id: two nodes at the same height
-        with different hashes are diverged, not converged, and that is the one
-        disagreement worth catching.
+        Convergence is compared on the per-collection checksums from /_brain,
+        not on ledger tips. Each node's ledger is its own append-ordered,
+        self-signed hash chain, so two nodes that received the same writes in a
+        different order have different tips *by construction* and always will
+        -- what the design says peers converge on is the SET of entry hashes
+        (see the header comment in storage/wal.h), and what a replication test
+        actually cares about is that the documents match. Comparing tips would
+        fail on a healthy mesh and pass on an empty one.
         """
-        def same_tip() -> bool:
-            tips = set()
+        def same_data() -> bool:
+            states = set()
             for node in self.running_nodes():
-                tip = node.client.ledger_tip()
-                tips.add((tip["entry_id"], tip["entry_hash"]))
-            return len(tips) == 1
+                brain = node.client.brain()
+                fingerprint = tuple(sorted(
+                    (c["name"], c["document_count"], c["checksum"])
+                    for c in brain.get("collections", [])
+                ))
+                states.add(fingerprint)
+            return len(states) == 1
 
-        self.wait_for(same_tip, timeout_s, "every node to agree on the ledger tip")
+        self.wait_for(same_data, timeout_s, "every node to hold the same collections")
 
     def wait_visible(self, collection: str, key: str, timeout_s: float = 45.0,
                      nodes: Optional[List[Node]] = None) -> None:

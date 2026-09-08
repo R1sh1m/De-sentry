@@ -41,6 +41,13 @@ class BPlusTree {
   // its root page id -- callers persist this id in the catalog.
   static StatusOr<page_id_t> CreateNew(BufferPoolManager* bpm);
 
+  // True when `root_id` actually holds an initialised node. A root id can
+  // outlive its page: metadata naming the root is written separately from the
+  // page itself, so a crash between the two leaves an id pointing at nothing.
+  // Callers that persist a root id must check it on reopen rather than
+  // descending into whatever the read returns.
+  static bool RootLooksValid(BufferPoolManager* bpm, page_id_t root_id);
+
   // Upsert: inserts a new key, or overwrites the RID of an existing key.
   // Splits nodes (propagating up to a new root if necessary) as needed.
   Status Insert(const std::string& key, const RID& rid);

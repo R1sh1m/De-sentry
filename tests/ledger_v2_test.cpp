@@ -315,7 +315,7 @@ void TestUnclaimedIntentsBlockPruning() {
   const lsn_t last = append(WalRecordType::kPut, "b");
 
   const auto entries = wal->ReadAll().value();
-  const auto unclaimed = UnclaimedIntentsBelow(entries, last);
+  const auto unclaimed = UnclaimedIntentsThrough(entries, last);
 
   // held-1 was claimed, so its bytes are no longer needed. held-2 was not:
   // pruning it would throw away a write that an offline node has not yet
@@ -323,8 +323,10 @@ void TestUnclaimedIntentsBlockPruning() {
   assert(unclaimed.size() == 1);
   assert(unclaimed.front() == LedgerKeyHash("things", "held-2"));
 
-  // Below the claimed pair only, nothing is outstanding.
-  const auto safe = UnclaimedIntentsBelow(entries, 3);
+  // Through the claimed pair only -- the bound is inclusive, so 2 is the
+  // CLAIMED for held-1 and the unclaimed held-2 intent at 3 is out of scope.
+  // Nothing is outstanding there.
+  const auto safe = UnclaimedIntentsThrough(entries, 2);
   assert(safe.empty());
 }
 
@@ -335,14 +337,31 @@ void TestPruneKeepsTheChainVerifiable() {
   const std::string path = dir + "/ledger.wal";
 
   lsn_t checkpoint = 0;
+  size_t puts_written = 0;
   {
     auto wal = OpenWal(path);
-    for (int i = 0; i < 50; ++i) {
+    auto append = [&](WalRecordType type, const std::string& key) {
       WriteAheadLog::AppendOptions options;
       options.hlc = g_clock.Now();
-      assert(wal->Append(WalRecordType::kPut, "c", "k" + std::to_string(i), "v", options).ok());
+      if (type != WalRecordType::kPut) options.transit_owner = "owner-node";
+      auto lsn = wal->Append(type, "c", key, "v", options);
+      assert(lsn.ok());
+      return lsn.value();
+    };
+
+    for (int i = 0; i < 20; ++i) {
+      append(WalRecordType::kPut, "k" + std::to_string(i));
+      ++puts_written;
     }
-    checkpoint = 30;
+    // A settled handoff: intent and claim both below the checkpoint. This
+    // pair is what a prune is allowed to remove.
+    append(WalRecordType::kTransitIntent, "handoff");
+    checkpoint = append(WalRecordType::kTransitClaimed, "handoff");
+    for (int i = 20; i < 30; ++i) {
+      append(WalRecordType::kPut, "k" + std::to_string(i));
+      ++puts_written;
+    }
+
     auto pruned = wal->Prune(checkpoint);
     assert(pruned.ok());
     // Verification after a prune has to succeed. A chain that only verified
@@ -352,13 +371,23 @@ void TestPruneKeepsTheChainVerifiable() {
   }
 
   {
-    // ...and it must still verify after a restart, from the truncated file.
+    // ...and it must still verify after a restart, from the rewritten file.
     auto wal = OpenWal(path);
     const auto verified = wal->VerifyChain();
     assert(verified.ok);
     auto entries = wal->ReadAll().value();
     assert(!entries.empty());
-    assert(entries.front().lsn >= checkpoint);
+
+    // What a prune drops is the settled transit pair, and nothing else.
+    // PUT/DEL/CHECKPOINT entries are the history the chain attests to: GC
+    // that removed them would be rewriting the audit, not compacting it.
+    size_t puts = 0;
+    for (const WalRecord& rec : entries) {
+      assert(rec.type != WalRecordType::kTransitIntent);
+      assert(rec.type != WalRecordType::kTransitClaimed);
+      if (rec.type == WalRecordType::kPut) ++puts;
+    }
+    assert(puts == puts_written);
     assert(wal->Tip().entry_id == entries.back().lsn);
   }
 }

@@ -95,11 +95,11 @@ start_node() {
   "supervisor": ${supervisor},
   "quota_mb": 0,
   "quota_split": {
-    "db_pct": 60,
-    "transit_store_pct": 15,
-    "cache_hash_pct": 10,
-    "ledger_pct": 10,
-    "net_buffers_pct": 5
+    "db": 60,
+    "transit_store": 15,
+    "cache_hash": 10,
+    "ledger": 10,
+    "net_buffers": 5
   },
   "engines": ${ENGINES_JSON},
   "default_engine": "${DEFAULT_ENGINE}",

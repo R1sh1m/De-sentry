@@ -59,9 +59,31 @@ def main() -> int:
         c.kill()
         report.check(not c.running(), "node-c is gone")
 
-        # Give the survivors a moment to notice; the peer table marks a node
-        # unreachable on failed probes, not instantly.
-        time.sleep(2.0)
+        # Wait until the survivors actually consider node-c unreachable, rather
+        # than sleeping a guessed interval. Bytes are held for an owner at
+        # write time and only for an owner already known to be stale
+        # (NetworkManager::HoldForUnreachableOwners), so writing too early
+        # produces no transit envelope at all -- and the test would then fail
+        # waiting for something that was never going to be created.
+        # The threshold matches StaleThresholdMs(): gossip_interval * 3 + 5s.
+        stale_after_s = (400 * 3 + 5000) / 1000.0
+
+        def survivors_see_c_as_stale() -> bool:
+            now_ms = time.time() * 1000.0
+            for node in (a, b):
+                entry = next((p for p in node.client.peers()
+                              if p["node_id"] == c_node_id), None)
+                if entry is None:
+                    return False
+                last_seen = entry.get("last_seen_ms", 0)
+                if last_seen == 0:
+                    continue
+                if now_ms - last_seen <= stale_after_s * 1000.0:
+                    return False
+            return True
+
+        cluster.wait_for(survivors_see_c_as_stale, stale_after_s + 20.0,
+                         "the survivors to mark node-c unreachable")
 
         print("[3] writing while node-c is away")
         a.client.put(COLLECTION, KEY_WHILE_AWAY, {"state": "placed", "total": 42})

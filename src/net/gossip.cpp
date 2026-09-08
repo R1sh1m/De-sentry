@@ -100,7 +100,7 @@ void GossipEngine::ExchangeDocuments(const PeerInfo& peer) {
     DigestPayload digest;
     digest.collection = collection;
     for (const DigestEntryOut& e : engine_->LocalDigest(collection)) {
-      digest.entries.push_back(DigestEntry{e.key, e.top_ts.Encode()});
+      digest.entries.push_back(DigestEntry{e.key, e.top_ts.Encode(), e.content_hash});
     }
 
     const int64_t started = MonotonicMs();

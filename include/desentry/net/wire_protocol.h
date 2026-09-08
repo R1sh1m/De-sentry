@@ -58,6 +58,13 @@ struct HelloPayload {
 struct DigestEntry {
   std::string key;
   std::string top_ts_encoded;  // HLCTimestamp::Encode() of the document's freshest field
+  // First 8 bytes of SHA-256 over the stored document. The timestamp alone
+  // cannot decide whether two copies agree: after a merge, a document's
+  // freshest field can come from a write the *other* side already has, so two
+  // peers holding genuinely different documents can report the same top
+  // timestamp and each conclude there is nothing to exchange. That is a
+  // permanent divergence, and this field is what breaks it.
+  std::string content_hash;
 };
 struct DigestPayload {
   std::string collection;
