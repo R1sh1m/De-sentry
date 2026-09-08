@@ -110,6 +110,7 @@ struct Prototype {
     workload: String,
     #[allow(dead_code)]
     label: String,
+    #[cfg_attr(not(feature = "onnx"), allow(dead_code))]
     text: String,
     #[serde(default)]
     keywords: std::collections::BTreeMap<String, f32>,
@@ -440,6 +441,7 @@ fn softmax(scores: &[f32]) -> Vec<f32> {
 }
 
 /// Dot product. Embeddings are L2-normalised, so this is the cosine.
+#[cfg_attr(not(feature = "onnx"), allow(dead_code))]
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
@@ -524,7 +526,7 @@ mod onnx {
 
             let mut ids = vec![0i64; batch * width];
             let mut mask = vec![0i64; batch * width];
-            let mut types = vec![0i64; batch * width];
+            let types = vec![0i64; batch * width];
             for (row, encoding) in encodings.iter().enumerate() {
                 for (col, id) in encoding.get_ids().iter().enumerate() {
                     ids[row * width + col] = i64::from(*id);
@@ -748,5 +750,45 @@ mod tests {
     fn softmax_rewards_a_clear_margin() {
         let scores = softmax(&[0.8, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
         assert!(scores[0] > 0.9, "a 0.3 cosine margin should be decisive, got {}", scores[0]);
+    }
+
+    /// The full ONNX path against the real fetched files: load the model and
+    /// tokenizer, embed the prototypes, and size a description semantically.
+    /// This is the exact code the wizard runs -- not a mock of it. Skipped
+    /// loudly (not failed) on a tree without `npm run fetch-model` output,
+    /// since the model is a gitignored build artifact, not source.
+    #[cfg(feature = "onnx")]
+    #[test]
+    fn the_onnx_model_loads_and_sizes() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let resources = resources_from(&base);
+        for path in [&resources.prototypes, &resources.model, &resources.tokenizer] {
+            if !path.exists() {
+                eprintln!(
+                    "SKIPPED the_onnx_model_loads_and_sizes: {} is absent (run npm run fetch-model in app/)",
+                    path.display()
+                );
+                return;
+            }
+        }
+        let sizer = Sizer::load(&resources).expect("prototypes load");
+        assert!(
+            sizer.model_ready(),
+            "the model should be ready, fallback was: {}",
+            sizer.fallback_reason
+        );
+        assert_eq!(sizer.embeddings.len(), sizer.prototypes.len());
+        for embedding in &sizer.embeddings {
+            assert_eq!(embedding.len(), 384, "MiniLM embeddings are 384-wide");
+            assert!(embedding.iter().all(|v| v.is_finite()));
+        }
+        let spec = sizer.size(
+            "Sensor readings from the workshop, sampled every second and kept for a year",
+            2048,
+            &all_engines(),
+        );
+        assert_eq!(spec.decision.method, "onnx");
+        assert_eq!(spec.decision.workload, "time-series");
+        assert!(!spec.engines.is_empty());
     }
 }

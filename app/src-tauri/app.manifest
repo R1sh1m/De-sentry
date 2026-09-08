@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- Common Controls v6, for windows-gnu builds: file dialogs (rfd) call
+       TaskDialogIndirect, which only exists in comctl32 v6. MSVC's link.exe
+       requests v6 automatically; GNU ld does not, so without this a
+       windows-gnu binary starts with comctl32 v5 and dies with
+       STATUS_ENTRYPOINT_NOT_FOUND before main. Linked into every target
+       because cargo rejects the tests-scoped link key for packages without
+       an explicit [[test]] target; real binaries end up with this same
+       dependency twice (tauri-build embeds its own copy), which is benign.
+       Wired up in build.rs; MSVC and mobile targets never see it. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df"
+        language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>

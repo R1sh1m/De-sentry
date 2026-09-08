@@ -44,8 +44,10 @@ const READY_POLL: Duration = Duration::from_millis(150);
 /// Restart budget, and the window it is measured over.
 const MAX_RESTARTS: u32 = 5;
 const RESTART_WINDOW: Duration = Duration::from_secs(120);
-/// Grace period between asking a node to stop and killing it.
-// Only the Unix path asks politely before killing, so this is only used there.
+/// Grace period between asking a node to stop and killing it. Unix-only:
+/// Windows has no SIGTERM for console-less children, so `stop()` there goes
+/// straight to kill and this constant would be unused (hence the gate rather
+/// than an allow).
 #[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Captured log lines kept per node. Enough to see a startup failure in full.

@@ -35,7 +35,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, state: Arc<AppState>) -> tauri::Res
     // for the menu it already has, so there is no way to walk back to this
     // item later from the tray -- and rebuilding the whole menu on every node
     // state change to edit one line would be silly. Managed state keyed by
-    // type is the cheapest handle that outlives this function.
+    // type is the cheapest handle that outlives this function (`MenuItem` is
+    // a cheap Arc-backed handle, so cloning it here costs nothing).
     app.manage(status.clone());
 
     let handler_state = Arc::clone(&state);
