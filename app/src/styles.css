@@ -617,6 +617,9 @@ body {
   backdrop-filter: blur(4px);
   padding: var(--space-lg);
 }
+.sheet[hidden] {
+  display: none;
+}
 .wizard {
   background: var(--color-surface);
   border-radius: var(--radius-lg);

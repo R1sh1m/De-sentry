@@ -12,6 +12,7 @@
 #elif defined(__APPLE__)
   #include <sys/mount.h>
   #include <sys/param.h>
+  #include <sys/statvfs.h>
 #else
   #include <sys/statvfs.h>
 #endif

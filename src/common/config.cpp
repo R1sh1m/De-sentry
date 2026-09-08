@@ -142,6 +142,9 @@ std::string NodeConfig::Validate() const {
   if (!IsKnownEngine(default_engine)) {
     return "unknown default_engine: " + default_engine;
   }
+  if (std::find(engines.begin(), engines.end(), default_engine) == engines.end()) {
+    return "default_engine is not present in engines[]: " + default_engine;
+  }
   for (const std::string& e : engines) {
     if (!IsKnownEngine(e)) return "unknown engine in engines[]: " + e;
   }
