@@ -23,8 +23,8 @@ with no internet, which is an acceptance test
 > **Course project** — validated at 3 nodes running locally in a full mesh.
 > See [Project Statement](Project_Statement/project_statement.md) for the
 > original brief and scope. Read [`STATUS.md`](STATUS.md) before trusting any
-> claim here: the engine is built and tested, the desktop app is not yet
-> compiled, and STATUS.md says exactly which is which.
+> claim here: the engine and desktop development shell have been compiled
+> locally, but installer and cross-platform verification remain incomplete.
 
 ---
 
@@ -189,6 +189,70 @@ npm run tauri:dev   -- -- --no-default-features
 
 The app then sizes collections with the deterministic keyword fallback and
 says so in the UI rather than presenting a fallback as a model result.
+
+### macOS: exact build and run steps
+
+These steps are for macOS 14 or newer. Run them from the repository root in a
+new Terminal session:
+
+```bash
+# 1. Install the native and development prerequisites.
+xcode-select --install
+brew install cmake openssl@3 node rust python
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+
+# 2. Configure and build the C++ engine and tests.
+cmake -S . -B build-macos \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DDESENTRY_BUILD_TESTS=ON
+cmake --build build-macos --parallel
+
+# 3. Run the C++ tests. If one test hangs, stop it and record the failure.
+ctest --test-dir build-macos --output-on-failure
+
+# 4. Install frontend dependencies and run the browser-side checks.
+cd app
+npm install
+npm run typecheck
+npm run check:qr
+npm run check:css
+npm run build
+
+# 5. Stage the matching ARM macOS sidecar and launch the Tauri dev shell.
+npm run stage-sidecar
+npm run tauri:dev
+```
+
+On Apple Silicon, the staged daemon is named
+`desentryd-aarch64-apple-darwin`. The Tauri shell must open, start its
+supervisor sidecar, and return a hardware-volume scan. Stop it with `Ctrl-C`.
+
+To exercise the optional semantic sizing path, fetch the model explicitly and
+then run the app again:
+
+```bash
+npm run fetch-model
+npm run tauri:dev
+```
+
+If the model is unavailable or ONNX cannot compile, use the documented
+keyword-only fallback:
+
+```bash
+npm run tauri:dev -- -- --no-default-features
+```
+
+To produce the macOS installer after the development shell works:
+
+```bash
+npm run tauri:build
+```
+
+The installer is not considered verified until the generated `.app` and
+`.dmg` launch, the sidecar starts, and the node-creation wizard completes
+successfully. See [`ISSUES.md`](ISSUES.md) for the complete acceptance
+checklist and unresolved release risks.
 
 ### Run a 3-node cluster
 
