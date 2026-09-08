@@ -221,6 +221,7 @@ class WriteAheadLog {
   Signer signer_;
 
   bool migrated_from_v1_ = false;
+  bool malformed_tail_ = false;
   std::string pre_migration_tip_hash_;
 
   // Bytes left unparsed after the last well-formed record, set by
