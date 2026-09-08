@@ -46,10 +46,7 @@ with no internet, which is an acceptance test
 
 ## Prerequisites
 
-Install these **before** the first build. Most "library not found" failures on
-this project are one of these missing, and the compiler's message rarely names
-the package you actually need — [Troubleshooting](#troubleshooting) maps the
-common errors back to a fix.
+Install these **before** the first build.
 
 Nothing here is needed to *use* a running node — the REST API and the Python
 client have no dependencies at all. This is what it takes to build.
