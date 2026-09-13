@@ -21,6 +21,8 @@
 #include <array>
 #include <string>
 
+#include "desentry/common/status.h"
+
 namespace desentry::crypto {
 
 constexpr size_t kEd25519PublicKeyLen = 32;
@@ -45,6 +47,13 @@ struct X25519KeyPair {
 // Throws std::runtime_error on any OpenSSL failure -- these are all
 // programmer/environment errors (bad key length, corrupt key material),
 // not expected-failure control flow, hence exceptions rather than Status.
+//
+// Honest status (2026-09): this predates and violates the engine's
+// Status-only rule (AGENTS.md: no `throw` in engine code). AesGcmSeal below
+// is already StatusOr; converting the remaining keygen/sign/derive helpers
+// is tracked follow-up work. They are init-time/handshake-time calls whose
+// callers currently let the exception propagate, never data-path control
+// flow -- documented here rather than silently nonconforming.
 Ed25519KeyPair GenerateEd25519();
 std::string Ed25519Sign(const std::string& private_key_seed, const std::string& message);
 bool Ed25519Verify(const std::string& public_key, const std::string& message, const std::string& signature);
@@ -64,11 +73,13 @@ std::string RandomBytes(size_t n);
 // AES-256-GCM authenticated encryption. `nonce` must be kAesGcmNonceLen
 // bytes and must never repeat under the same key (see net/secure_channel.h
 // for how the per-direction counter guarantees this). Returns
-// ciphertext || 16-byte tag. AesGcmOpen returns false (no plaintext) if
+// ciphertext || 16-byte tag. Bad key/nonce lengths and OpenSSL failures
+// come back as a failed Status -- never an exception, per the engine's
+// Status-only rule. AesGcmOpen returns false (no plaintext) if
 // authentication fails -- callers must treat that as a dropped/attacked
 // message, never as "empty message".
-std::string AesGcmSeal(const std::string& key, const std::string& nonce, const std::string& plaintext,
-                        const std::string& aad);
+StatusOr<std::string> AesGcmSeal(const std::string& key, const std::string& nonce,
+                                  const std::string& plaintext, const std::string& aad);
 bool AesGcmOpen(const std::string& key, const std::string& nonce, const std::string& ciphertext_and_tag,
                  const std::string& aad, std::string* out_plaintext);
 

@@ -60,6 +60,11 @@ COPY --from=builder /src/build/crdt_test /usr/local/bin/crdt_test
 COPY --from=builder /src/build/crypto_test /usr/local/bin/crypto_test
 COPY --from=builder /src/build/storage_test /usr/local/bin/storage_test
 COPY --from=builder /src/build/network_test /usr/local/bin/network_test
+COPY --from=builder /src/build/acl_test /usr/local/bin/acl_test
+COPY --from=builder /src/build/placement_test /usr/local/bin/placement_test
+COPY --from=builder /src/build/ledger_v2_test /usr/local/bin/ledger_v2_test
+COPY --from=builder /src/build/quota_test /usr/local/bin/quota_test
+COPY --from=builder /src/build/router_test /usr/local/bin/router_test
 COPY --from=builder /src/clients/python/desentry_client.py /opt/desentry/clients/python/desentry_client.py
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

@@ -91,13 +91,14 @@ services:
     # Keep the cluster up afterwards; the tester exits with the test result.
     restart: "no"
 
-  # Unit suites: the four assert-based C++ test binaries (crdt, crypto,
-  # storage, network). Run standalone with `docker compose run unit-tests`.
+  # Unit suites: all nine assert-based C++ test binaries (crdt, crypto,
+  # storage, network, acl, placement, ledger_v2, quota, router).
+  # Run standalone with `docker compose run unit-tests`.
   unit-tests:
     image: desentry:local
     container_name: desentry-unit-tests
     command:
-      - "crdt_test && crypto_test && storage_test && network_test"
+      - "crdt_test && crypto_test && storage_test && network_test && acl_test && placement_test && ledger_v2_test && quota_test && router_test"
     entrypoint:
       - sh
       - -c

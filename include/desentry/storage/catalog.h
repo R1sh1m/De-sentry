@@ -77,13 +77,19 @@ struct CollectionMeta {
   CollectionAcl acl;
 
   // Time-series retention in days; 0 == keep everything. Honoured by the
-  // ts_rollup backend and by the ledger checkpoint/GC pass.
+  // ts_rollup backend's ApplyRetention/Prune when called -- there is no
+  // background scheduler; retention runs only when invoked (manual or
+  // supervisor-driven). Tracked future work, not a silent guarantee.
   uint32_t retention_days = 0;
 
   // Placement hints (net/placement.h). `shard_key` names the document field
   // hashed onto the consistent-hash ring; empty means hash the primary key.
   std::string shard_key;
   uint32_t replication_factor = 0;  // 0 == inherit the node's config value
+  // Declared secondary indexes, persisted in the catalog and echoed by the
+  // API. Honest status (2026-09): metadata only -- no backend builds or
+  // queries them yet. Kept so the shape of the feature is stable when an
+  // index actually lands; never presented as queryable.
   std::vector<std::string> secondary_indexes;
 };
 

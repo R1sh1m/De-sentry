@@ -434,7 +434,7 @@ reason it is shaped the way it is.
 | One node deleting shared history | Quorum-gated checkpoint (§5.3) |
 | Reading a private collection | Per-collection ACL at API *and* gossip byte filter (§6.3) |
 | Flooding a peer | Token bucket before decode, dedup, bounded worker pool (§6.2) |
-| Reading a stolen disk or USB stick | Per-partition AES-GCM at rest; key in the OS keychain, or a password-KDF for removable nodes |
+| Reading a stolen disk or USB stick | NOT YET DEFENDED (2026-09): `encrypt_at_rest` is parsed + surfaced but unenforced; AES-GCM covers the wire only. desentryd warns when the flag is set. Per-partition encryption + keychain/password-KDF wiring is tracked future work |
 | Reading a stolen `identity.key` | Owner-only permissions: `0600` on POSIX, a real protected DACL on Windows |
 
 ### 8.2 What is not defended

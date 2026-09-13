@@ -58,7 +58,9 @@ function targetTriple() {
 }
 
 async function main() {
-  const explicit = process.argv[2];
+  // Explicit path wins, then $DESENTRY_ENGINE (the same override the Python
+  // integration harness honours), then the usual CMake outputs.
+  const explicit = process.argv[2] || process.env.DESENTRY_ENGINE;
   let source = explicit ? resolve(explicit) : null;
 
   if (source === null) {
@@ -81,20 +83,32 @@ async function main() {
 
   const triple = targetTriple();
   const suffix = process.platform === "win32" ? ".exe" : "";
-  const destination = join(OUT, `desentryd-${triple}${suffix}`);
-
-  await mkdir(OUT, { recursive: true });
-  await copyFile(source, destination);
-  if (process.platform !== "win32") {
-    // The copy loses the executable bit on some filesystems, and a sidecar
-    // that cannot be executed fails at run time rather than at bundle time.
-    await chmod(destination, 0o755);
+  const names = [`desentryd-${triple}${suffix}`];
+  // Windows quirk, documented not hidden: the Tauri CLI's npm distribution
+  // ships an MSVC-built binary even beside a windows-gnu Rust toolchain, and
+  // it resolves `externalBin` with its OWN triple (x86_64-pc-windows-msvc),
+  // not rustc's -- `tauri build` fails on the gnu name alone. Until this box
+  // moves to the MSVC toolchain that release.yml already uses, stage the
+  // alias too. The runtime lookup (find_packaged_sidecar in lib.rs) is
+  // triple-agnostic -- any desentryd-* qualifies -- so both names resolve.
+  if (process.platform === "win32" && triple === "x86_64-pc-windows-gnu") {
+    names.push(`desentryd-x86_64-pc-windows-msvc${suffix}`);
   }
 
-  const info = await stat(destination);
-  process.stdout.write(
-    `staged ${source}\n     -> ${destination} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
-  );
+  await mkdir(OUT, { recursive: true });
+  for (const name of names) {
+    const destination = join(OUT, name);
+    await copyFile(source, destination);
+    if (process.platform !== "win32") {
+      // The copy loses the executable bit on some filesystems, and a sidecar
+      // that cannot be executed fails at run time rather than at bundle time.
+      await chmod(destination, 0o755);
+    }
+    const info = await stat(destination);
+    process.stdout.write(
+      `staged ${source}\n     -> ${destination} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
+    );
+  }
 }
 
 main().catch((error) => {

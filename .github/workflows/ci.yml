@@ -1,0 +1,111 @@
+# De-Sentry PR checks: engine + app + sidecar + bounded integration smoke.
+#
+# Runs on every pull request and on pushes to main. Offline-safe by design:
+# no package download at runtime, no model fetch (the ONNX path is exercised
+# only by release.yml, which runs fetch-model explicitly). The full 50-node
+# soak, the installer launch, and cluster_integration_test.py (needs a
+# pre-started cluster) stay manual -- see STATUS.md for what ran where.
+#
+# NOTE (2026-09-13): added from the shortcomings queue; no CI run has passed
+# yet. The first green run on a clean checkout is still unverified -- do not
+# claim CI is green until a run actually is.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libssl-dev python3
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja openssl@3 pkg-config python3
+
+      - name: Configure and build the engine
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: Run the C++ test suites
+        run: ctest --test-dir build --output-on-failure
+
+  app:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Frontend checks and build
+        working-directory: app
+        run: |
+          npm ci
+          npm run typecheck
+          npm run check:qr
+          npm run check:css
+          npm run build
+
+  rust:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust check and tests (fallback path, no ONNX)
+        working-directory: app/src-tauri
+        run: |
+          cargo check --no-default-features
+          cargo test
+
+  integration-smoke:
+    needs: engine
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libssl-dev python3
+
+      - name: Build the engine
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: Transit replay test
+        run: python3 tests/integration/transit_replay_test.py
+
+      - name: Airplane mode test
+        run: python3 tests/integration/airplane_mode_test.py
+
+      - name: USB node test
+        run: python3 tests/integration/usb_node_test.py
+
+      - name: Bounded soak (12 nodes, not the full 50-node default)
+        run: python3 tests/integration/soak_test.py --nodes 12 --writes 150 --chaos 3

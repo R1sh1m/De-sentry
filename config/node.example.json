@@ -48,7 +48,7 @@
   "//retention_days": "Default time-series retention for collections that do not set their own. 0 keeps everything.",
   "retention_days": 0,
 
-  "//encrypt_at_rest": "At-rest AES-GCM encryption. The key never appears in this file: keychain_ref names an entry in the OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) that the app unlocks and hands to the process.",
+  "//encrypt_at_rest": "NOT YET ENFORCED (2026-09): parsed + surfaced but no storage path encrypts yet; AES-GCM today covers the wire only. desentryd logs a warning when true rather than pretending. The key never appears in this file: keychain_ref names an entry in the OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) that the app unlocks and hands to the process.",
   "encrypt_at_rest": false,
   "keychain_ref": "",
 

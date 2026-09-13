@@ -15,6 +15,7 @@
 // every build type).
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <algorithm>
@@ -282,6 +283,106 @@ void TestBudgetIsSharedBetweenEngines() {
   RemoveTree(dir);
 }
 
+void TestQuotaRemainderDistribution() {
+  // The data-plane budget is divided without loss: the ceiling-MiB total is
+  // dealt one MiB at a time so per-engine budgets sum to exactly the share,
+  // differ by at most one MiB, and are deterministic across opens. Whole-MiB
+  // truncation used to silently drop up to ~1MiB per engine, which is fatal
+  // for small quotas over many engines (see router.cpp's dealing loop).
+  std::cout << "  router: quota remainder distribution\n";
+  constexpr uint64_t kMiB = 1024ull * 1024ull;
+  const std::vector<std::string> all = {"kv", "columnar_lite", "ts_rollup", "graph_adj",
+                                        "vector_hnsw_lite"};
+  struct Plan {
+    uint64_t quota_mb;
+    uint32_t db_share_pct;
+  };
+  const std::vector<Plan> plans = {{3, 60}, {7, 33}, {100, 60}, {1, 100}};
+  for (const Plan& plan : plans) {
+    const uint64_t db_bytes = plan.quota_mb * kMiB * plan.db_share_pct / 100;
+    const uint64_t total_mb = db_bytes == 0 ? 0 : (db_bytes + kMiB - 1) / kMiB;
+    for (size_t n = 1; n <= all.size(); ++n) {
+      std::vector<std::string> engines(all.begin(), all.begin() + n);
+      const std::string dir = TestRoot() + "/remainder_" + std::to_string(plan.quota_mb) + "_" +
+                              std::to_string(plan.db_share_pct) + "_" + std::to_string(n);
+      Fresh(dir);
+      auto catalog_or = Catalog::Open(dir + "/catalog.json");
+      assert(catalog_or.ok());
+      auto& catalog = *catalog_or.value();
+
+      // First open: check the sum and the spread.
+      StorageRouter::Options options;
+      options.data_dir = dir;
+      options.quota_mb = plan.quota_mb;
+      options.db_share_pct = plan.db_share_pct;
+      options.engines = engines;
+      options.default_engine = "kv";
+      options.catalog = &catalog;
+      auto router_or = StorageRouter::Open(options);
+      assert(router_or.ok());
+      auto& router = *router_or.value();
+      std::vector<uint64_t> first;
+      uint64_t sum = 0;
+      uint64_t lo = UINT64_MAX;
+      uint64_t hi = 0;
+      for (const std::string& name : router.AvailableEngines()) {
+        const uint64_t limit = router.Backend(name)->QuotaLimit();
+        first.push_back(limit);
+        sum += limit;
+        lo = std::min(lo, limit);
+        hi = std::max(hi, limit);
+      }
+      assert(sum == total_mb * kMiB);
+      assert(hi - lo <= kMiB);
+      RemoveTree(dir);
+
+      // Second open on a fresh directory with the same inputs must deal the
+      // identical per-engine budgets in the same (sorted) engine order.
+      const std::string dir2 = dir + "_again";
+      Fresh(dir2);
+      auto catalog2_or = Catalog::Open(dir2 + "/catalog.json");
+      assert(catalog2_or.ok());
+      auto& catalog2 = *catalog2_or.value();
+      StorageRouter::Options options2 = options;
+      options2.data_dir = dir2;
+      options2.catalog = &catalog2;
+      auto router2_or = StorageRouter::Open(options2);
+      assert(router2_or.ok());
+      std::vector<uint64_t> second;
+      for (const std::string& name : router2_or.value()->AvailableEngines()) {
+        second.push_back(router2_or.value()->Backend(name)->QuotaLimit());
+      }
+      assert(first == second);
+      RemoveTree(dir2);
+    }
+  }
+
+  // Unlimited stays unlimited: quota_mb 0 deals 0 to every backend, never a
+  // tiny-but-limited budget that a writer could trip over.
+  {
+    const std::string dir = TestRoot() + "/remainder_unlimited";
+    Fresh(dir);
+    auto catalog_or = Catalog::Open(dir + "/catalog.json");
+    assert(catalog_or.ok());
+    auto& catalog = *catalog_or.value();
+    StorageRouter::Options options;
+    options.data_dir = dir;
+    options.quota_mb = 0;
+    options.engines = all;
+    options.default_engine = "kv";
+    options.catalog = &catalog;
+    auto router_or = StorageRouter::Open(options);
+    assert(router_or.ok());
+    uint64_t sum = 0;
+    for (const std::string& name : router_or.value()->AvailableEngines()) {
+      assert(router_or.value()->Backend(name)->QuotaLimit() == 0);
+      sum += router_or.value()->Backend(name)->QuotaLimit();
+    }
+    assert(sum == 0);
+    RemoveTree(dir);
+  }
+}
+
 void TestCrossEngineIndex() {
   std::cout << "  router: cross-engine index\n";
   const std::string dir = TestRoot() + "/index";
@@ -525,6 +626,7 @@ int main() {
   std::cout << "-- router --\n";
   TestRoutingAndBinding();
   TestBudgetIsSharedBetweenEngines();
+  TestQuotaRemainderDistribution();
   TestCrossEngineIndex();
 
   std::cout << "-- engine specifics --\n";

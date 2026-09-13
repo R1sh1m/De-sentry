@@ -111,6 +111,13 @@ struct NodeConfig {
   // itself never lives in this file -- `keychain_ref` names an entry in the
   // OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret
   // Service) that the app unlocks and passes over the sidecar's stdin.
+  //
+  // Honest status (2026-09): NOT YET ENFORCED. The flag is parsed, persisted
+  // and surfaced (hardware scan, wizard, manifest) but no storage path reads
+  // it -- DiskManager/SegmentStore/WAL write plaintext and AES-GCM today
+  // covers the wire only. desentryd logs a warning when it is set (see
+  // apps/desentry_node/main.cpp) rather than pretending. Wiring it is
+  // tracked future work, explicitly not a silent default.
   bool encrypt_at_rest = false;
   std::string keychain_ref;
 
@@ -124,8 +131,14 @@ struct NodeConfig {
   uint32_t peer_rate_limit_per_sec = 200;
   uint32_t peer_rate_burst = 400;
 
-  // mDNS-style hostname advertisement alongside UDP broadcast, so the app's
-  // sidebar can show "studio-imac.local" rather than a bare IP.
+  // Hostname advertisement alongside UDP broadcast, so the app's sidebar can
+  // show "studio-imac.local" rather than a bare IP. Named `mdns_enabled` for
+  // config-file compatibility, but honest note: there is NO DNS-SD/mDNS
+  // responder -- this is a hostname string inside our own UDP advertisement
+  // (net/udp_discovery.h), not multicast DNS. Renaming the field would break
+  // existing node.json files for no behavioral gain; implementing a real
+  // responder is explicitly out of scope (no extra dependency, no new LAN
+  // surface).
   bool mdns_enabled = true;
   std::string advertise_hostname;
 

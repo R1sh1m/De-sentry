@@ -108,6 +108,14 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // Honest gate: encrypt_at_rest is parsed and surfaced but no storage path
+  // enforces it yet (AES-GCM covers the wire only). Warn loudly rather than
+  // letting a user believe a stolen disk is unreadable.
+  if (config.encrypt_at_rest) {
+    DSN_LOG_WARN("main", "encrypt_at_rest=true is NOT YET ENFORCED: data files are written "
+                         "unencrypted; wire encryption only. See docs/architecture-v2.md Sec 8.");
+  }
+
   desentry::NodeEngine::Options engine_opts;
   engine_opts.data_dir = config.data_dir;
   engine_opts.buffer_pool_pages = config.buffer_pool_pages;

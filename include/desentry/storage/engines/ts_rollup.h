@@ -76,7 +76,8 @@ class TsRollupBackend : public BaseBackend {
  public:
   std::string Name() const override { return "ts_rollup"; }
 
-  Status Open(const std::string& data_dir, uint64_t quota_mb) override;
+  Status Open(const std::string& data_dir, uint64_t quota_mb,
+              size_t buffer_pool_pages = 1024) override;
   Status Put(const std::string& collection, const std::string& key,
               const std::string& encoded_doc) override;
   StatusOr<std::string> Get(const std::string& collection, const std::string& key) override;
@@ -105,7 +106,9 @@ class TsRollupBackend : public BaseBackend {
   // Drops whole chunks whose newest point is older than `cutoff_ms`.
   // Returns the number of chunks removed.
   StatusOr<size_t> Prune(const std::string& collection, int64_t cutoff_ms);
-  // Convenience wrapper honouring CollectionMeta::retention_days.
+  // Convenience wrapper honouring CollectionMeta::retention_days. Manual
+  // only: no background scheduler calls this -- retention runs when invoked
+  // (tests, tooling, or a future supervisor sweep), never on the write path.
   StatusOr<size_t> ApplyRetention(const std::string& collection, uint32_t retention_days);
 
   Status SealOpenChunk(const std::string& collection);

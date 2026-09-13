@@ -86,7 +86,12 @@ class EngineBackend {
 
   // Prepares the backend's own subdirectory under `data_dir` and adopts a
   // byte budget of `quota_mb` MiB (0 == unlimited). Idempotent.
-  virtual Status Open(const std::string& data_dir, uint64_t quota_mb) = 0;
+  // `buffer_pool_pages` sizes the backend's page cache where applicable;
+  // backends without a page cache ignore it. Threaded from NodeConfig via
+  // StorageEngine/StorageRouter options so the sizing control is functional,
+  // not decorative (default 1024 == 4MiB of 4KiB pages).
+  virtual Status Open(const std::string& data_dir, uint64_t quota_mb,
+                      size_t buffer_pool_pages = 1024) = 0;
 
   // Physical upsert of already-CRDT-encoded document bytes. Returns
   // kOutOfSpace (never a partial write) when the write would exceed quota.
@@ -132,12 +137,11 @@ class EngineBackend {
 
 // -- cross-engine metadata index -------------------------------------------
 // "Which engine, on which node, holds this key?" -- the question a client
-// asks when it knows a key but not where it lives. In a deployment with the
-// SQLite backbone compiled in this is a real SQLite table
-// (`cross_engine_index(key TEXT PRIMARY KEY, engine TEXT, node_id TEXT,
-// collection TEXT, updated_ms INTEGER)`); without it, the same rows live in
-// a small fsync'd append log with an in-memory map over it. Both
-// implementations satisfy the same interface and the same test.
+// asks when it knows a key but not where it lives. Implemented as a small
+// fsync'd append log with an in-memory map over it (see CrossEngineIndex
+// below). A SQLite-backed variant is tracked future work, not a second
+// implementation behind this interface today: this build has exactly one
+// index, and tests cover exactly it.
 struct IndexEntry {
   std::string key;
   std::string collection;
@@ -189,6 +193,7 @@ class StorageRouter {
     std::string default_engine = "kv";
     Catalog* catalog = nullptr;    // borrowed; used to resolve collection -> engine
     std::string node_id;           // recorded in the cross-engine index
+    size_t buffer_pool_pages = 1024;  // forwarded to backends with a page cache (kv)
   };
 
   static StatusOr<std::unique_ptr<StorageRouter>> Open(const Options& options);
@@ -224,7 +229,8 @@ class StorageRouter {
 
  private:
   StorageRouter() = default;
-  Status RegisterBackend(const std::string& name, const std::string& data_dir, uint64_t bytes);
+  Status RegisterBackend(const std::string& name, const std::string& data_dir, uint64_t quota_mb,
+                           size_t buffer_pool_pages = 1024);
 
   std::string data_dir_;
   std::string default_engine_;
