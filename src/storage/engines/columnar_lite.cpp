@@ -269,7 +269,9 @@ StatusOr<std::vector<EngineRow>> ColumnarLiteBackend::DecodeSegment(const std::s
 // Backend
 // ---------------------------------------------------------------------------
 
-Status ColumnarLiteBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
+Status ColumnarLiteBackend::Open(const std::string& data_dir, uint64_t quota_mb,
+                                  size_t buffer_pool_pages) {
+  (void)buffer_pool_pages;  // segment-based layout has no buffer pool to size
   dir_ = data_dir + "/columnar_lite";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/segments.json";

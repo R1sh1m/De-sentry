@@ -1,0 +1,44 @@
+{
+  // De-Sentry shared editor settings (committed — portable only).
+  // No absolute paths here: ${workspaceFolder} and toolchain auto-discovery
+  // only. Machine-specific overrides live in .vscode/lsp.local.json
+  // (gitignored, see lsp.local.json.example). Regenerate local LSP
+  // artifacts with scripts/setup-lsp.ps1 (Windows) or scripts/setup-lsp.sh
+  // (Linux/macOS).
+
+  // ── C++ (clangd, editor-agnostic via .clangd + root compile_commands.json) ──
+  // No --compile-commands-dir flag on purpose: the setup scripts link the
+  // newest build's compile_commands.json to the repo root, which clangd
+  // auto-discovers. A hardcoded build dir would break build-macos users.
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy=0",
+    "--header-insertion=iwyu",
+    "--completion-style=detailed"
+  ],
+  "clangd.detectExtensionConflicts": true,
+  // If you also have Microsoft's C/C++ extension installed, clangd must be
+  // the sole IntelliSense provider or the two fight over every file.
+  "C_Cpp.intelliSenseEngine": "disabled",
+
+  // ── Rust (rust-analyzer discovers the crate via the linked project) ──
+  "rust-analyzer.linkedProjects": ["app/src-tauri/Cargo.toml"],
+  "rust-analyzer.cargo.buildScripts.enabled": true,
+
+  // ── TypeScript (workspace SDK, matches `npm run typecheck`) ──
+  "typescript.tsdk": "app/node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // ── Python (stdlib-only: no venv, no interpreter pinning) ──
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.extraPaths": ["${workspaceFolder}/clients/python"],
+
+  // ── File watcher: build outputs are huge, never watch them ──
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/build-*/**": true,
+    "**/app/src-tauri/target/**": true,
+    "**/app/node_modules/**": true,
+    "**/.cache/**": true
+  }
+}

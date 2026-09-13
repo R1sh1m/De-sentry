@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Generates the application icon set from one vector description.
+"""Generates the application icon set from the De-Sentry Aegis brand mark.
 
-The mark is a hexagon (a node) with three satellites linked to it (its
-replicas) -- the same shape as the `node` and `network` glyphs in the UI, so
-the dock icon and the sidebar read as the same product.
+The mark is the Sentry Aegis: a faceted cryptographic shield enclosing a
+tri-vector peer mesh constellation linked to an illuminated central sentinel
+aperture. This matches the vector mark in the header, boot loader, and About
+sheet.
 
 Everything is drawn here rather than checked in as a binary blob so the icon
 can be regenerated at any size without hunting for a source file, and so the
 repository holds no opaque artwork nobody can edit.
 
     python app/scripts/make-icons.py
+    # or
+    npm run icons
 
 Requires Pillow. Writes into app/src-tauri/icons/.
 """
@@ -28,81 +31,183 @@ except ImportError:  # pragma: no cover - a developer-tools script
 
 OUT = Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
 
-# Action Blue from DESIGN.md, on a rounded square in the same blue at full
-# saturation. A transparent icon disappears against a dark dock; a filled one
-# does not.
-BLUE = (0, 102, 204, 255)
-BLUE_DEEP = (0, 74, 153, 255)
+# Palette: Action Blue and Deep Sapphire from DESIGN.md
+BG_TOP = (10, 30, 60, 255)       # Midnight navy top
+BG_MID = (0, 85, 175, 255)       # Action Blue mid
+BG_BOTTOM = (0, 45, 115, 255)    # Deep Sapphire bottom
+
+SHIELD_TOP = (0, 125, 245, 240)
+SHIELD_BOTTOM = (0, 55, 130, 245)
+SHIELD_STROKE = (65, 185, 255, 220)
+SHIELD_FACET = (41, 151, 255, 80)
+
 WHITE = (255, 255, 255, 255)
-WHITE_SOFT = (255, 255, 255, 205)
+WHITE_SOFT = (255, 255, 255, 190)
+CYAN_GLOW = (100, 210, 255, 255)
 
 
-def hexagon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
-    # Flat-top hexagon, matching the `node` glyph's orientation.
+def shield_polygon(s: float) -> list[tuple[float, float]]:
+    """Geometric coordinates of the Sentry Aegis shield."""
+    cx = s * 0.50
     return [
-        (cx + r * math.cos(math.radians(angle)), cy + r * math.sin(math.radians(angle)))
-        for angle in range(-90, 270, 60)
+        (cx, s * 0.13),          # Top point
+        (s * 0.84, s * 0.25),    # Top-right corner
+        (s * 0.84, s * 0.56),    # Mid-right flank
+        (cx, s * 0.88),          # Bottom tip
+        (s * 0.16, s * 0.56),    # Mid-left flank
+        (s * 0.16, s * 0.25),    # Top-left corner
     ]
 
 
 def render(size: int) -> Image.Image:
-    """Draws at 4x and downsamples, which is cheaper than antialiasing by hand."""
+    """Draws at 4x and downsamples with Lanczos antialiasing."""
     scale = 4
     s = size * scale
     image = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    # Rounded-square ground with a vertical gradient, so the icon has depth at
-    # 32px. Drawn row by row and clipped by a rounded-rectangle mask: a hard
-    # two-tone split reads as a printing defect at small sizes.
+    # 1. Rounded-square ground with multi-stop vertical gradient
     radius = int(s * 0.225)
     gradient = Image.new("RGBA", (1, s))
     for y in range(s):
         t = y / max(1, s - 1)
-        gradient.putpixel(
-            (0, y),
-            tuple(round(BLUE[i] + (BLUE_DEEP[i] - BLUE[i]) * t) for i in range(4)),
-        )
+        if t < 0.5:
+            t2 = t * 2
+            col = tuple(round(BG_TOP[i] + (BG_MID[i] - BG_TOP[i]) * t2) for i in range(4))
+        else:
+            t2 = (t - 0.5) * 2
+            col = tuple(round(BG_MID[i] + (BG_BOTTOM[i] - BG_MID[i]) * t2) for i in range(4))
+        gradient.putpixel((0, y), col)
+
     ground = gradient.resize((s, s))
     mask = Image.new("L", (s, s), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, s - 1, s - 1], radius=radius, fill=255)
     image.paste(ground, (0, 0), mask)
 
-    cx = cy = s / 2
-    core_r = s * 0.150
-    orbit_r = s * 0.295
-    satellite_r = s * 0.052
-    stroke = max(1, int(s * 0.020))
+    # Subtle inner rim hairline
+    rim_mask = Image.new("L", (s, s), 0)
+    rim_draw = ImageDraw.Draw(rim_mask)
+    rim_draw.rounded_rectangle([1, 1, s - 2, s - 2], radius=radius, outline=255, width=max(1, int(s * 0.012)))
+    rim_color = Image.new("RGBA", (s, s), (150, 210, 255, 45))
+    image.paste(rim_color, (0, 0), rim_mask)
 
-    # Links first, so the nodes sit on top of them.
-    for angle in (-90, 30, 150):
-        rad = math.radians(angle)
-        x = cx + orbit_r * math.cos(rad)
-        y = cy + orbit_r * math.sin(rad)
-        draw.line([(cx, cy), (x, y)], fill=WHITE_SOFT, width=stroke)
+    # 2. Sentry Shield Body
+    shield_pts = shield_polygon(s)
+    cx, cy = s * 0.50, s * 0.50
 
-    draw.polygon(hexagon(cx, cy, core_r), fill=WHITE)
+    # Shield fill
+    shield_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(shield_img)
+    sdraw.polygon(shield_pts, fill=SHIELD_BOTTOM)
 
-    for angle in (-90, 30, 150):
-        rad = math.radians(angle)
-        x = cx + orbit_r * math.cos(rad)
-        y = cy + orbit_r * math.sin(rad)
-        draw.ellipse(
-            [x - satellite_r, y - satellite_r, x + satellite_r, y + satellite_r],
-            fill=WHITE,
-        )
+    # Left facet highlight (light reflection)
+    left_facet = [
+        (cx, s * 0.13),
+        (s * 0.16, s * 0.25),
+        (s * 0.16, s * 0.56),
+        (cx, s * 0.88),
+        (cx, cy),
+    ]
+    sdraw.polygon(left_facet, fill=SHIELD_FACET)
+
+    # Shield outline stroke
+    stroke_w = max(2, int(s * 0.022))
+    sdraw.line(shield_pts + [shield_pts[0]], fill=SHIELD_STROKE, width=stroke_w, joint="curve")
+
+    image = Image.alpha_composite(image, shield_img)
+    draw = ImageDraw.Draw(image)
+
+    # 3. Constellation Nodes & Mesh Lines
+    # Equilateral-like constellation inside shield: Top, Bottom-Right, Bottom-Left
+    node_top = (cx, s * 0.31)
+    node_br = (s * 0.69, s * 0.61)
+    node_bl = (s * 0.31, s * 0.61)
+    center_core = (cx, s * 0.50)
+
+    mesh_stroke = max(1, int(s * 0.018))
+    # Triangle interconnects
+    draw.line([node_top, node_br], fill=WHITE_SOFT, width=mesh_stroke)
+    draw.line([node_br, node_bl], fill=WHITE_SOFT, width=mesh_stroke)
+    draw.line([node_bl, node_top], fill=WHITE_SOFT, width=mesh_stroke)
+    # Spokes to central sentinel core
+    draw.line([node_top, center_core], fill=WHITE_SOFT, width=mesh_stroke)
+    draw.line([node_br, center_core], fill=WHITE_SOFT, width=mesh_stroke)
+    draw.line([node_bl, center_core], fill=WHITE_SOFT, width=mesh_stroke)
+
+    # 4. Central Sentinel Core (Aura glow + Diamond spark)
+    aura_r = s * 0.10
+    aura_box = [center_core[0] - aura_r, center_core[1] - aura_r, center_core[0] + aura_r, center_core[1] + aura_r]
+    aura_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    adraw = ImageDraw.Draw(aura_img)
+    adraw.ellipse(aura_box, fill=(100, 210, 255, 80))
+    image = Image.alpha_composite(image, aura_img)
+    draw = ImageDraw.Draw(image)
+
+    spark_r = s * 0.05
+    spark = [
+        (center_core[0], center_core[1] - spark_r),
+        (center_core[0] + spark_r * 0.85, center_core[1]),
+        (center_core[0], center_core[1] + spark_r),
+        (center_core[0] - spark_r * 0.85, center_core[1]),
+    ]
+    draw.polygon(spark, fill=WHITE)
+
+    # 5. Satellite Nodes
+    sat_r = s * 0.046
+    for pt in (node_top, node_br, node_bl):
+        box = [pt[0] - sat_r, pt[1] - sat_r, pt[0] + sat_r, pt[1] + sat_r]
+        draw.ellipse(box, fill=WHITE)
+
+    return image.resize((size, size), Image.LANCZOS)
+
+
+def render_tray(size: int = 64) -> Image.Image:
+    """Renders a sharp monochrome template icon for the system tray."""
+    scale = 4
+    s = size * scale
+    image = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+
+    # Shield outline
+    shield_pts = shield_polygon(s)
+    stroke_w = max(2, int(s * 0.045))
+    draw.line(shield_pts + [shield_pts[0]], fill=(255, 255, 255, 240), width=stroke_w, joint="curve")
+
+    # Constellation
+    cx = s * 0.50
+    node_top = (cx, s * 0.32)
+    node_br = (s * 0.67, s * 0.60)
+    node_bl = (s * 0.33, s * 0.60)
+    center_core = (cx, s * 0.50)
+
+    mesh_stroke = max(1, int(s * 0.030))
+    draw.line([node_top, node_br], fill=(255, 255, 255, 200), width=mesh_stroke)
+    draw.line([node_br, node_bl], fill=(255, 255, 255, 200), width=mesh_stroke)
+    draw.line([node_bl, node_top], fill=(255, 255, 255, 200), width=mesh_stroke)
+    draw.line([node_top, center_core], fill=(255, 255, 255, 200), width=mesh_stroke)
+    draw.line([node_br, center_core], fill=(255, 255, 255, 200), width=mesh_stroke)
+    draw.line([node_bl, center_core], fill=(255, 255, 255, 200), width=mesh_stroke)
+
+    # Spark
+    spark_r = s * 0.055
+    spark = [
+        (center_core[0], center_core[1] - spark_r),
+        (center_core[0] + spark_r, center_core[1]),
+        (center_core[0], center_core[1] + spark_r),
+        (center_core[0] - spark_r, center_core[1]),
+    ]
+    draw.polygon(spark, fill=(255, 255, 255, 255))
+
+    sat_r = s * 0.055
+    for pt in (node_top, node_br, node_bl):
+        box = [pt[0] - sat_r, pt[1] - sat_r, pt[0] + sat_r, pt[1] + sat_r]
+        draw.ellipse(box, fill=(255, 255, 255, 255))
 
     return image.resize((size, size), Image.LANCZOS)
 
 
 def write_icns(path: Path, images: dict[str, Image.Image]) -> None:
-    """Writes an .icns by hand.
-
-    Pillow only saves ICNS on macOS, and this has to run wherever the icons are
-    regenerated. The container format is trivial: a magic, a total length, then
-    length-prefixed typed chunks -- and modern macOS accepts PNG payloads for
-    every type used here.
-    """
+    """Writes an .icns file."""
     chunks = b""
     for ostype, image in images.items():
         payload = to_png_bytes(image)
@@ -126,8 +231,7 @@ def main() -> None:
         "128x128.png": 128,
         "128x128@2x.png": 256,
         "icon.png": 512,
-        # Windows Store / MSIX logos. Harmless elsewhere, required if the
-        # bundle target is ever extended to msix.
+        # Windows Store / MSIX logos.
         "Square30x30Logo.png": 30,
         "Square44x44Logo.png": 44,
         "Square71x71Logo.png": 71,
@@ -142,8 +246,6 @@ def main() -> None:
     for name, size in sizes.items():
         render(size).save(OUT / name, format="PNG")
 
-    # .ico carries every size Windows picks between; leaving out 16 and 24
-    # gives a blurry taskbar at 100% scaling.
     render(256).save(
         OUT / "icon.ico",
         format="ICO",
@@ -163,10 +265,8 @@ def main() -> None:
         },
     )
 
-    # The tray icon is monochrome-friendly: a template image on macOS is tinted
-    # by the system, so a coloured tray icon looks wrong next to every other
-    # one in the menu bar.
-    tray = render(64).convert("LA").convert("RGBA")
+    # Tray icon
+    tray = render_tray(64)
     tray.save(OUT / "tray.png", format="PNG")
 
     print(f"wrote {len(sizes) + 3} icon files to {OUT}")

@@ -169,28 +169,34 @@ std::string RandomBytes(size_t n) {
   return out;
 }
 
-std::string AesGcmSeal(const std::string& key, const std::string& nonce, const std::string& plaintext,
-                        const std::string& aad) {
+StatusOr<std::string> AesGcmSeal(const std::string& key, const std::string& nonce,
+                                  const std::string& plaintext, const std::string& aad) {
+  // Status-only: argument and OpenSSL failures are returned, never thrown.
+  // (The rest of this file still throws ThrowOpenSsl on internal OpenSSL
+  // errors -- keygen/derive -- which are init-time programmer/environment
+  // failures; converting those is tracked follow-up work, not this fix.)
   if (key.size() != kAesGcmKeyLen || nonce.size() != kAesGcmNonceLen) {
-    throw std::runtime_error("AesGcmSeal: bad key/nonce length");
+    return Status::InvalidArgument("AesGcmSeal: bad key/nonce length");
   }
   CipherCtxPtr ctx(EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
-  if (!ctx) ThrowOpenSsl("CIPHER_CTX_new");
+  if (!ctx) return Status::Internal("OpenSSL error in CIPHER_CTX_new");
 
-  if (EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) ThrowOpenSsl("EncryptInit(1)");
+  if (EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) {
+    return Status::Internal("OpenSSL error in EncryptInit(1)");
+  }
   if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, static_cast<int>(kAesGcmNonceLen), nullptr) <= 0) {
-    ThrowOpenSsl("set ivlen");
+    return Status::Internal("OpenSSL error in set ivlen");
   }
   if (EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, reinterpret_cast<const unsigned char*>(key.data()),
                           reinterpret_cast<const unsigned char*>(nonce.data())) <= 0) {
-    ThrowOpenSsl("EncryptInit(2)");
+    return Status::Internal("OpenSSL error in EncryptInit(2)");
   }
 
   int len = 0;
   if (!aad.empty()) {
     if (EVP_EncryptUpdate(ctx.get(), nullptr, &len, reinterpret_cast<const unsigned char*>(aad.data()),
                            static_cast<int>(aad.size())) <= 0) {
-      ThrowOpenSsl("EncryptUpdate(aad)");
+      return Status::Internal("OpenSSL error in EncryptUpdate(aad)");
     }
   }
 
@@ -198,17 +204,17 @@ std::string AesGcmSeal(const std::string& key, const std::string& nonce, const s
   int out_len = 0;
   if (EVP_EncryptUpdate(ctx.get(), reinterpret_cast<unsigned char*>(ciphertext.data()), &out_len,
                          reinterpret_cast<const unsigned char*>(plaintext.data()), static_cast<int>(plaintext.size())) <= 0) {
-    ThrowOpenSsl("EncryptUpdate(pt)");
+    return Status::Internal("OpenSSL error in EncryptUpdate(pt)");
   }
   int final_len = 0;
   if (EVP_EncryptFinal_ex(ctx.get(), reinterpret_cast<unsigned char*>(ciphertext.data()) + out_len, &final_len) <= 0) {
-    ThrowOpenSsl("EncryptFinal");
+    return Status::Internal("OpenSSL error in EncryptFinal");
   }
   ciphertext.resize(static_cast<size_t>(out_len + final_len));
 
   std::string tag(kAesGcmTagLen, '\0');
   if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, static_cast<int>(kAesGcmTagLen), tag.data()) <= 0) {
-    ThrowOpenSsl("get tag");
+    return Status::Internal("OpenSSL error in get tag");
   }
   return ciphertext + tag;
 }

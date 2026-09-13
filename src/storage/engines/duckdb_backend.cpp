@@ -92,7 +92,9 @@ class DuckDbBackend : public BaseBackend {
 
   std::string Name() const override { return "duckdb"; }
 
-  Status Open(const std::string& data_dir, uint64_t quota_mb) override {
+  Status Open(const std::string& data_dir, uint64_t quota_mb,
+              size_t buffer_pool_pages = 1024) override {
+    (void)buffer_pool_pages;  // DuckDB manages its own buffer pool
     dir_ = data_dir + "/duckdb";
     if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
     path_ = dir_ + "/desentry.duckdb";

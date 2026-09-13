@@ -23,6 +23,8 @@
 #include "desentry/storage/disk_manager.h"
 #include "desentry/storage/document_codec.h"
 #include "desentry/storage/bplus_tree.h"
+#include "desentry/storage/engines/kv_bplus.h"
+#include "desentry/storage/page.h"
 #include "desentry/storage/storage_engine.h"
 #include "desentry/storage/wal.h"
 
@@ -262,11 +264,108 @@ static void TestStorageEngineCrashRecovery() {
   std::cout << "[storage_test] StorageEngine crash-recovery via WAL replay (200 docs, never checkpointed): PASS" << std::endl;
 }
 
+static size_t KvPoolPages(StorageEngine& engine) {
+  EngineBackend* backend = engine.router().Backend("kv");
+  assert(backend != nullptr);
+  auto* kv = dynamic_cast<KvBPlusBackend*>(backend);
+  assert(kv != nullptr);
+  return kv->BufferPoolPages();
+}
+
+static void TestBufferPoolSizingIsHonored() {
+  // buffer_pool_pages used to be parsed but never forwarded: KvBPlus always
+  // built a 1024-page pool whatever node.json said. Two engines opened with
+  // different settings must now hold measurably different pools.
+  const std::string small_dir = std::string(kTestDir) + "/pool_small";
+  const std::string large_dir = std::string(kTestDir) + "/pool_large";
+  RmRf(small_dir);
+  RmRf(large_dir);
+
+  StorageEngine::Options small_opts;
+  small_opts.data_dir = small_dir;
+  small_opts.buffer_pool_pages = 8;
+  auto small_engine = StorageEngine::Open(small_opts).ValueOrDie();
+  assert(KvPoolPages(*small_engine) == 8);
+
+  StorageEngine::Options large_opts;
+  large_opts.data_dir = large_dir;
+  large_opts.buffer_pool_pages = 64;
+  auto large_engine = StorageEngine::Open(large_opts).ValueOrDie();
+  assert(KvPoolPages(*large_engine) == 64);
+
+  // Zero is clamped to a working minimum rather than building a dead pool.
+  const std::string zero_dir = std::string(kTestDir) + "/pool_zero";
+  RmRf(zero_dir);
+  StorageEngine::Options zero_opts;
+  zero_opts.data_dir = zero_dir;
+  zero_opts.buffer_pool_pages = 0;
+  auto zero_engine = StorageEngine::Open(zero_opts).ValueOrDie();
+  assert(KvPoolPages(*zero_engine) > 0);
+
+  std::cout << "[storage_test] buffer_pool_pages sizing honored (8 vs 64 vs clamped-0): PASS"
+            << std::endl;
+}
+
+static void TestFailedWriteLeavesNoLedgerGap() {
+  // A write the backend must refuse (bad key, oversize doc) must be refused
+  // BEFORE the ledger attests to it: otherwise the WAL claims a write that
+  // replay can never materialise. The tip must not advance and a restart
+  // must show no gap (valid docs intact, refused docs absent, chain verifies).
+  const std::string data_dir = std::string(kTestDir) + "/no_gap";
+  RmRf(data_dir);
+  HybridLogicalClock clock("nodeA");
+  lsn_t tip_after_valid = kInvalidLsn;
+
+  {
+    StorageEngine::Options opts;
+    opts.data_dir = data_dir;
+    opts.buffer_pool_pages = 32;
+    auto engine = StorageEngine::Open(opts).ValueOrDie();
+    const lsn_t tip_before = engine->wal()->LastLsn();
+
+    // 64-byte key: refused by the B+Tree bound (>= kMaxKeyBytes).
+    auto j = JsonValue::Parse(R"({"n":1})");
+    auto doc = CrdtValue::FromJson(j, clock.Now());
+    Status bad_key = engine->PutRaw("items", std::string(64, 'k'), EncodeDocument(doc));
+    assert(!bad_key.ok() && bad_key.code() == StatusCode::kInvalidArgument);
+    assert(engine->wal()->LastLsn() == tip_before);
+
+    // Oversize document: can never fit in a slotted page.
+    Status big_doc =
+        engine->PutRaw("items", "too-big", std::string(kPageSize, 'x'));
+    assert(!big_doc.ok() && big_doc.code() == StatusCode::kInvalidArgument);
+    assert(engine->wal()->LastLsn() == tip_before);
+
+    // A valid write still lands and advances the tip by exactly one.
+    auto ok_doc = CrdtValue::FromJson(JsonValue::Parse(R"({"n":2})"), clock.Now());
+    assert(engine->PutRaw("items", "good", EncodeDocument(ok_doc)).ok());
+    tip_after_valid = engine->wal()->LastLsn();
+    assert(tip_after_valid == tip_before + 1);
+  }
+
+  {
+    StorageEngine::Options opts;
+    opts.data_dir = data_dir;
+    opts.buffer_pool_pages = 32;
+    auto engine = StorageEngine::Open(opts).ValueOrDie();
+    assert(engine->wal()->LastLsn() == tip_after_valid);
+    assert(engine->GetRaw("items", "good").ok());
+    assert(!engine->GetRaw("items", std::string(64, 'k')).ok());
+    assert(!engine->GetRaw("items", "too-big").ok());
+    assert(engine->VerifyAll().ledger.ok);
+  }
+
+  std::cout << "[storage_test] failed writes refused before WAL append (no ledger gap): PASS"
+            << std::endl;
+}
+
 int main() {
   TestBufferPoolAndWal();
   TestBPlusTreeStress();
   TestWalHashChain();
   TestStorageEngineCrashRecovery();
+  TestBufferPoolSizingIsHonored();
+  TestFailedWriteLeavesNoLedgerGap();
   std::cout << "[storage_test] ALL STORAGE TESTS PASSED" << std::endl;
   return 0;
 }

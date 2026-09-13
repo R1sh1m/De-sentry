@@ -146,7 +146,8 @@ Status GraphAdjBackend::DecodeAdjacency(const std::string& blob, CollectionState
 // Backend
 // ---------------------------------------------------------------------------
 
-Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
+Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb,
+                              size_t buffer_pool_pages) {
   dir_ = data_dir + "/graph_adj";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/graph.json";
@@ -155,7 +156,7 @@ Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
   // The inner store is opened unlimited: this backend's own Charge() is the
   // single quota authority, so a document is never accepted here and then
   // rejected one layer down.
-  Status st = docs_->Open(dir_, 0);
+  Status st = docs_->Open(dir_, 0, buffer_pool_pages);
   if (!st.ok()) return st;
 
   auto store_or = SegmentStore::Open(dir_ + "/adjacency.dsf");

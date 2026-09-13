@@ -28,6 +28,7 @@ import { refreshNodeList, refreshTopology, store } from "../state.js";
 import { bytes, engineLabel, percent } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { qrSvg } from "../util/qr.js";
+import { promptDeleteCandidateNode } from "../util/nodeDeleteHelper.js";
 
 /** Matches `kConfidenceFloor` in src-tauri/src/ai.rs. Shown, not just applied. */
 const CONFIDENCE_FLOOR = 0.35;
@@ -184,11 +185,38 @@ export interface WizardHandles {
 }
 
 export function createWizard(): WizardHandles {
-  const body = el("div", { class: "wizard" });
-  const element = el("div", { class: "sheet", hidden: true, role: "dialog", "aria-modal": "true" }, body);
+  const wizardContainer = el("div", { class: "wizard" });
+  const element = el("div", { class: "sheet", hidden: true, role: "dialog", "aria-modal": "true" }, wizardContainer);
 
   let draft = newDraft();
   let open = false;
+  let isMinimized = false;
+  let isExpanded = false;
+
+  const content = el("div", { class: "wizard__body" });
+
+  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
+  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
+  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Expand / Maximize" });
+
+  on(closeDot, "click", () => close());
+  on(minDot, "click", () => {
+    isMinimized = !isMinimized;
+    wizardContainer.classList.toggle("wizard--minimized", isMinimized);
+  });
+  on(zoomDot, "click", () => {
+    isExpanded = !isExpanded;
+    wizardContainer.classList.toggle("wizard--expanded", isExpanded);
+  });
+
+  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const titleBar = el(
+    "div",
+    { class: "wizard__titlebar" },
+    trafficLights,
+    el("span", { class: "wizard__titlebar-title", text: "Create / Adopt Node" }),
+    el("span", { style: "width: 52px;" }),
+  );
 
   function close(): void {
     // Refusing to close over an unexported key would trap the user; warning
@@ -292,6 +320,25 @@ export function createWizard(): WizardHandles {
     } else {
       for (const candidate of shown) {
         const selected = draft.dataDir === candidate.path;
+        const deleteBtn = candidate.existing_node
+          ? el(
+              "button",
+              {
+                class: "btn btn--xs btn--ghost text-danger",
+                type: "button",
+                title: `Delete ${candidate.node_name || "node"} files from disk`,
+              },
+              icon(Icons.trash, 12),
+              " Delete",
+            )
+          : null;
+        if (deleteBtn) {
+          on(deleteBtn, "click", (e) => {
+            e.stopPropagation();
+            promptDeleteCandidateNode(candidate, () => void scan());
+          });
+        }
+
         const row = el(
           "article",
           { class: selected ? "card card--elevated" : "card", role: "button", tabindex: "0" },
@@ -305,6 +352,7 @@ export function createWizard(): WizardHandles {
               candidate.removable && el("span", { class: "badge", text: "removable" }),
               candidate.encrypted && el("span", { class: "badge", text: "encrypted" }),
               candidate.existing_node && el("span", { class: "badge", "data-tone": "supervisor", text: "existing node" }),
+              deleteBtn,
             ),
           ),
           el("p", {
@@ -788,9 +836,15 @@ export function createWizard(): WizardHandles {
     };
 
     replace(
-      body,
+      content,
       stepper(draft.step),
       steps[draft.step](),
+    );
+
+    replace(
+      wizardContainer,
+      titleBar,
+      content,
       el("div", { class: "wizard__footer" }, back, el("span", { class: "header__spacer" }), next),
     );
   }

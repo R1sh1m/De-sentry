@@ -44,9 +44,14 @@ int main() {
   std::string nonce = RandomBytes(kAesGcmNonceLen);
   std::string plaintext = R"({"op":"put","key":"u1"})";
   std::string aad = "header-metadata";
-  std::string sealed = AesGcmSeal(k1, nonce, plaintext, aad);
+  auto sealed_or = AesGcmSeal(k1, nonce, plaintext, aad);
+  assert(sealed_or.ok());
+  std::string sealed = sealed_or.value();
   std::string opened;
   assert(AesGcmOpen(k1, nonce, sealed, aad, &opened) && opened == plaintext);
+  // Bad key/nonce lengths are a failed Status, never an exception.
+  assert(!AesGcmSeal("short", nonce, plaintext, aad).ok());
+  assert(!AesGcmSeal(k1, "short", plaintext, aad).ok());
   std::cout << "[crypto_test] AES-256-GCM round-trip: PASS" << std::endl;
 
   std::string tampered = sealed;

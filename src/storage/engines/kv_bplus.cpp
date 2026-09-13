@@ -11,7 +11,8 @@
 
 namespace desentry {
 
-Status KvBPlusBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
+Status KvBPlusBackend::Open(const std::string& data_dir, uint64_t quota_mb,
+                             size_t buffer_pool_pages) {
   dir_ = data_dir + "/kv";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   roots_path_ = dir_ + "/roots.json";
@@ -19,11 +20,19 @@ Status KvBPlusBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
   auto disk_or = DiskManager::Open(dir_ + "/kv.dsf");
   if (!disk_or.ok()) return disk_or.status();
   disk_ = std::move(disk_or.value());
-  pool_ = std::make_unique<BufferPoolManager>(1024, disk_.get());
+  // Zero/degenerate requests cannot make progress (NewPage would always fail),
+  // so clamp to a small working minimum rather than building a dead backend.
+  const size_t pool_pages = buffer_pool_pages == 0 ? 16 : buffer_pool_pages;
+  pool_ = std::make_unique<BufferPoolManager>(pool_pages, disk_.get());
 
   SetQuotaBytes(quota_mb * 1024ull * 1024ull);
   SetBytesUsed(static_cast<uint64_t>(std::max<int64_t>(0, disk_->NumAllocatedPages())) * kPageSize);
   return LoadRoots();
+}
+
+size_t KvBPlusBackend::BufferPoolPages() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return pool_ ? pool_->PoolSize() : 0;
 }
 
 Status KvBPlusBackend::LoadRoots() {
@@ -100,8 +109,13 @@ BPlusTree* KvBPlusBackend::IndexFor(const std::string& collection) {
 
 Status KvBPlusBackend::Put(const std::string& collection, const std::string& key,
                             const std::string& encoded_doc) {
-  if (key.size() > kMaxKeyBytes) {
-    return Status::InvalidArgument("key exceeds " + std::to_string(kMaxKeyBytes) + " bytes: " + key);
+  // Must match BPlusTree::Insert's bound exactly (empty or >= kMaxKeyBytes
+  // is refused there): a key accepted here but refused there would charge
+  // quota, append a ledger record, and then fail -- the WAL divergence this
+  // engine must not produce.
+  if (key.empty() || key.size() >= kMaxKeyBytes) {
+    return Status::InvalidArgument("key length must be in (0, " + std::to_string(kMaxKeyBytes) +
+                                   ") bytes");
   }
 
   // Quota is charged before any page is touched, so a rejected write leaves

@@ -4,6 +4,10 @@
 
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/storage/bplus_tree.h"
+#include "desentry/storage/engines/engine_common.h"
+#include "desentry/storage/page.h"
+#include "desentry/storage/slotted_page.h"
 
 namespace desentry {
 
@@ -38,6 +42,7 @@ StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& opti
   router_opts.default_engine = options.default_engine;
   router_opts.catalog = engine->catalog_.get();
   router_opts.node_id = options.node_id;
+  router_opts.buffer_pool_pages = options.buffer_pool_pages;
   auto router_or = StorageRouter::Open(router_opts);
   if (!router_or.ok()) return router_or.status();
   engine->router_ = std::move(router_or.value());
@@ -80,6 +85,13 @@ Status StorageEngine::ReplayLedger() {
     if (rec.type != WalRecordType::kPut) continue;
     // Replay goes through the router, not the ledger: appending again would
     // duplicate the entry and break the chain's relationship to history.
+    // Recovery runs inside a MergeScope so the bounded replication overdraft
+    // (BaseBackend::kMergeOverdraftPercent) applies: a record that was
+    // durable in the ledger must materialise even if the node has since
+    // filled past its nominal quota, otherwise every restart past quota
+    // would widen the ledger/materialised gap instead of closing it.
+    // Invalid records (undecodable, oversize) are still skipped loudly below.
+    MergeScope replay_scope;
     Status st = router_->Put(rec.collection, rec.key, rec.document_bytes);
     if (!st.ok()) {
       // One unreplayable record must not abort recovery of everything after
@@ -131,6 +143,25 @@ StorageEngine::QuotaStatus StorageEngine::Quota() const {
 
 Status StorageEngine::PutRaw(const std::string& collection, const std::string& key,
                               const std::string& encoded_doc) {
+  // Deterministic pre-validation, before anything is written: keys the B+Tree
+  // must refuse (empty or >= kMaxKeyBytes) and documents that cannot fit in
+  // a fresh slotted page can never materialise, so they must never reach the
+  // ledger. Appending first and failing after is exactly the WAL divergence
+  // this guard exists to prevent (ledger claims a write replay can never
+  // apply). The backend re-checks on its own path; this check only decides
+  // whether the ledger may attest to the write at all.
+  if (key.empty() || key.size() >= kMaxKeyBytes) {
+    return Status::InvalidArgument("key length must be in (0, " + std::to_string(kMaxKeyBytes) +
+                                   ") bytes");
+  }
+  // A fresh slotted page holds kPageSize minus its header and one slot entry;
+  // anything larger cannot be stored by the kv backend however empty the page.
+  constexpr size_t kMaxDocBytes = kPageSize - sizeof(SlottedPageHeader) - sizeof(SlotEntry);
+  if (encoded_doc.size() > kMaxDocBytes) {
+    return Status::InvalidArgument("document too large for a page (" +
+                                   std::to_string(encoded_doc.size()) + " bytes)");
+  }
+
   // Node-level quota check, before anything is written. The backend checks
   // its own share too; this is the number the user actually set, and it
   // covers the ledger's own growth, which no single backend can see.
@@ -154,7 +185,17 @@ Status StorageEngine::PutRaw(const std::string& collection, const std::string& k
   if (!lsn_or.ok()) return lsn_or.status();
 
   Status st = router_->Put(collection, key, encoded_doc);
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    // The ledger already attests to this LSN (append + fsync above), so a
+    // materialisation failure is a ledger/materialised gap by construction.
+    // Pre-validation above makes this unreachable for bad keys/docs; the
+    // remaining causes are quota races and I/O errors. Log loudly with the
+    // LSN so the gap is traceable, and leave recovery to ReplayLedger (which
+    // retries with the merge overdraft) rather than pretending here.
+    DSN_LOG_ERROR("storage", "ledger " << lsn_or.value() << " has no materialised row (" << collection
+                                        << "/" << key << "): " << st.message());
+    return st;
+  }
 
   EnsureCollection(collection);
   {

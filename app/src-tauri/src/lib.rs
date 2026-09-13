@@ -51,6 +51,28 @@ const SUPERVISOR_DIR: &str = "supervisor";
 /// that it never competes with the data nodes for disk.
 const SUPERVISOR_QUOTA_MB: u64 = 256;
 
+/// A packaged sidecar inside `dir`: Tauri stages it as
+/// `desentryd-<target-triple>[.exe]` (see app/scripts/stage-sidecar.mjs and
+/// `externalBin: ["binaries/desentryd"]` in tauri.conf.json). The triple is
+/// not hardcoded here; any `desentryd-*` entry qualifies, first sorted hit
+/// wins. Returns `None` when the directory holds no staged sidecar.
+fn find_packaged_sidecar(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut hits: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stemmed = name.strip_prefix("desentryd-").or_else(|| {
+            // Windows keeps the .exe on the staged name.
+            name.strip_suffix(".exe").and_then(|base| base.strip_prefix("desentryd-"))
+        });
+        if stemmed.is_some_and(|rest| !rest.is_empty()) {
+            hits.push(entry.path());
+        }
+    }
+    hits.sort();
+    hits.into_iter().next()
+}
+
 /// Resolves the bundled `desentryd`.
 ///
 /// In a packaged app Tauri places sidecar binaries next to the executable with
@@ -60,12 +82,16 @@ const SUPERVISOR_QUOTA_MB: u64 = 256;
 fn resolve_engine(app: &AppHandle) -> Result<PathBuf, String> {
     let exe_name = if cfg!(windows) { "desentryd.exe" } else { "desentryd" };
 
-    // Packaged: alongside the app binary.
+    // Packaged: alongside the app binary (triple-suffixed staged name first,
+    // then the bare name for older/dev layouts).
     if let Ok(dir) = std::env::current_exe().and_then(|exe| {
         exe.parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| std::io::Error::other("no parent directory"))
     }) {
+        if let Some(staged) = find_packaged_sidecar(&dir) {
+            return Ok(staged);
+        }
         let candidate = dir.join(exe_name);
         if candidate.exists() {
             return Ok(candidate);
@@ -74,6 +100,9 @@ fn resolve_engine(app: &AppHandle) -> Result<PathBuf, String> {
 
     // Packaged, as a named resource.
     if let Ok(resource) = app.path().resource_dir() {
+        if let Some(staged) = find_packaged_sidecar(&resource) {
+            return Ok(staged);
+        }
         let candidate = resource.join(exe_name);
         if candidate.exists() {
             return Ok(candidate);
@@ -279,6 +308,8 @@ pub fn run() {
             commands::stop_node,
             commands::restart_node,
             commands::forget_node,
+            commands::delete_node,
+            commands::delete_directory,
             commands::start_existing_node,
             commands::create_node,
             commands::size_workload,
@@ -288,7 +319,7 @@ pub fn run() {
             commands::unlock_node,
             commands::pick_directory,
             commands::pick_save_file,
-            commands::reveal_path,
+            commands::reveal_node_files,
             commands::set_autostart,
             commands::set_background_mode,
             commands::notify,
@@ -352,4 +383,35 @@ pub fn run() {
                 appstate::shutdown(&state);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packaged_sidecar_lookup_prefers_the_staged_triple_name() {
+        let dir = std::env::temp_dir().join(format!("desentry-sidecar-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Empty directory: no sidecar.
+        assert!(find_packaged_sidecar(&dir).is_none());
+
+        // A bare dev-layout binary alone is NOT a staged sidecar (the
+        // unsuffixed fallback in resolve_engine covers that layout).
+        let bare = dir.join(if cfg!(windows) { "desentryd.exe" } else { "desentryd" });
+        std::fs::write(&bare, b"dev").expect("temp binary writes");
+        assert!(find_packaged_sidecar(&dir).is_none());
+
+        // The staged triple-suffixed name is found.
+        let staged = dir.join(if cfg!(windows) {
+            "desentryd-x86_64-pc-windows-msvc.exe"
+        } else {
+            "desentryd-x86_64-unknown-linux-gnu"
+        });
+        std::fs::write(&staged, b"staged").expect("temp binary writes");
+        assert_eq!(find_packaged_sidecar(&dir), Some(staged));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

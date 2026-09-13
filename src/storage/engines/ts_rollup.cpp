@@ -205,7 +205,9 @@ Status TsRollupBackend::SplitChunk(const std::string& blob, std::string* rollup_
 // Backend
 // ---------------------------------------------------------------------------
 
-Status TsRollupBackend::Open(const std::string& data_dir, uint64_t quota_mb) {
+Status TsRollupBackend::Open(const std::string& data_dir, uint64_t quota_mb,
+                              size_t buffer_pool_pages) {
+  (void)buffer_pool_pages;  // segment-based layout has no buffer pool to size
   dir_ = data_dir + "/ts_rollup";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/chunks.json";

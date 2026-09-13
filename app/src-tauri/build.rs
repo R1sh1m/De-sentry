@@ -1,19 +1,25 @@
 fn main() {
-    tauri_build::build();
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let is_windows_gnu = target.contains("windows-gnu");
+
+    let attrs = if is_windows_gnu {
+        let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+        tauri_build::Attributes::new().windows_attributes(windows)
+    } else {
+        tauri_build::Attributes::new()
+    };
+
+    tauri_build::try_build(attrs).expect("failed to run tauri-build");
 
     // Windows-GNU only: link an application manifest requesting Common
     // Controls v6. MSVC's link.exe does this automatically; GNU ld does not,
     // and without it a binary using the file dialogs starts against comctl32
     // v5, where TaskDialogIndirect does not exist
-    // (STATUS_ENTRYPOINT_NOT_FOUND before main). This must stay the
-    // all-targets `rustc-link-arg`: the test harnesses need it (unit tests
-    // live in src/, and cargo rejects the `-tests`-scoped key for packages
-    // without an explicit [[test]] target), and real binaries merely end up
-    // with the same dependency twice -- tauri-build embeds its own copy on
-    // every toolchain -- which the linker reports as a benign
-    // duplicate-manifest warning. MSVC, macOS, Linux and mobile builds never
-    // reach this branch.
-    if std::env::var("TARGET").unwrap_or_default().contains("windows-gnu") {
+    // (STATUS_ENTRYPOINT_NOT_FOUND before main). Since we disabled Tauri's
+    // built-in manifest above, linking this via rustc-link-arg provides the
+    // sole manifest for both binaries and test harnesses without any
+    // "multiple non-default manifests" duplicate linker warnings.
+    if is_windows_gnu {
         let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let rc = manifest_dir.join("app.manifest.rc");
         let out =

@@ -26,9 +26,42 @@
         starting -- which on a cold start can be a second or two.
       -->
       <div class="boot">
-        <div class="boot__mark" aria-hidden="true"></div>
+        <div class="boot__mark" aria-hidden="true">
+          <svg class="sentry-logo" width="48" height="48" viewBox="0 0 100 100" fill="none">
+            <defs>
+              <linearGradient id="boot-grad-shield" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#0071e3" />
+                <stop offset="100%" stop-color="#004085" />
+              </linearGradient>
+              <linearGradient id="boot-grad-glow" x1="50%" y1="0%" x2="50%" y2="100%">
+                <stop offset="0%" stop-color="#2997ff" stop-opacity="0.6" />
+                <stop offset="100%" stop-color="#0071e3" stop-opacity="0" />
+              </linearGradient>
+              <radialGradient id="boot-grad-core" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#ffffff" />
+                <stop offset="50%" stop-color="#64d2ff" />
+                <stop offset="100%" stop-color="#0071e3" stop-opacity="0" />
+              </radialGradient>
+            </defs>
+            <path d="M50 8 L85 22.5 C85 55 70 78 50 92 C30 78 15 55 15 22.5 Z" fill="url(#boot-grad-shield)" stroke="#2997ff" stroke-width="2" stroke-linejoin="round" />
+            <path d="M50 8 L15 22.5 C15 55 30 78 50 92 L50 50 Z" fill="url(#boot-grad-glow)" />
+            <g stroke="#ffffff" stroke-width="1.75" stroke-opacity="0.55" stroke-linecap="round">
+              <line x1="50" y1="28" x2="70" y2="60" />
+              <line x1="70" y1="60" x2="30" y2="60" />
+              <line x1="30" y1="60" x2="50" y2="28" />
+              <line x1="50" y1="28" x2="50" y2="49" />
+              <line x1="70" y1="60" x2="50" y2="49" />
+              <line x1="30" y1="60" x2="50" y2="49" />
+            </g>
+            <circle cx="50" cy="28" r="4.5" fill="#ffffff" />
+            <circle cx="70" cy="60" r="4.5" fill="#ffffff" />
+            <circle cx="30" cy="60" r="4.5" fill="#ffffff" />
+            <circle class="sentry-core-pulse" cx="50" cy="49" r="12" fill="url(#boot-grad-core)" />
+            <polygon points="50,42 55,49 50,56 45,49" fill="#ffffff" />
+          </svg>
+        </div>
         <p class="boot__title">De-Sentry</p>
-        <p class="boot__sub">Starting the control plane…</p>
+        <p class="boot__sub">Initializing cryptographic mesh…</p>
       </div>
     </div>
     <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

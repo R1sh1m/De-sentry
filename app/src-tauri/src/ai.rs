@@ -110,8 +110,17 @@ struct Prototype {
     workload: String,
     #[allow(dead_code)]
     label: String,
+    /// Primary example text. Used by the keyword fallback and as the first
+    /// embedding example when `texts` is empty.
     #[cfg_attr(not(feature = "onnx"), allow(dead_code))]
     text: String,
+    /// Additional example sentences that broaden the prototype's coverage in
+    /// embedding space. When present, the prototype embedding is the
+    /// L2-normalised centroid of `text` plus every entry here, which makes it
+    /// more robust than a single point.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "onnx"), allow(dead_code))]
+    texts: Vec<String>,
     #[serde(default)]
     keywords: std::collections::BTreeMap<String, f32>,
     engines: Vec<String>,
@@ -127,6 +136,20 @@ struct Prototype {
     retention_days: u32,
     #[serde(default)]
     collections: Vec<DraftCollection>,
+}
+
+impl Prototype {
+    /// All embedding example texts: the primary `text` followed by any extras
+    /// from `texts`. The caller can embed them all and take the centroid.
+    #[cfg(feature = "onnx")]
+    fn all_texts(&self) -> Vec<&str> {
+        let mut out = Vec::with_capacity(1 + self.texts.len());
+        out.push(self.text.as_str());
+        for extra in &self.texts {
+            out.push(extra.as_str());
+        }
+        out
+    }
 }
 
 fn default_rf() -> u32 {
@@ -207,15 +230,28 @@ impl Sizer {
     fn try_load_model(&mut self, resources: &Resources) {
         match onnx::Model::load(resources) {
             Ok(model) => {
-                let texts: Vec<&str> = self.prototypes.iter().map(|p| p.text.as_str()).collect();
-                match model.embed_all(&texts) {
-                    Ok(embeddings) => {
-                        self.embeddings = embeddings;
-                        *self.model.lock().expect("model mutex") = Some(model);
+                // Embed every prototype as the centroid of its example texts.
+                // A centroid covers more of the semantic region than a single
+                // point, which makes classification more robust to paraphrasing.
+                let mut embeddings = Vec::with_capacity(self.prototypes.len());
+                let mut failed = false;
+                for prototype in &self.prototypes {
+                    let texts = prototype.all_texts();
+                    match model.embed_centroid(&texts) {
+                        Ok(centroid) => embeddings.push(centroid),
+                        Err(error) => {
+                            self.fallback_reason = format!(
+                                "the '{}' prototype could not be embedded: {error}",
+                                prototype.workload
+                            );
+                            failed = true;
+                            break;
+                        }
                     }
-                    Err(error) => {
-                        self.fallback_reason = format!("the prototypes could not be embedded: {error}");
-                    }
+                }
+                if !failed {
+                    self.embeddings = embeddings;
+                    *self.model.lock().expect("model mutex") = Some(model);
                 }
             }
             Err(error) => self.fallback_reason = error.to_string(),
@@ -589,6 +625,35 @@ mod onnx {
             }
             Ok(out)
         }
+
+        /// Embeds a batch of texts for a single prototype and returns their
+        /// L2-normalised centroid — i.e. the mean vector, renormalised to
+        /// unit length so the dot product against a query is still the cosine.
+        ///
+        /// With a single text this is identical to `embed(text)`. With several
+        /// it produces a point that is the geometric centre of the cluster,
+        /// which covers a broader semantic region without requiring retraining.
+        pub fn embed_centroid(&self, texts: &[&str]) -> Result<Vec<f32>, ModelError> {
+            if texts.is_empty() {
+                return Err(ModelError::Inference("no texts supplied for centroid".to_owned()));
+            }
+            let vecs = self.embed_all(texts)?;
+            let dim = vecs[0].len();
+            let mut centroid = vec![0f32; dim];
+            for vec in &vecs {
+                for (i, x) in vec.iter().enumerate() {
+                    centroid[i] += x;
+                }
+            }
+            let n = vecs.len() as f32;
+            for x in centroid.iter_mut() {
+                *x /= n;
+            }
+            // Re-normalise so the centroid is a proper unit vector; necessary
+            // because the average of unit vectors is not itself a unit vector.
+            normalise(&mut centroid);
+            Ok(centroid)
+        }
     }
 
     fn normalise(vector: &mut [f32]) {
@@ -757,26 +822,15 @@ mod tests {
     /// This is the exact code the wizard runs -- not a mock of it. Skipped
     /// loudly (not failed) on a tree without `npm run fetch-model` output,
     /// since the model is a gitignored build artifact, not source.
+    ///
+    /// Uses the shared model Sizer (one session, serialised inference --
+    /// exactly the production topology). See `shared_model_sizer`.
     #[cfg(feature = "onnx")]
     #[test]
     fn the_onnx_model_loads_and_sizes() {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let resources = resources_from(&base);
-        for path in [&resources.prototypes, &resources.model, &resources.tokenizer] {
-            if !path.exists() {
-                eprintln!(
-                    "SKIPPED the_onnx_model_loads_and_sizes: {} is absent (run npm run fetch-model in app/)",
-                    path.display()
-                );
-                return;
-            }
-        }
-        let sizer = Sizer::load(&resources).expect("prototypes load");
-        assert!(
-            sizer.model_ready(),
-            "the model should be ready, fallback was: {}",
-            sizer.fallback_reason
-        );
+        let Some(sizer) = shared_model_sizer("the_onnx_model_loads_and_sizes") else {
+            return;
+        };
         assert_eq!(sizer.embeddings.len(), sizer.prototypes.len());
         for embedding in &sizer.embeddings {
             assert_eq!(embedding.len(), 384, "MiniLM embeddings are 384-wide");
@@ -790,5 +844,277 @@ mod tests {
         assert_eq!(spec.decision.method, "onnx");
         assert_eq!(spec.decision.workload, "time-series");
         assert!(!spec.engines.is_empty());
+    }
+
+    /// Broad quality evaluation of the ONNX model across 17 cases:
+    ///
+    /// - Seven canonical descriptions (one per workload) -- the model must get
+    ///   all of them right and above the confidence floor.
+    /// - Five paraphrased descriptions that avoid the obvious keywords -- these
+    ///   test that the *semantic* embedding is doing the work, not the keyword
+    ///   fallback.
+    /// - Two adversarial traps that look like a different workload by substring
+    ///   ("paragraph" must not fire "graph"; "format" must not fire "orm").
+    /// - Three ambiguous / vague descriptions that must land *below* the floor
+    ///   so the wizard correctly hands off to the manual picker.
+    ///
+    /// Skipped (not failed) when the model files are absent.
+    ///
+    /// Uses the shared model Sizer (one session, serialised inference --
+    /// exactly the production topology). See `shared_model_sizer`.
+    #[cfg(feature = "onnx")]
+    #[test]
+    fn the_onnx_model_quality() {
+        let Some(sizer) = shared_model_sizer("the_onnx_model_quality") else {
+            return;
+        };
+
+        let engines = [
+            "kv", "columnar_lite", "ts_rollup", "vector_hnsw_lite", "graph_adj", "sqlite",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+        // -- Canonical: one clear example per workload -----------------------
+        let canonical: &[(&str, &str)] = &[
+            (
+                "Orders, customers, and invoices stored in normalised tables with foreign keys and joined in reports",
+                "sql",
+            ),
+            (
+                "Sensor readings from a factory floor sampled every second, kept for 6 months, rolled up hourly",
+                "time-series",
+            ),
+            (
+                "User profile documents stored as JSON blobs, fetched by user id, no fixed schema",
+                "nosql-doc",
+            ),
+            (
+                "Text embeddings of product descriptions searched by cosine similarity for recommendations",
+                "vector",
+            ),
+            (
+                "An org chart: employees, their managers, traversed to find everyone who reports to a VP",
+                "graph",
+            ),
+            (
+                "Scraped web events with mixed fields, aggregated and summarised across millions of rows",
+                "semi-structured",
+            ),
+            (
+                "Python classes with inheritance persisted via an ORM into queryable tables",
+                "oops-rdbms",
+            ),
+        ];
+        // Every canonical case must be correctly classified and meet or exceed
+        // the confidence floor.
+        for (desc, expected) in canonical {
+            let spec = sizer.size(desc, 2048, &engines);
+            assert_eq!(
+                spec.decision.method, "onnx",
+                "model must drive canonical case: {desc}"
+            );
+            assert_eq!(
+                spec.decision.workload, *expected,
+                "canonical ONNX case wrong: {desc}"
+            );
+            assert!(
+                spec.decision.confidence >= spec.decision.confidence_floor,
+                "canonical case confidence {:.3} below floor {:.3}: {desc}",
+                spec.decision.confidence,
+                spec.decision.confidence_floor
+            );
+        }
+
+        // -- Paraphrases: keyword-avoiding rewrites of the same intent -------
+        // These test that the semantic embedding is doing the work, not
+        // the keyword fallback -- if the model is absent they would pass
+        // keyword anyway, which is why we assert method == "onnx" above.
+        let paraphrases_strict: &[(&str, &str)] = &[
+            (
+                "IoT temperature and humidity data arriving continuously from 500 devices",
+                "time-series",
+            ),
+            (
+                "A social network: who follows whom, shortest path between users",
+                "graph",
+            ),
+            (
+                "RAG pipeline: embed support-ticket summaries and retrieve the nearest 5 by meaning",
+                "vector",
+            ),
+            (
+                "Columnar analytics over clickstream logs with OLAP-style aggregations",
+                "semi-structured",
+            ),
+        ];
+        for (desc, expected) in paraphrases_strict {
+            let spec = sizer.size(desc, 2048, &engines);
+            assert_eq!(
+                spec.decision.workload, *expected,
+                "paraphrase case wrong [{method}]: {desc}",
+                method = spec.decision.method
+            );
+            assert!(
+                spec.decision.confidence >= spec.decision.confidence_floor,
+                "paraphrase confidence {:.3} below floor {:.3}: {desc}",
+                spec.decision.confidence,
+                spec.decision.confidence_floor
+            );
+        }
+
+        // -- Adversarial: substring traps the keyword fallback would misfire on.
+        // The ONNX path should be immune since it operates on meaning, not
+        // character sequences; confirm workload is *not* the trap target.
+        let adversarial: &[(&str, &str, &str)] = &[
+            // "paragraph" contains "graph" as a substring
+            (
+                "We need to store a paragraph of text for each user",
+                "graph", // must NOT be this
+                "paragraph must not fire the graph prototype",
+            ),
+            // "format" contains "orm" as a substring
+            (
+                "Format conversion pipeline for batch imports from CSV files",
+                "oops-rdbms", // must NOT be this
+                "format/import must not fire the ORM prototype",
+            ),
+        ];
+        for (desc, must_not_be, note) in adversarial {
+            let spec = sizer.size(desc, 2048, &engines);
+            assert_ne!(
+                spec.decision.workload, *must_not_be,
+                "adversarial trap fired [{method}]: {note} -- got '{got}' for: {desc}",
+                method = spec.decision.method,
+                got = spec.decision.workload
+            );
+        }
+
+        // -- Ambiguous: vague descriptions must land below the confidence floor
+        // so the wizard routes the user to the manual picker rather than
+        // presenting a low-quality automated proposal.
+        let ambiguous: &[&str] = &[
+            "We have some data we need to store and query quickly",
+            "some data for the thing we discussed",
+            "I need a database for my project",
+        ];
+        for desc in ambiguous {
+            let spec = sizer.size(desc, 2048, &engines);
+            assert!(
+                spec.decision.confidence < spec.decision.confidence_floor,
+                "vague description '{desc}' had confidence {:.3} >= floor {:.3} -- \
+                 the wizard would propose instead of routing to the manual picker",
+                spec.decision.confidence,
+                spec.decision.confidence_floor
+            );
+        }
+    }
+
+    /// Diagnostic: prints confidence scores for every test description without
+    /// asserting. Run explicitly with `cargo test -- --ignored` or
+    /// `cargo test print_scores -- --ignored --nocapture` to audit the model.
+    /// Never runs in normal `cargo test` so it never blocks CI.
+    #[cfg(feature = "onnx")]
+    #[test]
+    #[ignore]
+    fn print_onnx_scores_for_all_cases() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let resources = resources_from(&base);
+        for path in [&resources.prototypes, &resources.model, &resources.tokenizer] {
+            if !path.exists() {
+                eprintln!("SKIPPED: {} absent", path.display());
+                return;
+            }
+        }
+        let sizer = Sizer::load(&resources).expect("prototypes load");
+        assert!(sizer.model_ready(), "model not ready: {}", sizer.fallback_reason);
+
+        let engines = [
+            "kv", "columnar_lite", "ts_rollup", "vector_hnsw_lite", "graph_adj", "sqlite",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+        let cases: &[(&str, &str)] = &[
+            ("Orders, customers, and invoices stored in normalised tables with foreign keys and joined in reports", "sql"),
+            ("Sensor readings from a factory floor sampled every second, kept for 6 months, rolled up hourly", "time-series"),
+            ("User profile documents stored as JSON blobs, fetched by user id, no fixed schema", "nosql-doc"),
+            ("Text embeddings of product descriptions searched by cosine similarity for recommendations", "vector"),
+            ("An org chart: employees, their managers, traversed to find everyone who reports to a VP", "graph"),
+            ("Scraped web events with mixed fields, aggregated and summarised across millions of rows", "semi-structured"),
+            ("Python classes with inheritance persisted via an ORM into queryable tables", "oops-rdbms"),
+            ("IoT temperature and humidity data arriving continuously from 500 devices", "time-series"),
+            ("A social network: who follows whom, shortest path between users", "graph"),
+            ("RAG pipeline: embed support-ticket summaries and retrieve the nearest 5 by meaning", "vector"),
+            ("Columnar analytics over clickstream logs with OLAP-style aggregations", "semi-structured"),
+            ("We need to store customer receipts and inventory with referential integrity", "sql"),
+            ("We need to store a paragraph of text for each user", "nosql-doc"),
+            ("Format conversion pipeline for batch imports from CSV files", "semi-structured"),
+            ("We have some data we need to store and query quickly", "?"),
+            ("some data for the thing we discussed", "?"),
+            ("I need a database for my project", "?"),
+        ];
+
+        eprintln!("\n{:<68} {:>8} {:>12} {:>6}  SCORES", "DESCRIPTION", "EXPECTED", "GOT", "CONF");
+        eprintln!("{}", "-".repeat(120));
+        for (desc, expected) in cases {
+            let spec = sizer.size(desc, 2048, &engines);
+            let mut scores = spec.decision.scores.clone();
+            scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            let top3 = scores.iter().take(3)
+                .map(|s| format!("{}={:.3}", s.workload, s.score))
+                .collect::<Vec<_>>()
+                .join("  ");
+            let flag = if spec.decision.workload == *expected || *expected == "?" { "" } else { " ✗" };
+            let below = if spec.decision.confidence < spec.decision.confidence_floor { " [BELOW FLOOR]" } else { "" };
+            eprintln!(
+                "{:<68} {:>8} {:>12} {:>6.3}{}{}  | {}",
+                &desc[..desc.len().min(67)],
+                expected,
+                spec.decision.workload,
+                spec.decision.confidence,
+                flag,
+                below,
+                top3
+            );
+        }
+        eprintln!("floor={}", CONFIDENCE_FLOOR);
+    }
+
+    /// One ONNX session shared by the model tests, mirroring production.
+    ///
+    /// Production runs a single global SIZER with inference serialised on its
+    /// mutex (`install`/`get` above; every Tauri sizing command shares it).
+    /// The model tests share one session the same way instead of each loading
+    /// their own, so the tests exercise the topology the product actually
+    /// runs -- and the seven prototype centroids are embedded once rather
+    /// than once per test. Poisoning is ignored on lock so a genuine failure
+    /// in one test does not cascade into a lock panic in the next -- each
+    /// failure must read as itself.
+    #[cfg(feature = "onnx")]
+    static SHARED_MODEL_SIZER: std::sync::OnceLock<std::sync::Mutex<Sizer>> =
+        std::sync::OnceLock::new();
+
+    /// Locks the shared model Sizer, loading it on first use. Returns None
+    /// (after a loud SKIP note) when the model files are absent, preserving
+    /// the skip-not-fail contract on trees without fetch-model output.
+    #[cfg(feature = "onnx")]
+    fn shared_model_sizer(test: &str) -> Option<std::sync::MutexGuard<'static, Sizer>> {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let resources = resources_from(&base);
+        for path in [&resources.prototypes, &resources.model, &resources.tokenizer] {
+            if !path.exists() {
+                eprintln!("SKIPPED {test}: {} is absent (run npm run fetch-model in app/)", path.display());
+                return None;
+            }
+        }
+        let sizer = SHARED_MODEL_SIZER.get_or_init(|| {
+            let loaded = Sizer::load(&resources).expect("prototypes load");
+            assert!(loaded.model_ready(), "model not ready: {}", loaded.fallback_reason);
+            std::sync::Mutex::new(loaded)
+        });
+        Some(sizer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 }

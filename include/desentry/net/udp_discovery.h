@@ -28,10 +28,12 @@ namespace desentry {
 
 // What this node advertises about itself beyond the bare minimum. v1 sent
 // node_id + public key + P2P port; v2 adds the fields the desktop app's
-// sidebar needs to group and label nodes without a second lookup -- an
-// mDNS-style hostname so a peer reads as "studio-imac.local" rather than
-// "192.168.1.34", the API port for QR-code pairing, and the supervisor
-// flag so the placement layer can exclude control-plane nodes on sight.
+// sidebar needs to group and label nodes without a second lookup -- a
+// plain hostname string (NOT mDNS/DNS-SD: no multicast responder exists, the
+// name just rides inside our UDP broadcast) so a peer reads as
+// "studio-imac.local" rather than "192.168.1.34", the API port for QR-code
+// pairing, and the supervisor flag so the placement layer can exclude
+// control-plane nodes on sight.
 //
 // All of it stays advisory. Discovery is not how trust is established:
 // the TCP secure-channel handshake authenticates a peer before any data

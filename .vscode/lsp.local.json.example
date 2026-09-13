@@ -1,0 +1,33 @@
+{
+  // EXAMPLE — copy to lsp.local.json (gitignored) and fill in only the keys
+  // you need. Most machines need NONE of these: the shared .clangd +
+  // .vscode/settings.json + root compile_commands.json (all auto-discovered)
+  // already cover the standard layouts from AGENTS.md/README.md.
+  //
+  // NOTE: VSCode loads only .vscode/settings.json automatically — it does
+  // NOT auto-load this file. After editing lsp.local.json, copy the keys you
+  // set into your VSCode *User* settings, or re-run scripts/setup-lsp.ps1 /
+  // scripts/setup-lsp.sh which regenerate lsp.local.json from this example.
+  // Neovim/Zed/Emacs users: translate the relevant key into your lspconfig.
+
+  // Absolute path to the clangd binary, if it is not on PATH.
+  // "clangd.path": "C:\\Program Files\\LLVM\\bin\\clangd.exe",
+
+  // Non-standard build dir (the default `build/` needs no override — the
+  // setup scripts already link build-macos etc. to the repo root).
+  // "clangd.arguments": [
+  //   "--background-index",
+  //   "--compile-commands-dir=${workspaceFolder}/build-macos"
+  // ],
+
+  // Extra system include for OpenSSL, only if compile_commands.json does not
+  // already carry it (CMake's find_package normally does). vcpkg example:
+  // "C_Cpp.default.includePath": ["C:\\vcpkg\\installed\\x64-windows\\include"],
+
+  // Python interpreter, only if the auto-detected one is wrong
+  // (the tree is stdlib-only; any Python >= 3.8 works).
+  // "python.defaultInterpreterPath": "C:\\Python313\\python.exe",
+
+  // rust-analyzer binary, only if rustup shims are not on PATH.
+  // "rust-analyzer.server.path": "C:\\Users\\you\\.cargo\\bin\\rust-analyzer.exe"
+}

@@ -119,8 +119,9 @@ StatusOr<HandshakeResult> ServerHandshake(dsn_socket_t sockfd, const NodeIdentit
 Status SendEncrypted(dsn_socket_t sockfd, SessionKeys* keys, const WireMessage& msg) {
   std::string plaintext = EncodeMessage(msg);
   std::string nonce = CounterNonce(keys->send_counter++);
-  std::string sealed = crypto::AesGcmSeal(keys->send_key, nonce, plaintext, "");
-  return WriteFrame(sockfd, sealed);
+  auto sealed_or = crypto::AesGcmSeal(keys->send_key, nonce, plaintext, "");
+  if (!sealed_or.ok()) return sealed_or.status();
+  return WriteFrame(sockfd, sealed_or.value());
 }
 
 StatusOr<WireMessage> RecvEncrypted(dsn_socket_t sockfd, SessionKeys* keys, size_t max_len) {

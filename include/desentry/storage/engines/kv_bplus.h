@@ -32,7 +32,10 @@ class KvBPlusBackend : public BaseBackend {
  public:
   std::string Name() const override { return "kv"; }
 
-  Status Open(const std::string& data_dir, uint64_t quota_mb) override;
+  Status Open(const std::string& data_dir, uint64_t quota_mb,
+              size_t buffer_pool_pages = 1024) override;
+  // Pages the buffer pool was constructed with; exposed so sizing is testable.
+  size_t BufferPoolPages() const;
   Status Put(const std::string& collection, const std::string& key,
               const std::string& encoded_doc) override;
   StatusOr<std::string> Get(const std::string& collection, const std::string& key) override;

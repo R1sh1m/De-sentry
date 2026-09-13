@@ -1,0 +1,12 @@
+{
+  // De-Sentry recommended editor extensions (committed).
+  // One language server per language: clangd owns C++ (the Microsoft C/C++
+  // extension must stay on IntelliSense-disabled, see settings.json).
+  "recommendations": [
+    "llvm-vs-code-extensions.vscode-clangd",
+    "rust-lang.rust-analyzer",
+    "ms-python.python",
+    "tauri-apps.tauri-vscode",
+    "ms-vscode.cmake-tools"
+  ]
+}

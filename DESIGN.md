@@ -385,9 +385,12 @@ the dot alone.
 `{motion.quick}` for anything the user initiated (selection, panel open),
 `{motion.settle}` for anything the system initiated (a node appearing, an edge
 re-routing), `{motion.instant}` for hover. Everything collapses to
-`{motion.reduced}` under `prefers-reduced-motion`. The mesh canvas never
-animates continuously — a constantly-drifting graph is unreadable and, on a
-laptop, expensive.
+`{motion.reduced}` under `prefers-reduced-motion`. The mesh node cards never
+drift on their own — a constantly-rearranging graph is unreadable and, on a
+laptop, expensive. The one continuous motion allowed is the canvas
+`ambient-backdrop` globe behind the cards: slow rotation (~6°/s, halved on
+battery), paused off-screen, frozen to a static poster frame under
+`prefers-reduced-motion`.
 
 ---
 
@@ -443,6 +446,18 @@ Action Blue ring, not a fill — a filled node would fight the status dot.
 the peer's fitness score (0.25 → 1.0), which is the one place a continuous
 value is encoded visually rather than numerically. Hovering an edge shows
 latency and success rate.
+
+### `ambient-backdrop`
+The mesh view's living background (`app/src/util/meshGlobe.ts`, Canvas2D, no
+WebGL dependency). A faint rotating sphere shell of decorative dust plus live
+anchors for every charted node, with chords mirroring the same `/_peers`
+edges as `canvas-edge` (opacity follows fitness; offline links dashed). It is
+the visual echo of the reference plexus-globe: depth-shaded, vignetted,
+pinned behind the SVG (`pointer-events: none`, `aria-hidden`). It never
+carries meaning on its own — decorative dust uses the `--backdrop-*` tokens,
+node dots reuse the status hues, and the cards above remain authoritative.
+Frozen under `prefers-reduced-motion`; paused when hidden; DPR capped at 1.5
+with an FPS watchdog that halves decorative work below 30fps.
 
 ### `confidence-meter`
 6px pill track, Action Blue fill, used only for the AI sizing proposal's

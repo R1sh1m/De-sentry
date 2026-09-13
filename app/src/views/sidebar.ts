@@ -12,6 +12,7 @@ import type { MountPoint, TopologyPeer } from "../api.js";
 import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
 import { bytes, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 
 /** Collapsed groups, remembered for the session only. */
 const collapsed = new Set<string>();
@@ -138,6 +139,26 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       })()
     : el("span", { style: "width: 10px; flex: none;" });
 
+  const deleteBtn = !node.process.supervisor
+    ? el(
+        "button",
+        {
+          class: "tree__row-action text-danger",
+          type: "button",
+          title: `Delete ${name}`,
+          "aria-label": `Delete ${name}`,
+        },
+        icon(Icons.trash, 12),
+      )
+    : null;
+
+  if (deleteBtn) {
+    on(deleteBtn, "click", (e) => {
+      e.stopPropagation();
+      promptDeleteSupervisedNode(node);
+    });
+  }
+
   const row = el(
     "div",
     {
@@ -152,6 +173,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
     dot(status),
     el("span", { class: "tree__label", text: name }),
     el("span", { class: "tree__meta", text: meta }),
+    deleteBtn,
   );
 
   const toggleOrSelect = (e: MouseEvent | KeyboardEvent) => {

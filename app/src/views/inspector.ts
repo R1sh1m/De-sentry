@@ -30,6 +30,7 @@ import {
 } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { statusText } from "./canvas.js";
+import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -466,9 +467,19 @@ function processCard(node: NodeView, onBusy: (label: string) => void): HTMLEleme
 
   const reveal = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Show files" });
   on(reveal, "click", () => {
-    void sidecar.revealPath(node.process.data_dir).catch((error) => {
+    void sidecar.revealNodeFiles(node.process.node_id).catch((error) => {
       store.toast("error", "Could not open the folder", describeError(error));
     });
+  });
+
+  const deleteBtn = el(
+    "button",
+    { class: "btn btn--sm btn--danger", type: "button", title: "Delete or remove this node" },
+    icon(Icons.trash, 12),
+    " Delete…",
+  );
+  on(deleteBtn, "click", () => {
+    promptDeleteSupervisedNode(node);
   });
 
   return card(
@@ -485,7 +496,7 @@ function processCard(node: NodeView, onBusy: (label: string) => void): HTMLEleme
       ],
       ...(node.process.last_error ? ([["Last error", node.process.last_error]] as [string, string][]) : []),
     ),
-    el("div", { class: "row" }, restart, stop, reveal),
+    el("div", { class: "row", style: "flex-wrap: wrap;" }, restart, stop, reveal, !node.process.supervisor && deleteBtn),
   );
 }
 

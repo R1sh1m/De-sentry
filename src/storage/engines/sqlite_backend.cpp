@@ -128,7 +128,9 @@ class SqliteBackend : public BaseBackend {
 
   std::string Name() const override { return "sqlite"; }
 
-  Status Open(const std::string& data_dir, uint64_t quota_mb) override {
+  Status Open(const std::string& data_dir, uint64_t quota_mb,
+              size_t buffer_pool_pages = 1024) override {
+    (void)buffer_pool_pages;  // SQLite manages its own page cache
     dir_ = data_dir + "/sqlite";
     if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
     path_ = dir_ + "/desentry.sqlite3";

@@ -113,6 +113,46 @@ pub fn forget_node(state: State<'_, std::sync::Arc<AppState>>, node_id: String) 
     state.forget_node(&node_id).map_err(fail)
 }
 
+#[tauri::command]
+pub fn delete_node(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    delete_data: bool,
+) -> Reply<()> {
+    let (data_dir, keychain_ref) = {
+        let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
+        if let Some(handle) = nodes.get(&node_id) {
+            (Some(handle.spec.data_dir.clone()), handle.spec.keychain_ref.clone())
+        } else {
+            (None, None)
+        }
+    };
+
+    let _ = state.forget_node(&node_id);
+
+    if delete_data {
+        if let Some(key_ref) = keychain_ref {
+            let _ = crate::keychain::forget(&key_ref);
+        }
+        if let Some(dir) = data_dir {
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_directory(path: String) -> Reply<()> {
+    let dir = PathBuf::from(&path);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("Could not delete folder: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Adopts an existing data directory: reads its config, gives it a free port
 /// pair if the one it names is taken, and starts it.
 #[tauri::command]
@@ -158,17 +198,25 @@ pub fn start_existing_node(
 
     // An encrypted node needs its key. If this machine's keychain has it, the
     // node starts silently; if not, the window is told to ask for a password
-    // rather than the node failing with a decryption error.
+    // rather than the node failing with a decryption error. Either early
+    // return releases the allocation: ports handed out but never bound would
+    // otherwise leak out of the range one pair at a time.
     let unlock_secret = if encrypted && !keychain_ref.is_empty() {
         match keychain::load(&keychain_ref) {
             Ok(key) => Some(key),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                state.release_ports(allocation);
+                return Err(error.to_string());
+            }
         }
     } else {
         None
     };
 
-    rewrite_ports(&config_path, &allocation)?;
+    if let Err(error) = rewrite_ports(&config_path, &allocation) {
+        state.release_ports(allocation);
+        return Err(error);
+    }
 
     let spec = LaunchSpec {
         node_name,
@@ -183,7 +231,10 @@ pub fn start_existing_node(
         unlock_secret,
     };
 
-    let view = state.start_node(spec).map_err(fail)?;
+    let view = state.start_node(spec).map_err(|error| {
+        state.release_ports(allocation);
+        fail(error)
+    })?;
     appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
     Ok(view)
 }
@@ -279,9 +330,20 @@ pub fn create_node(
         bootstrap_peers: request.bootstrap_peers.clone(),
         advertise_hostname: hostname(),
     };
-    let config_path = config.write().map_err(|error| {
-        format!("could not write {}: {error}", data_dir.join("node.json").display())
-    })?;
+    // Every step below can fail after earlier steps have already had effects
+    // (reserved ports, a node.json on disk, a started child, a keychain
+    // entry). There is exactly one rollback path for all of them --
+    // `rollback_create` -- so a failed creation never leaks a process, a port
+    // reservation, a keychain entry, or a half-written node.json that a later
+    // scan would mistake for a real node. The original error is always what
+    // the window sees; cleanup failures are logged, never substituted.
+    let config_path = match config.write() {
+        Ok(path) => path,
+        Err(error) => {
+            state.release_ports(allocation);
+            return Err(format!("could not write {}: {error}", data_dir.join("node.json").display()));
+        }
+    };
 
     let spec = LaunchSpec {
         node_name: config.node_name.clone(),
@@ -296,7 +358,13 @@ pub fn create_node(
         unlock_secret: recovery_key.clone(),
     };
 
-    let node = state.start_node(spec).map_err(fail)?;
+    let node = match state.start_node(spec) {
+        Ok(node) => node,
+        Err(error) => {
+            rollback_create(&state, allocation, None, None, Some(&config_path));
+            return Err(fail(error));
+        }
+    };
 
     // Now that the node has an identity, the key gets a home.
     //
@@ -308,10 +376,24 @@ pub fn create_node(
     if let Some(key) = recovery_key.as_ref() {
         if !request.removable {
             keychain_ref = keychain::reference_for(&node.node_id);
-            keychain::store(&keychain_ref, key).map_err(fail)?;
+            if let Err(error) = keychain::store(&keychain_ref, key) {
+                let message = fail(error);
+                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path));
+                return Err(message);
+            }
             let mut updated = config.clone();
             updated.keychain_ref = keychain_ref.clone();
-            updated.write().map_err(fail)?;
+            if let Err(error) = updated.write() {
+                let message = fail(error);
+                rollback_create(
+                    &state,
+                    allocation,
+                    Some(&node.node_id),
+                    Some(keychain_ref.as_str()),
+                    Some(&config_path),
+                );
+                return Err(message);
+            }
         }
         state.hold_recovery_key(&node.node_id, key.clone());
     }
@@ -349,6 +431,42 @@ pub fn create_node(
 
 fn normalise_split(split: QuotaSplit) -> QuotaSplit {
     split.normalised()
+}
+
+/// Undoes a half-finished `create_node`: stops the child (if started),
+/// releases the port reservation, forgets a keychain entry this attempt
+/// stored, and removes the node.json this attempt wrote so a later directory
+/// scan does not adopt a half-created node.
+///
+/// Only artifacts named here are touched: the data directory itself is left
+/// alone (the user may have pointed creation at a directory that already held
+/// other files), as is any key the window already held. Cleanup failures are
+/// logged and ignored -- the caller reports the original error.
+fn rollback_create(
+    state: &AppState,
+    allocation: PortAllocation,
+    node_id: Option<&str>,
+    keychain_ref: Option<&str>,
+    config_path: Option<&Path>,
+) {
+    if let Some(id) = node_id {
+        // Stops the child, releases its ports, and drops its pending key.
+        if let Err(error) = state.forget_node(id) {
+            log::warn!("rollback: could not stop half-created node {id}: {error}");
+        }
+    } else {
+        state.release_ports(allocation);
+    }
+    if let Some(reference) = keychain_ref {
+        if let Err(error) = keychain::forget(reference) {
+            log::warn!("rollback: could not forget keychain entry {reference}: {error}");
+        }
+    }
+    if let Some(path) = config_path {
+        if let Err(error) = std::fs::remove_file(path) {
+            log::warn!("rollback: could not remove {}: {error}", path.display());
+        }
+    }
 }
 
 fn hostname() -> String {
@@ -508,16 +626,52 @@ pub async fn pick_save_file(
     Ok(file.map(|path| path.to_string()))
 }
 
-/// Opens a folder in the platform's file manager.
+/// Opens a node's data directory in the platform's file manager.
+///
+/// Takes a node id, never a path: the directory is resolved server-side from
+/// the sidecar's own registry and checked against the allowlisted roots (the
+/// app data root plus every known node's data directory, which covers
+/// removable nodes living outside the root). A raw frontend path is not
+/// accepted -- collection names and keys arrive from the mesh, and a path
+/// that reaches the opener must never be influenced by them.
 ///
 /// Spawned directly rather than through the shell plugin, so there is no
-/// general-purpose "open anything" capability granted to the web view -- the
-/// only path this can ever open is one the sidecar already knows about.
+/// general-purpose "open anything" capability granted to the web view.
 #[tauri::command]
-pub fn reveal_path(path: String) -> Reply<()> {
-    let target = PathBuf::from(&path);
-    if !target.exists() {
-        return Err(format!("{path} is not there any more"));
+pub fn reveal_node_files(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+) -> Reply<()> {
+    // Clone out from under the lock first; canonicalization and the spawn
+    // below must never run with the node-map mutex held.
+    let (data_dir, approved): (Option<PathBuf>, Vec<PathBuf>) = {
+        let nodes = state.nodes.lock().expect("node mutex");
+        let dir = nodes
+            .get(&node_id)
+            .map(|handle| handle.spec.data_dir.clone());
+        let mut dirs: Vec<PathBuf> = nodes.values().map(|handle| handle.spec.data_dir.clone()).collect();
+        dirs.push(state.data_root.clone());
+        (dir, dirs)
+    };
+    let Some(data_dir) = data_dir else {
+        return Err(format!("there is no node {node_id} here any more"));
+    };
+    let target = std::fs::canonicalize(&data_dir)
+        .map_err(|_| format!("{} is not there any more", data_dir.display()))?;
+    let mut allowed = false;
+    for root in &approved {
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            if path_within_root(&target, &canonical) {
+                allowed = true;
+                break;
+            }
+        }
+    }
+    if !allowed {
+        return Err(format!(
+            "{} is outside the folders this app manages, so it will not be opened",
+            target.display()
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -529,7 +683,16 @@ pub fn reveal_path(path: String) -> Reply<()> {
 
     result
         .map(|_| ())
-        .map_err(|error| format!("could not open {path}: {error}"))
+        .map_err(|error| format!("could not open {}: {error}", target.display()))
+}
+
+/// True when `target` is `root` itself or something underneath it. Both sides
+/// must already be canonicalized (symlinks resolved, `..` eliminated):
+/// `Path::starts_with` is lexical, so calling it on un-canonicalized input
+/// would accept `root/node/../../etc`. Component-wise comparison also means a
+/// sibling whose name merely shares a prefix (`node2` vs `node`) is rejected.
+fn path_within_root(target: &Path, root: &Path) -> bool {
+    target.starts_with(root)
 }
 
 #[tauri::command]
@@ -554,4 +717,76 @@ pub fn notify(app: AppHandle, title: String, body: String) -> Reply<()> {
         .body(body)
         .show()
         .map_err(fail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_accepts_the_root_itself_and_children() {
+        let root = PathBuf::from(if cfg!(windows) { r"C:\data\nodes" } else { "/data/nodes" });
+        assert!(path_within_root(&root, &root));
+        assert!(path_within_root(&root.join("node-a"), &root));
+        assert!(path_within_root(&root.join("node-a").join("node.json"), &root));
+    }
+
+    #[test]
+    fn allowlist_rejects_outside_and_prefix_siblings() {
+        let root = PathBuf::from(if cfg!(windows) { r"C:\data\nodes" } else { "/data/nodes" });
+        // Outside the root entirely.
+        assert!(!path_within_root(
+            &PathBuf::from(if cfg!(windows) { r"C:\Windows\System32" } else { "/etc" }),
+            &root
+        ));
+        // A sibling whose name merely shares a prefix is NOT inside.
+        assert!(!path_within_root(&root.with_extension("backup"), &root));
+        // Lexical `..` must never reach the predicate: callers canonicalize
+        // first, and an un-canonicalized traversal is rejected by failing
+        // canonicalization, not by this check. Documented here so a future
+        // caller does not "simplify" the canonicalize away.
+        let traversal = root.join("node-a").join("..").join("..").join("etc");
+        assert!(traversal.starts_with(&root), "lexical starts_with accepts ..; canonicalize first");
+    }
+
+    #[test]
+    fn rollback_releases_ports_and_cleans_keychain_and_config() {
+        let dir = std::env::temp_dir().join(format!("desentry-rollback-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state = AppState::new(PathBuf::from("desentryd"), dir, PathBuf::from("."));
+
+        // Reserve a real allocation, then roll back a failure that happened
+        // before any node started: ports must be handed back.
+        let allocation = state.allocate_ports().expect("a free port pair exists");
+        let config_path = state.data_root.join("node.json");
+        std::fs::write(&config_path, "{}").expect("temp config writes");
+        assert!(config_path.exists());
+
+        let stored = if crate::keychain::available() {
+            let reference = crate::keychain::reference_for("rollback-test");
+            if crate::keychain::store(&reference, "secret").is_ok() {
+                Some(reference)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        assert_eq!(state.reserved_count(), 2, "one pair is reserved before rollback");
+        rollback_create(&state, allocation, None, stored.as_deref(), Some(&config_path));
+
+        assert_eq!(state.reserved_count(), 0, "rollback hands the reservation back");
+        assert!(!config_path.exists(), "half-written node.json is removed");
+        if let Some(reference) = stored {
+            assert!(
+                matches!(crate::keychain::load(&reference), Err(crate::keychain::KeychainError::Missing(_))),
+                "keychain entry from the failed attempt is gone"
+            );
+        }
+        // A fresh allocation still succeeds (the range was not leaked dry).
+        let again = state.allocate_ports().expect("ports were released by rollback");
+        state.release_ports(again);
+        let _ = std::fs::remove_dir_all(&state.data_root);
+    }
 }

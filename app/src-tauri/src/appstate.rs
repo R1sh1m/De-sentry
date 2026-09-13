@@ -94,6 +94,11 @@ impl AppState {
         reserved.remove(&allocation.p2p_port);
     }
 
+    #[cfg(test)]
+    pub fn reserved_count(&self) -> usize {
+        self.reserved.lock().expect("port mutex").len()
+    }
+
     pub fn views(&self) -> Vec<SupervisedNode> {
         let nodes = self.nodes.lock().expect("node mutex");
         let mut out: Vec<SupervisedNode> = nodes.values().map(NodeHandle::view).collect();

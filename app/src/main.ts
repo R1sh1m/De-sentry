@@ -13,6 +13,7 @@ import { sidecar } from "./bridge.js";
 import { boot, refreshNodeList, refreshTopology, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
+import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
 import { createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
@@ -66,7 +67,7 @@ function openPairingSheet(): void {
     return;
   }
 
-  const body = el("div", { class: "wizard" }, el("div", { class: "skeleton", style: "height: 260px" }));
+  const body = el("div", { class: "wizard" });
   const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
   const dismiss = () => sheet.remove();
   on(sheet, "click", (event) => {
@@ -76,9 +77,25 @@ function openPairingSheet(): void {
     if (event.key === "Escape") dismiss();
   });
   document.body.appendChild(sheet);
-  // Focused so Escape reaches the handler; a div does not receive key events
-  // otherwise, and a modal you cannot dismiss with Escape is a trap.
   sheet.focus();
+
+  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
+  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
+  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Zoom" });
+  on(closeDot, "click", dismiss);
+  on(minDot, "click", dismiss);
+  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const titleBar = el(
+    "div",
+    { class: "wizard__titlebar" },
+    trafficLights,
+    el("span", { class: "wizard__titlebar-title", text: "Add Device" }),
+    el("span", { style: "width: 52px;" }),
+  );
+
+  const skeleton = el("div", { class: "skeleton", style: "height: 260px" });
+  const content = el("div", { class: "wizard__body" }, skeleton);
+  replace(body, titleBar, content);
 
   void apiFor(port)
     .pairing()
@@ -88,7 +105,7 @@ function openPairingSheet(): void {
       const payload = JSON.stringify(pairing);
 
       replace(
-        body,
+        content,
         el("h2", { class: "wizard__title", text: "Add another device" }),
         el("p", {
           class: "wizard__lead",
@@ -111,15 +128,112 @@ function openPairingSheet(): void {
                 : "none yet — the other device will find this one by broadcast",
           }),
         ),
-        el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close),
       );
+      replace(body, titleBar, content, el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close));
     })
     .catch((error) => {
       replace(
-        body,
+        content,
         el("p", { class: "error-note", text: `Could not build a pairing code: ${describeError(error)}` }),
       );
     });
+}
+
+// -- about sheet -------------------------------------------------------------
+
+function openAboutSheet(): void {
+  const nodes = store.dataNodes();
+  const reachable = nodes.filter((n) => n.reachable).length;
+  const port = store.state.supervisorPort;
+
+  const close = el("button", { class: "btn btn--primary", type: "button", text: "Done" });
+  const body = el("div", { class: "wizard about-sheet" });
+  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
+  const dismiss = () => sheet.remove();
+
+  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
+  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
+  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Zoom" });
+  on(closeDot, "click", dismiss);
+  on(minDot, "click", dismiss);
+  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const titleBar = el(
+    "div",
+    { class: "wizard__titlebar" },
+    trafficLights,
+    el("span", { class: "wizard__titlebar-title", text: "About De-Sentry" }),
+    el("span", { style: "width: 52px;" }),
+  );
+
+  const content = el(
+    "div",
+    { class: "wizard__body" },
+    el("div", { class: "about-sheet__emblem" }, sentryLogoSvg({ size: 72, animated: true })),
+    el("h2", { class: "about-sheet__title", text: "De-Sentry" }),
+    el(
+      "p",
+      { class: "about-sheet__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" },
+    ),
+    el(
+      "p",
+      {
+        class: "muted",
+        style: "font: var(--text-caption); max-width: 44ch; margin: 0 auto var(--space-md);",
+        text: "A decentralized database mesh with zero fetched runtime dependencies, cryptographic verification, and conflict-free replication.",
+      },
+    ),
+    el(
+      "div",
+      { class: "about-sheet__grid" },
+      el(
+        "div",
+        { class: "about-sheet__card" },
+        el("strong", { text: "Cryptographic Aegis" }),
+        el("span", { text: "Ed25519 · X25519 · AES-256-GCM" }),
+      ),
+      el(
+        "div",
+        { class: "about-sheet__card" },
+        el("strong", { text: "Tamper-Evident Ledger" }),
+        el("span", { text: "Hash-chained feed · Quorum GC" }),
+      ),
+      el(
+        "div",
+        { class: "about-sheet__card" },
+        el("strong", { text: "Data Plane" }),
+        el("span", { text: "CRDTs · Hybrid Logical Clocks" }),
+      ),
+      el(
+        "div",
+        { class: "about-sheet__card" },
+        el("strong", { text: "Storage Router" }),
+        el("span", { text: "B+Tree · SQLite · Vector · DuckDB" }),
+      ),
+    ),
+    el(
+      "dl",
+      { class: "kv", style: "width: 100%; margin-top: var(--space-md); text-align: left;" },
+      el("dt", { text: "Supervisor" }),
+      el("dd", { class: "mono", text: port !== null ? `127.0.0.1:${port}` : "offline" }),
+      el("dt", { text: "Active Mesh" }),
+      el("dd", { text: `${reachable}/${nodes.length} data nodes online` }),
+      el("dt", { text: "Shortcuts" }),
+      el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · Ctrl+R" }),
+    ),
+  );
+
+  const footer = el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close);
+  replace(body, titleBar, content, footer);
+
+  on(close, "click", dismiss);
+  on(sheet, "click", (event) => {
+    if (event.target === sheet) dismiss();
+  });
+  on(sheet, "keydown", (event) => {
+    if (event.key === "Escape") dismiss();
+  });
+  document.body.appendChild(sheet);
+  sheet.focus();
 }
 
 // -- shell -------------------------------------------------------------------
@@ -135,7 +249,24 @@ function build(): void {
   const inspector = createInspector();
 
   // Header ------------------------------------------------------------------
-  const title = el("div", {}, el("p", { class: "header__title", text: "De-Sentry" }), el("p", { class: "header__sub" }));
+  const titleRow = el(
+    "div",
+    { class: "brand-cluster__row" },
+    el("p", { class: "header__title", text: "De-Sentry" }),
+    el("span", { class: "brand-badge", text: "v2.0" }),
+  );
+  const title = el(
+    "button",
+    {
+      class: "brand-cluster",
+      type: "button",
+      title: "About De-Sentry & Mesh Architecture",
+      "aria-label": "About De-Sentry",
+    },
+    el("div", { class: "brand-cluster__emblem" }, sentryLogoSvg({ size: 28, animated: true })),
+    el("div", { class: "brand-cluster__text" }, titleRow, el("p", { class: "header__sub" })),
+  );
+  on(title, "click", openAboutSheet);
 
   // Tree ⇄ Mesh Segmented View Switcher in Header
   const treeModeBtn = el("button", { type: "button", text: "Tree", "aria-pressed": "true" }, icon(Icons.tree, 13), " Tree");
@@ -189,9 +320,41 @@ function build(): void {
 
   const busyNote = el("span", { class: "muted" });
 
+  // Window Traffic Lights on Header
+  const winClose = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close Window" });
+  const winMin = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize Window" });
+  const winZoom = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Toggle Fullscreen" });
+  on(winClose, "click", async () => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    } catch {
+      openAboutSheet();
+    }
+  });
+  on(winMin, "click", async () => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().minimize();
+    } catch {
+      // browser fallback
+    }
+  });
+  on(winZoom, "click", async () => {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().toggleMaximize();
+    } catch {
+      if (!document.fullscreenElement) void document.documentElement.requestFullscreen();
+      else void document.exitFullscreen();
+    }
+  });
+  const windowControls = el("div", { class: "traffic-lights header__traffic-lights" }, winClose, winMin, winZoom);
+
   const header = el(
     "header",
     { class: "header" },
+    windowControls,
     title,
     el("span", { class: "header__spacer" }),
     viewSegmented,

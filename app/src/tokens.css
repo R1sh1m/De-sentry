@@ -120,6 +120,17 @@
   --tree-row-selected-bg: rgba(0, 102, 204, 0.10);
   --tree-row-selected-color: var(--color-primary);
 
+  /* -- ambient mesh-globe backdrop ---------------------------------------- *
+   * Decorative-only palette for the canvas backdrop globe. These never carry
+   * meaning: health is still encoded only by the status hues on dots, badges
+   * and node cards above the backdrop. Kept faint so cards stay legible.
+   */
+  --backdrop-dust: rgba(0, 102, 204, 0.38);
+  --backdrop-dust-line: rgba(0, 102, 204, 0.20);
+  --backdrop-node: rgba(0, 102, 204, 0.85);
+  --backdrop-rim: rgba(0, 102, 204, 0.16);
+  --backdrop-glow: rgba(0, 113, 227, 0.10);
+
   /* -- json syntax -------------------------------------------------------- */
   --syntax-key: #0066cc;
   --syntax-string: #1d7f4e;
@@ -175,6 +186,12 @@
     --tree-row-selected-bg: rgba(41, 151, 255, 0.16);
     --tree-row-selected-color: var(--color-primary);
 
+    --backdrop-dust: rgba(102, 194, 255, 0.42);
+    --backdrop-dust-line: rgba(102, 194, 255, 0.22);
+    --backdrop-node: rgba(102, 194, 255, 0.9);
+    --backdrop-rim: rgba(41, 151, 255, 0.20);
+    --backdrop-glow: rgba(41, 151, 255, 0.12);
+
     --syntax-key: #4aa8ff;
     --syntax-string: #30d158;
     --syntax-number: #ffd60a;
@@ -222,6 +239,12 @@
   --canvas-grid-dot: rgba(255, 255, 255, 0.06);
   --tree-row-selected-bg: rgba(41, 151, 255, 0.16);
   --tree-row-selected-color: var(--color-primary);
+
+  --backdrop-dust: rgba(102, 194, 255, 0.42);
+  --backdrop-dust-line: rgba(102, 194, 255, 0.22);
+  --backdrop-node: rgba(102, 194, 255, 0.9);
+  --backdrop-rim: rgba(41, 151, 255, 0.20);
+  --backdrop-glow: rgba(41, 151, 255, 0.12);
 
   --syntax-key: #4aa8ff;
   --syntax-string: #30d158;

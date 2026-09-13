@@ -260,9 +260,19 @@ StatusOr<std::unique_ptr<StorageRouter>> StorageRouter::Open(const Options& opti
   std::sort(engines.begin(), engines.end());
   engines.erase(std::unique(engines.begin(), engines.end()), engines.end());
 
-  const uint64_t per_engine = db_bytes == 0 ? 0 : db_bytes / engines.size();
-  for (const std::string& name : engines) {
-    Status st = router->RegisterBackend(name, router->data_dir_, per_engine);
+  // The data-plane budget is divided without loss: whole-MiB truncation per
+  // engine used to silently drop up to ~1MiB per engine (fatal for small
+  // quotas over many engines), and the byte remainder of the even split was
+  // discarded. Instead the ceiling MiB total is dealt out one MiB at a time
+  // so the per-engine budgets sum to exactly the data-plane share.
+  constexpr uint64_t kMiB = 1024ull * 1024ull;
+  const uint64_t total_mb = db_bytes == 0 ? 0 : (db_bytes + kMiB - 1) / kMiB;
+  const uint64_t base_mb = engines.empty() ? 0 : total_mb / engines.size();
+  const uint64_t extra_mb = engines.empty() ? 0 : total_mb % engines.size();
+  size_t pool_pages = options.buffer_pool_pages == 0 ? 16 : options.buffer_pool_pages;
+  for (size_t i = 0; i < engines.size(); ++i) {
+    const uint64_t engine_mb = base_mb + (i < extra_mb ? 1 : 0);
+    Status st = router->RegisterBackend(engines[i], router->data_dir_, engine_mb, pool_pages);
     if (!st.ok()) return st;
   }
 
@@ -271,21 +281,22 @@ StatusOr<std::unique_ptr<StorageRouter>> StorageRouter::Open(const Options& opti
   router->index_ = std::move(index_or.value());
 
   DSN_LOG_INFO("router", "storage router ready with " << engines.size() << " engine(s), default="
-                                                       << router->default_engine_);
+                                                       << router->default_engine_ << ", db_share="
+                                                       << total_mb << "MiB, pool_pages=" << pool_pages);
   return router;
 }
 
 StorageRouter::~StorageRouter() = default;
 
 Status StorageRouter::RegisterBackend(const std::string& name, const std::string& data_dir,
-                                       uint64_t bytes) {
+                                       uint64_t quota_mb, size_t buffer_pool_pages) {
   auto backend_or = MakeBackend(name);
   if (!backend_or.ok()) return backend_or.status();
   std::unique_ptr<EngineBackend> backend = std::move(backend_or.value());
-  // Backends take a MiB budget; round up so a tiny quota never becomes zero,
-  // which would read as "unlimited".
-  const uint64_t mb = bytes == 0 ? 0 : std::max<uint64_t>(1, bytes / (1024ull * 1024ull));
-  Status st = backend->Open(data_dir, mb);
+  // The caller deals whole MiBs that already sum to the data-plane share, so
+  // no rounding happens here: 0 stays 0 ("unlimited") and is never confused
+  // with a tiny-but-limited budget.
+  Status st = backend->Open(data_dir, quota_mb, buffer_pool_pages);
   if (!st.ok()) return st;
   std::lock_guard<std::mutex> lock(mu_);
   backends_[name] = std::move(backend);

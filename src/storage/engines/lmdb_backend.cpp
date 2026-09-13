@@ -64,7 +64,9 @@ class LmdbBackend : public BaseBackend {
 
   std::string Name() const override { return "lmdb"; }
 
-  Status Open(const std::string& data_dir, uint64_t quota_mb) override {
+  Status Open(const std::string& data_dir, uint64_t quota_mb,
+              size_t buffer_pool_pages = 1024) override {
+    (void)buffer_pool_pages;  // LMDB is mmap-based; no buffer pool to size
     dir_ = data_dir + "/lmdb";
     if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
 

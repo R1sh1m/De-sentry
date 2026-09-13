@@ -203,6 +203,16 @@ export const sidecar = {
     return invoke<void>("forget_node", { nodeId });
   },
 
+  /** Stops, clears keychain and optionally purges the node's data directory. */
+  deleteNode(nodeId: string, deleteData = true): Promise<void> {
+    return invoke<void>("delete_node", { nodeId, deleteData });
+  },
+
+  /** Deletes an unadopted or orphaned node directory from disk. */
+  deleteDirectory(path: string): Promise<void> {
+    return invoke<void>("delete_directory", { path });
+  },
+
   /** Captured stdout/stderr, most recent last. */
   nodeLogs(nodeId: string, tail = 400): Promise<LogLine[]> {
     return invoke<LogLine[]>("node_logs", { nodeId, tail });
@@ -259,8 +269,9 @@ export const sidecar = {
     return invoke<string | null>("pick_save_file", { title, defaultName });
   },
 
-  revealPath(path: string): Promise<void> {
-    return invoke<void>("reveal_path", { path });
+  /** Opens a node's data directory. Takes a node id; the sidecar resolves and allowlists the path. */
+  revealNodeFiles(nodeId: string): Promise<void> {
+    return invoke<void>("reveal_node_files", { nodeId });
   },
 
   setAutostart(enabled: boolean): Promise<void> {
