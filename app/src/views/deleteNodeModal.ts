@@ -25,20 +25,14 @@ export function openDeleteNodeModal(opts: DeleteNodeOptions): void {
 
   const dismiss = () => sheet.remove();
 
-  // Traffic lights
-  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
-  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
-  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Zoom" });
-  on(closeDot, "click", dismiss);
-  on(minDot, "click", dismiss);
-
-  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
+  on(closeButton, "click", dismiss);
   const titleBar = el(
     "div",
     { class: "macos-modal__titlebar" },
-    trafficLights,
+    el("span", { style: "width: 28px" }),
     el("span", { class: "macos-modal__title", text: "Delete Node Confirmation" }),
-    el("span", { style: "width: 52px" }), // Balancer for traffic lights
+    closeButton,
   );
 
   const cancelBtn = el("button", { class: "btn btn--ghost", type: "button", text: "Cancel" });

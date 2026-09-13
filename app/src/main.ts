@@ -79,18 +79,14 @@ function openPairingSheet(): void {
   document.body.appendChild(sheet);
   sheet.focus();
 
-  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
-  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
-  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Zoom" });
-  on(closeDot, "click", dismiss);
-  on(minDot, "click", dismiss);
-  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
+  on(closeButton, "click", dismiss);
   const titleBar = el(
     "div",
     { class: "wizard__titlebar" },
-    trafficLights,
+    el("span", { style: "width: 28px;" }),
     el("span", { class: "wizard__titlebar-title", text: "Add Device" }),
-    el("span", { style: "width: 52px;" }),
+    closeButton,
   );
 
   const skeleton = el("div", { class: "skeleton", style: "height: 260px" });
@@ -151,18 +147,14 @@ function openAboutSheet(): void {
   const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
   const dismiss = () => sheet.remove();
 
-  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
-  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
-  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Zoom" });
-  on(closeDot, "click", dismiss);
-  on(minDot, "click", dismiss);
-  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
+  on(closeButton, "click", dismiss);
   const titleBar = el(
     "div",
     { class: "wizard__titlebar" },
-    trafficLights,
+    el("span", { style: "width: 28px;" }),
     el("span", { class: "wizard__titlebar-title", text: "About De-Sentry" }),
-    el("span", { style: "width: 52px;" }),
+    closeButton,
   );
 
   const content = el(
@@ -269,8 +261,8 @@ function build(): void {
   on(title, "click", openAboutSheet);
 
   // Tree ⇄ Mesh Segmented View Switcher in Header
-  const treeModeBtn = el("button", { type: "button", text: "Tree", "aria-pressed": "true" }, icon(Icons.tree, 13), " Tree");
-  const meshModeBtn = el("button", { type: "button", text: "Mesh", "aria-pressed": "false" }, icon(Icons.mesh, 13), " Mesh");
+  const treeModeBtn = el("button", { type: "button", "aria-pressed": "true" }, icon(Icons.tree, 13), "Tree");
+  const meshModeBtn = el("button", { type: "button", "aria-pressed": "false" }, icon(Icons.mesh, 13), "Mesh");
   on(treeModeBtn, "click", () => store.setCanvasMode("tree"));
   on(meshModeBtn, "click", () => store.setCanvasMode("mesh"));
   const viewSegmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" }, treeModeBtn, meshModeBtn);
@@ -320,41 +312,9 @@ function build(): void {
 
   const busyNote = el("span", { class: "muted" });
 
-  // Window Traffic Lights on Header
-  const winClose = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close Window" });
-  const winMin = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize Window" });
-  const winZoom = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Toggle Fullscreen" });
-  on(winClose, "click", async () => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().close();
-    } catch {
-      openAboutSheet();
-    }
-  });
-  on(winMin, "click", async () => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().minimize();
-    } catch {
-      // browser fallback
-    }
-  });
-  on(winZoom, "click", async () => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().toggleMaximize();
-    } catch {
-      if (!document.fullscreenElement) void document.documentElement.requestFullscreen();
-      else void document.exitFullscreen();
-    }
-  });
-  const windowControls = el("div", { class: "traffic-lights header__traffic-lights" }, winClose, winMin, winZoom);
-
   const header = el(
     "header",
     { class: "header" },
-    windowControls,
     title,
     el("span", { class: "header__spacer" }),
     viewSegmented,

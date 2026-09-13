@@ -43,6 +43,14 @@ const WORKLOAD_LABELS: Record<string, string> = {
   "oops-rdbms": "Objects over relational",
 };
 
+const DESCRIPTION_SUGGESTIONS = [
+  "Store uploaded images and photos with filenames, captions, sizes, and dates; fetch each file by its ID.",
+  "Store PDFs, videos, and other files as binary assets with searchable metadata and download them by asset ID.",
+  "Store image embeddings and find visually similar photos using nearest-neighbor similarity search.",
+  "Store sensor readings every second, query them by time range, and keep one year of history.",
+  "Store user profiles and flexible JSON documents without a fixed schema or relational joins.",
+];
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -190,32 +198,17 @@ export function createWizard(): WizardHandles {
 
   let draft = newDraft();
   let open = false;
-  let isMinimized = false;
-  let isExpanded = false;
 
   const content = el("div", { class: "wizard__body" });
 
-  const closeDot = el("button", { class: "traffic-dot traffic-dot--close", type: "button", title: "Close" });
-  const minDot = el("button", { class: "traffic-dot traffic-dot--minimize", type: "button", title: "Minimize" });
-  const zoomDot = el("button", { class: "traffic-dot traffic-dot--zoom", type: "button", title: "Expand / Maximize" });
-
-  on(closeDot, "click", () => close());
-  on(minDot, "click", () => {
-    isMinimized = !isMinimized;
-    wizardContainer.classList.toggle("wizard--minimized", isMinimized);
-  });
-  on(zoomDot, "click", () => {
-    isExpanded = !isExpanded;
-    wizardContainer.classList.toggle("wizard--expanded", isExpanded);
-  });
-
-  const trafficLights = el("div", { class: "traffic-lights" }, closeDot, minDot, zoomDot);
+  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
+  on(closeButton, "click", () => close());
   const titleBar = el(
     "div",
     { class: "wizard__titlebar" },
-    trafficLights,
+    el("span", { style: "width: 28px;" }),
     el("span", { class: "wizard__titlebar-title", text: "Create / Adopt Node" }),
-    el("span", { style: "width: 52px;" }),
+    closeButton,
   );
 
   function close(): void {
@@ -415,6 +408,32 @@ export function createWizard(): WizardHandles {
     on(descriptionInput, "input", () => {
       draft.description = (descriptionInput as HTMLTextAreaElement).value;
     });
+    const suggestions = el(
+      "details",
+      { class: "description-suggestions" },
+      el("summary", { text: "Need help describing this node?" }),
+      el(
+        "div",
+        { class: "description-suggestions__body" },
+        el("p", {
+          class: "field__hint",
+          text: "Choose the closest example, then edit it to match what you plan to store or query.",
+        }),
+        el(
+          "div",
+          { class: "description-suggestions__list" },
+          ...DESCRIPTION_SUGGESTIONS.map((suggestion) => {
+            const button = el("button", { class: "description-suggestion", type: "button", text: suggestion });
+            on(button, "click", () => {
+              (descriptionInput as HTMLTextAreaElement).value = suggestion;
+              draft.description = suggestion;
+              descriptionInput.focus();
+            });
+            return button;
+          }),
+        ),
+      ),
+    );
 
     const candidate = draft.candidates.find((c) => c.path === draft.dataDir);
     const free = candidate?.free_bytes ?? 0;
@@ -446,6 +465,7 @@ export function createWizard(): WizardHandles {
         "Plain language. The next step reads this to propose engines, quotas and indexes — and shows you how sure it is.",
         descriptionInput,
       ),
+      suggestions,
     );
   }
 
@@ -454,13 +474,27 @@ export function createWizard(): WizardHandles {
   async function runSizing(): Promise<void> {
     draft.sizing = true;
     draft.sizingError = "";
+    draft.engines = store.state.engines;
+    if (draft.manualEngines.size === 0) {
+      draft.manualEngines = new Set(draft.engines.length > 0 ? draft.engines.map((engine) => engine.name) : ["kv"]);
+    }
     render();
     try {
-      draft.spec = await sidecar.sizeWorkload(draft.description, draft.quotaMb);
+      const sizing = sidecar.sizeWorkload(draft.description, draft.quotaMb);
+      draft.spec = await Promise.race([
+        sizing,
+        new Promise<never>((_, reject) => {
+          window.setTimeout(() => reject(new Error("Sizing took too long to respond. Choose the engines manually and continue.")), 15000);
+        }),
+      ]);
       draft.manualEngines = new Set(draft.spec.engines);
       draft.engines = store.state.engines;
     } catch (error) {
       draft.sizingError = describeError(error);
+      draft.engines = store.state.engines;
+      if (draft.manualEngines.size === 0) {
+        draft.manualEngines = new Set(draft.engines.length > 0 ? draft.engines.map((engine) => engine.name) : ["kv"]);
+      }
     } finally {
       draft.sizing = false;
       render();
@@ -791,8 +825,8 @@ export function createWizard(): WizardHandles {
   function canAdvance(): boolean {
     switch (draft.step) {
       case 1: return draft.dataDir !== "";
-      case 2: return draft.nodeName.trim() !== "" && draft.quotaMb > 0;
-      case 3: return draft.manualEngines.size > 0 || draft.spec !== null;
+      case 2: return true;
+      case 3: return true;
       case 4: return !draft.creating;
       case 5: return draft.recoveryExported;
       default: return false;
@@ -822,8 +856,28 @@ export function createWizard(): WizardHandles {
       if (draft.step === 4) void createNode();
       else if (draft.step === 5) close();
       else {
+        if (draft.step === 2) {
+          const nameInput = content.querySelector<HTMLInputElement>('input[type="text"]');
+          const quotaInput = content.querySelector<HTMLInputElement>('input[type="number"]');
+          const encryptInput = content.querySelector<HTMLInputElement>('input[type="checkbox"]');
+          const descriptionInput = content.querySelector<HTMLTextAreaElement>("textarea");
+          if (nameInput !== null) draft.nodeName = nameInput.value;
+          if (quotaInput !== null) {
+            const value = Number(quotaInput.value);
+            if (Number.isFinite(value) && value > 0) draft.quotaMb = Math.round(value);
+          }
+          if (encryptInput !== null) draft.encrypt = encryptInput.checked;
+          if (descriptionInput !== null) draft.description = descriptionInput.value;
+          if (draft.nodeName.trim() === "" || draft.quotaMb <= 0) {
+            nameInput?.reportValidity();
+            quotaInput?.reportValidity();
+            return;
+          }
+          draft.spec = null;
+          draft.sizingError = "";
+        }
         go(draft.step + 1);
-        if (draft.step === 3 && draft.spec === null && draft.description.trim() !== "") void runSizing();
+        if (draft.step === 3 && draft.description.trim() !== "") void runSizing();
       }
     });
 

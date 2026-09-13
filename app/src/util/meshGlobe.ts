@@ -94,11 +94,9 @@ function readPalette(): Palette {
 export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   const ctx = canvas.getContext("2d");
   let nodes: GlobeNodePoint[] = [];
-  let links: GlobeLink[] = [];
   let onBattery = false;
   let destroyed = false;
   let raf = 0;
-  let lastMs = 0;
   let visible = true;
 
   let mouseX = -1000;
@@ -176,7 +174,6 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
           (entries) => {
             visible = entries.some((e) => e.isIntersecting);
             if (visible && !destroyed && !reduceQuery?.matches && raf === 0) {
-              lastMs = performance.now();
               raf = requestAnimationFrame(tick);
             }
           },
@@ -190,14 +187,13 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
       if (raf !== 0) cancelAnimationFrame(raf);
       raf = 0;
     } else if (visible && !destroyed && !reduceQuery?.matches && raf === 0) {
-      lastMs = performance.now();
       raf = requestAnimationFrame(tick);
     }
   };
   document.addEventListener("visibilitychange", onVisibility);
 
   // Sync actual mesh nodes into particles
-  const syncMeshNodes = (w: number, h: number) => {
+  const syncMeshNodes = () => {
     for (let i = 0; i < nodes.length && i < particles.length; i++) {
       particles[i].anchorId = nodes[i].id;
       particles[i].status = nodes[i].status;
@@ -216,7 +212,7 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     ctx.clearRect(0, 0, w, h);
 
     palette = readPalette();
-    syncMeshNodes(w, h);
+    syncMeshNodes();
 
     const speedScale = onBattery ? 0.5 : 1.0;
 
@@ -308,14 +304,13 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   if (reduceQuery?.matches === true) {
     drawStatic();
   } else {
-    lastMs = performance.now();
     raf = requestAnimationFrame(tick);
   }
 
   return {
     setData(nextNodes: GlobeNodePoint[], nextLinks: GlobeLink[]): void {
       nodes = nextNodes;
-      links = nextLinks;
+      void nextLinks;
       if (reduceQuery?.matches === true) drawStatic();
     },
     setOnBattery(value: boolean): void {

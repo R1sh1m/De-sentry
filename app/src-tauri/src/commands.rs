@@ -122,7 +122,10 @@ pub fn delete_node(
     let (data_dir, keychain_ref) = {
         let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
         if let Some(handle) = nodes.get(&node_id) {
-            (Some(handle.spec.data_dir.clone()), handle.spec.keychain_ref.clone())
+            (
+                Some(handle.spec.data_dir.clone()),
+                Some(crate::keychain::reference_for(&handle.node_id)),
+            )
         } else {
             (None, None)
         }

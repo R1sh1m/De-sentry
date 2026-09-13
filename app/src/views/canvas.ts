@@ -20,17 +20,6 @@ import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 /** The live backdrop globe. At most one runs: rebuilt with the mesh view. */
 let activeGlobe: GlobeHandle | null = null;
 
-function disposeGlobe(): void {
-  if (activeGlobe !== null) {
-    try {
-      activeGlobe.destroy();
-    } catch {
-      // A backdrop that already tore down must not break the re-render.
-    }
-    activeGlobe = null;
-  }
-}
-
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
   lagging: "var(--color-status-lagging)",

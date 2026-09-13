@@ -167,6 +167,36 @@ fn default_floor() -> f32 {
     CONFIDENCE_FLOOR
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaIntent {
+    Storage,
+    Similarity,
+}
+
+fn explicit_media_intent(description: &str) -> Option<MediaIntent> {
+    let text = description.to_lowercase();
+    let media = ["image", "images", "photo", "photos", "picture", "pictures", "media"];
+    if !media.iter().any(|term| contains_word(&text, term)) {
+        return None;
+    }
+
+    let similarity = [
+        "similarity",
+        "similar",
+        "embedding",
+        "embeddings",
+        "nearest",
+        "reverse image",
+        "visual search",
+        "image search",
+    ];
+    if similarity.iter().any(|term| contains_word(&text, term)) {
+        Some(MediaIntent::Similarity)
+    } else {
+        Some(MediaIntent::Storage)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SizingError {
     #[error("could not read the workload prototypes at {0}: {1}")]
@@ -280,7 +310,11 @@ impl Sizer {
             )
         } else if self.model_ready() {
             match self.embed_scores(trimmed) {
-                Ok(scores) => (scores, "onnx", String::new()),
+                Ok(scores) => (
+                    self.combine_semantic_and_keywords(trimmed, &scores),
+                    "onnx",
+                    String::new(),
+                ),
                 Err(error) => (self.keyword_scores(trimmed), "keyword", error),
             }
         } else {
@@ -392,6 +426,28 @@ impl Sizer {
         let model = guard.as_ref().ok_or_else(|| "the model is not loaded".to_owned())?;
         let query = model.embed(description).map_err(|error| error.to_string())?;
         Ok(self.embeddings.iter().map(|proto| dot(&query, proto)).collect())
+    }
+
+    /// Keep the embedding model primary, but let unmistakable domain words
+    /// disambiguate close neighbors such as media blobs and image search.
+    /// This also makes the proposal explainable when the user's wording is
+    /// more specific than the short prototype sentences.
+    #[cfg(feature = "onnx")]
+    fn combine_semantic_and_keywords(&self, description: &str, semantic: &[f32]) -> Vec<f32> {
+        let lexical = self.keyword_scores(description);
+        let explicit_media = explicit_media_intent(description);
+        self.prototypes
+            .iter()
+            .enumerate()
+            .map(|(index, prototype)| {
+                let intent_boost = match (explicit_media, prototype.workload.as_str()) {
+                    (Some(MediaIntent::Storage), "nosql-doc") => 0.65,
+                    (Some(MediaIntent::Similarity), "vector") => 0.65,
+                    _ => 0.0,
+                };
+                semantic[index] + lexical[index] * 0.2 + intent_boost
+            })
+            .collect()
     }
 
     #[cfg(not(feature = "onnx"))]

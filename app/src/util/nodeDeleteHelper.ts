@@ -16,7 +16,7 @@ export function promptDeleteSupervisedNode(node: NodeView): void {
   const nodeName = node.process.node_name || node.process.node_id;
   const collections = node.brain?.collections ?? [];
   const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
-  const usedBytes = node.brain?.database_bytes ?? node.quota?.used_bytes ?? 0;
+  const usedBytes = node.quota?.used_bytes ?? 0;
 
   let amountOfData = bytes(usedBytes);
   if (totalDocs > 0) {
@@ -26,12 +26,8 @@ export function promptDeleteSupervisedNode(node: NodeView): void {
   }
 
   let dataDescription = "its configured storage engines and cryptographic ledger";
-  if (node.spec?.decision?.description) {
-    dataDescription = node.spec.decision.description;
-  } else if (collections.length > 0) {
+  if (collections.length > 0) {
     dataDescription = `collections: ${collections.map((c) => `${c.name} [${engineLabel(c.engine)}]`).join(", ")}`;
-  } else if (node.spec?.decision?.workload) {
-    dataDescription = `${node.spec.decision.workload} workload data`;
   }
 
   openDeleteNodeModal({

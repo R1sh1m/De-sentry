@@ -106,7 +106,9 @@
       "text": "Self-contained JSON documents whose fields vary from one record to the next, fetched and written whole by key, with no fixed schema and no joins.",
       "texts": [
         "User profile records and application documents stored as JSON blobs, retrieved directly by document ID without a schema.",
-        "Key-value document storage for variable JSON objects, fetched and updated by key without relational tables or joins."
+        "Key-value document storage for variable JSON objects, fetched and updated by key without relational tables or joins.",
+        "Photos, videos, PDFs, and other uploaded files stored as binary blobs with metadata and fetched by asset ID.",
+        "A media library that stores image files and their filenames, captions, and metadata without searching by visual similarity."
       ],
       "keywords": {
         "document": 3.0,
@@ -119,6 +121,14 @@
         "flexible": 1.5,
         "schemaless": 3.0,
         "blob": 1.5,
+        "image": 2.5,
+        "images": 2.5,
+        "photo": 2.5,
+        "photos": 2.5,
+        "video": 2.0,
+        "file": 2.0,
+        "files": 2.0,
+        "media": 2.0,
         "notes": 1.5,
         "profile": 1.0,
         "profiles": 1.0,
@@ -251,6 +261,9 @@
         "recommend": 2.5,
         "recommendation": 2.5,
         "image search": 3.0,
+        "visual similarity": 4.0,
+        "reverse image": 4.0,
+        "image embedding": 4.0,
         "cosine": 3.0
       },
       "engines": [
@@ -293,7 +306,9 @@
       ],
       "texts": [
         "High-dimensional numeric vector embeddings searched with cosine similarity for semantic recommendations and nearest neighbor retrieval.",
-        "Vector embeddings index for neural search, RAG retrieval pipelines, and cosine similarity matching over embedding vectors."
+        "Vector embeddings index for neural search, RAG retrieval pipelines, and cosine similarity matching over embedding vectors.",
+        "Images converted into embeddings and searched for visually similar pictures or nearest matching images.",
+        "Reverse image search using visual feature vectors to find photos with similar content."
       ]
     },
     {

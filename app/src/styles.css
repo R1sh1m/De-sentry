@@ -664,6 +664,10 @@ svg.mesh {
  * Buttons
  * ------------------------------------------------------------------------ */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xxs);
   font: var(--text-button);
   letter-spacing: var(--tracking-body);
   border-radius: var(--radius-pill);
@@ -708,6 +712,10 @@ svg.mesh {
   height: 28px;
 }
 .segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xxs);
   font: var(--text-button);
   border: 0;
   background: transparent;
@@ -1060,6 +1068,25 @@ svg.mesh {
   color: var(--color-ink-muted-80);
   letter-spacing: var(--tracking-label);
 }
+.sheet-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+}
+.sheet-close:hover,
+.sheet-close:focus-visible {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink);
+  outline: none;
+}
 .wizard__body {
   flex: 1;
   overflow-y: auto;
@@ -1357,6 +1384,47 @@ svg.mesh {
   min-height: 96px;
   resize: vertical;
   font: var(--text-body);
+}
+.description-suggestions {
+  margin: calc(var(--space-sm) * -1) 0 var(--space-md);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+}
+.description-suggestions summary {
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-primary);
+  font: var(--text-caption-strong);
+  cursor: pointer;
+  user-select: none;
+}
+.description-suggestions__body {
+  padding: 0 var(--space-sm) var(--space-sm);
+}
+.description-suggestions__body > .field__hint {
+  margin: 0 0 var(--space-xs);
+}
+.description-suggestions__list {
+  display: grid;
+  gap: var(--space-xxs);
+}
+.description-suggestion {
+  display: block;
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  color: var(--color-ink-muted-80);
+  font: var(--text-fine);
+  text-align: left;
+  cursor: pointer;
+}
+.description-suggestion:hover,
+.description-suggestion:focus-visible {
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+  outline: none;
 }
 .field input[type="range"] {
   width: 100%;
