@@ -573,8 +573,10 @@ void NetworkManager::ProbeLoop() {
   // Periodic liveness + capacity probing. Deliberately separate from gossip:
   // a gossip round only touches a couple of peers, while fitness needs a view
   // of everyone, and a probe is far cheaper than a digest exchange.
+  int64_t last_outbox_flush = 0;
   while (running_) {
     const int64_t deadline = MonotonicMs() + config_.discovery_interval_ms * 2;
+    bool had_reachable_peer = false;
     for (const PeerInfo& peer : peer_table_.List()) {
       if (!running_) break;
       if (peer.p2p_port == 0) continue;
@@ -585,6 +587,7 @@ void NetworkManager::ProbeLoop() {
       const bool ok = response.ok() && response.value().type == MessageType::kPong;
       peer_table_.RecordProbe(peer.node_id, rtt, ok);
       if (ok) {
+        had_reachable_peer = true;
         // The kPing response carries the responder's handshake-proven
         // node_id, so a successful probe is also an identification: retire a
         // `bootstrap#host:port` placeholder under the real identity. The id
@@ -606,6 +609,16 @@ void NetworkManager::ProbeLoop() {
       }
     }
     RebuildPlacement();
+
+    // Periodically flush the outbox when we have reachable peers.
+    const int64_t now = MonotonicMs();
+    if (had_reachable_peer && now - last_outbox_flush >= 30000) {  // every 30s
+      const size_t replayed = engine_->FlushOutbox();
+      if (replayed > 0) {
+        DSN_LOG_INFO("outbox", "periodic flush replayed " << replayed << " staged write(s)");
+      }
+      last_outbox_flush = now;
+    }
 
     while (running_ && MonotonicMs() < deadline) SleepMs(100);
   }
