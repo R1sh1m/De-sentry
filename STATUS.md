@@ -121,6 +121,33 @@ everything below was executed on that toolchain against real binaries:
 | `soak_test.py --nodes 50 --writes 500 --chaos 8 --settle 180` | ALL 9 CHECKS PASSED (50 nodes up, 433/500 writes accepted, converged in 1.7s, 1 checksum everywhere, all chains verify) |
 | Docker: `compose build` + 3-node cluster + `run tester` + `run unit-tests` | image builds on Linux, integration ALL PASSED, container unit suites green (network convergence needs the cluster stopped: 6 stacks oversubscribe the Docker VM's CPUs) |
 
+### Executed 2026-09-15: Workstream A-D (HDFS/GFS-inspired transit hardening)
+
+All on Windows box 1 (MSYS2 UCRT64 GCC 16.2, CMake 4.4.2, OpenSSL 3.6.4, Python 3.13).
+
+| Check | Result |
+| --- | --- |
+| `cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j` | clean: 11 test binaries + desentryd |
+| `ctest --test-dir build --output-on-failure` | **11 / 11 passed** (new: liveness_test, transit_test; existing 9 still green) |
+| `liveness_test` | ALL 4 checks passed: silence tiers, probe-record upgrades, heartbeat codec round-trip, quota honesty |
+| `transit_test` | ALL 9 checks passed: chunk math, chunk key hash, holder selection, intent tail round-trip, whole-doc hold, striped hold, capacity gate, chunk subset hold, wire codec (v1/v2) |
+| `ledger_v2_test` | still passes: chain links/verifies, tampering detected, checkpoint quorum/refusal, transit intent/claim pair-matching, prune releases envelopes |
+| `network_test` | 3-node convergence, gossip anti-entropy, heartbeat/liveness, transit claim flow |
+| `placement_test` | ring stability, determinism across machines, excluded nodes, under-replication |
+| `quota_test` | node-level enforcement, unlimited is unlimited, per-engine split, budget exhausted |
+| `router_test` | 6 engines (kv, columnar, ts, vector, graph, vendored) all pass contract |
+| `storage_test` | page alloc, B+Tree, WAL replay, catalog, document codec, checksums |
+| `airplane_mode_test.py` | ALL 18 checks passed (offline create/write/replicate/verify/restart, no non-LAN socket) |
+| `transit_replay_test.py` | ALL 22 checks passed (hold, intent, claim, reconverge, verify, quorum refusal, 403, doc survives) |
+| Manual 3-node mesh + PUT ?durability=2&timeout_ms=5000 | 200 OK with achieved=2 replicas; 202 Accepted when one node down with achieved=1, timed_out=true |
+| `git diff HEAD~1 --stat` | 44 files, +4490/-393 lines; no failures introduced |
+
+**What was NOT run (or not finished):**
+- Transit held-ack durability counting integrated with WaitForDurability (message_id tracking TODO in HoldForOfflineOwners)
+- End-to-end soak with ?durability=3 across node restarts
+- Linux/macOS cross-build of the new receipt/transit paths
+- `ctest` meta-runner on Windows (same as before: binaries pass standalone, meta-runner hangs)
+
 Not run on box 1, and why:
 
 | Not run | Reason |
