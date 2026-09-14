@@ -33,9 +33,9 @@ std::string GenesisHash() { return std::string(kWalHashLen, '\0'); }
 
 // Minimum plausible v1 body: fixed fields, zero-length variable fields, two
 // hash-chain fields, trailing CRC.
-constexpr size_t kMinBodyLenV1 = 8 /*lsn*/ + 1 /*type*/ + 4 + 4 + 4 + kWalHashLen + kWalHashLen + 4;
+[[maybe_unused]] constexpr size_t kMinBodyLenV1 = 8 /*lsn*/ + 1 /*type*/ + 4 + 4 + 4 + kWalHashLen + kWalHashLen + 4;
 // Minimum plausible v2 body: magic + the above shape plus the new fields.
-constexpr size_t kMinBodyLenV2 = 4 /*magic*/ + 8 + 1 + 4 + 4 + 4 + 4 /*key_hash len*/ + 8 + 4 +
+[[maybe_unused]] constexpr size_t kMinBodyLenV2 = 4 /*magic*/ + 8 + 1 + 4 + 4 + 4 + 4 /*key_hash len*/ + 8 + 4 +
                                   4 /*hlc node_id*/ + 4 + 4 + kWalHashLen + kWalHashLen + 4;
 
 constexpr uint32_t kMaxRecordBytes = 256u << 20;  // 256MiB: bounds a hostile/corrupt length field
@@ -63,6 +63,19 @@ std::string LedgerKeyHash(const std::string& collection, const std::string& key)
   return crypto::Sha256(material);
 }
 
+std::string TransitChunkKeyHash(const std::string& doc_key_hash, uint32_t chunk_index) {
+  // Same separator discipline as LedgerKeyHash: the index is fixed-width
+  // big-endian so ("hash", 1) and ("hash\x01", ...) can never collide, and
+  // chunk 0 of a striped document hashes differently from the whole-doc
+  // hash, so a chunked intent can never match a whole-document claim.
+  std::string material = doc_key_hash;
+  material.push_back('\0');
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    material.push_back(static_cast<char>((chunk_index >> shift) & 0xFF));
+  }
+  return crypto::Sha256(material);
+}
+
 std::string WriteAheadLog::BuildContent(const WalRecord& record) {
   ByteWriter w;
   w.U32(kWalRecordMagicV2);
@@ -86,6 +99,18 @@ std::string WriteAheadLog::EncodeBody(const WalRecord& record) {
   w.RawBytes(record.prev_hash);
   w.RawBytes(record.entry_hash);
   body += w.str();
+  // Unsigned envelope extension for transit intents (see WalRecord): holder
+  // routing metadata outside the signed content, so old readers verify the
+  // chain exactly as before and ignore the tail. Non-transit records carry
+  // no tail -- their shape is byte-identical to before this change.
+  if (record.type == WalRecordType::kTransitIntent) {
+    ByteWriter tail;
+    tail.Bytes(record.transit_holder);
+    tail.U64(record.transit_size_bytes);
+    tail.U32(record.transit_chunk_index);
+    tail.U32(record.transit_chunk_total);
+    body += tail.TakeString();
+  }
   return body;
 }
 
@@ -107,6 +132,25 @@ Status WriteAheadLog::DecodeBody(const std::string& body, WalRecord* out) {
     if (r.remaining() < 2 * kWalHashLen) return Status::Corruption("WAL: record missing chain fields");
     out->prev_hash = r.RawBytes(kWalHashLen);
     out->entry_hash = r.RawBytes(kWalHashLen);
+    // Unsigned transit tail, if present. Records written before the tail
+    // existed simply have no bytes left: the defaults (unknown holder,
+    // whole document) apply. A partial tail is corruption, not an old
+    // record -- the tail is written atomically with the record.
+    if (r.remaining() > 0) {
+      if (out->type != WalRecordType::kTransitIntent) {
+        return Status::Corruption("WAL: non-transit record has trailing bytes");
+      }
+      out->transit_holder = r.Bytes();
+      out->transit_size_bytes = r.U64();
+      out->transit_chunk_index = r.U32();
+      out->transit_chunk_total = r.U32();
+      if (out->transit_chunk_total == 0) {
+        return Status::Corruption("WAL: transit intent has zero chunk total");
+      }
+      if (out->transit_chunk_index >= out->transit_chunk_total) {
+        return Status::Corruption("WAL: transit intent chunk index out of range");
+      }
+    }
   } catch (const std::exception& e) {
     return Status::Corruption(std::string("WAL: malformed v2 record: ") + e.what());
   }
@@ -241,6 +285,16 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
     rec.key = key;
     rec.document_bytes = document_bytes;
     rec.origin_node_id = origin_node_id_;
+  }
+  // Routing metadata for intents: who holds the bytes and which chunk this
+  // is. Stamped only on TRANSIT_INTENT; claims match on key_hash alone, so
+  // they carry none. Serialized as the unsigned tail (EncodeBody), outside
+  // the signed content -- see WalRecord.
+  if (type == WalRecordType::kTransitIntent) {
+    rec.transit_holder = options.transit_holder;
+    rec.transit_size_bytes = options.transit_size_bytes;
+    rec.transit_chunk_index = options.transit_chunk_index;
+    rec.transit_chunk_total = options.transit_chunk_total;
   }
 
   const std::string content = BuildContent(rec);

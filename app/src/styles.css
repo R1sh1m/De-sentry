@@ -126,6 +126,8 @@ body {
  * Shell
  * ------------------------------------------------------------------------ */
 .app-shell {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr var(--inspector-width);
   grid-template-rows: var(--chrome-header-height) 1fr;
@@ -374,28 +376,36 @@ body {
   grid-area: canvas;
   position: relative;
   overflow: auto;
-  background-color: var(--color-canvas);
+  background-color: transparent;
   background-image: radial-gradient(var(--canvas-grid-dot) 1.25px, transparent 1.25px);
   background-size: 24px 24px;
 }
 
 /* ---------------------------------------------------------------------------
- * Ambient mesh-globe backdrop. A decorative Canvas2D layer pinned behind the
- * mesh SVG: faint rotating plexus + live node anchors. Never carries meaning
- * (health stays on the cards above it), never intercepts input, never shows
- * in print. Frozen under prefers-reduced-motion.
+ * Ambient mesh-globe backdrop. Fullscreen Canvas2D layer pinned behind the
+ * entire application window: faint rotating plexus + live node anchors.
+ * Never carries meaning, never intercepts input, never shows in print.
+ * Frozen under prefers-reduced-motion.
  * ------------------------------------------------------------------------ */
 .mesh__backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   display: block;
   pointer-events: none;
   z-index: 0;
 }
+.mesh__backdrop--fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 0;
+}
 .mesh__vignette {
-  position: absolute;
+  position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
@@ -419,8 +429,39 @@ svg.mesh {
 }
 
 /* ---------------------------------------------------------------------------
- * Sidebar tree
+ * Sidebar tree & Pinned navigation
  * ------------------------------------------------------------------------ */
+.sidebar__pinned-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-xs);
+}
+.sidebar__pinned-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: 32px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  font: var(--text-body);
+  color: var(--color-ink);
+  border: 0;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-instant);
+}
+.sidebar__pinned-item:hover {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+.sidebar__pinned-item[aria-selected="true"] {
+  background: var(--tree-row-selected-bg);
+  color: var(--tree-row-selected-color);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 0 var(--color-primary);
+}
 .sidebar__search {
   margin-bottom: var(--space-xs);
   position: relative;
@@ -430,13 +471,15 @@ svg.mesh {
   font: var(--text-caption);
   background: var(--color-surface-pearl);
   border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   padding: 5px var(--space-xs) 5px 28px;
   color: var(--color-ink);
   outline: none;
+  transition: border-color var(--motion-quick), background-color var(--motion-quick), box-shadow var(--motion-quick);
 }
 .sidebar__search-input:focus {
   border-color: var(--color-primary);
+  background: var(--color-surface);
   box-shadow: 0 0 0 2px var(--tree-row-selected-bg);
 }
 .sidebar__search-icon {
@@ -702,6 +745,17 @@ svg.mesh {
 }
 .btn--sm {
   padding: 4px 10px;
+}
+.btn--icon-only {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-muted-80);
+}
+.btn--icon-only:hover {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
 }
 
 .segmented {
@@ -1168,6 +1222,180 @@ svg.mesh {
   padding: var(--space-md) var(--space-xl);
   border-top: 1px solid var(--color-divider-soft);
   background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---------------------------------------------------------------------------
+ * AI Reasoning & Clarification Dialogs
+ * ------------------------------------------------------------------------ */
+.ai-clarify-box {
+  background: rgba(30, 144, 255, 0.05);
+  border: 1px solid rgba(30, 144, 255, 0.25);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.ai-clarify-box__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.ai-clarify-box__badge {
+  font: var(--text-fine);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  background: var(--color-primary);
+  color: #ffffff;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+}
+
+.ai-clarify-box__prompt {
+  font: var(--text-body);
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-xs);
+}
+
+.ai-clarify-box__rationale {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  margin: 0 0 var(--space-sm);
+}
+
+.ai-clarify-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-xs);
+}
+
+.ai-clarify-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-standard);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-clarify-btn:hover {
+  border-color: var(--color-primary);
+  background: rgba(30, 144, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.ai-clarify-btn__label {
+  font: var(--text-body);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.ai-clarify-btn__desc {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+
+.ai-reasoning-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
+}
+
+.ai-reasoning-card__summary {
+  font: var(--text-body);
+  color: var(--color-ink);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ai-reasoning-signals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xxs);
+}
+
+.ai-reasoning-signals__label {
+  font: var(--text-fine);
+  font-weight: 600;
+  color: var(--color-ink-muted-48);
+  text-transform: uppercase;
+  margin-right: var(--space-xxs);
+}
+
+.ai-signal-chip {
+  font: var(--text-caption);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--color-divider-soft);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  color: var(--color-ink-muted-80);
+}
+
+.ai-engines-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.ai-engine-item {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--color-primary);
+}
+
+.ai-engine-item__name {
+  font: var(--text-caption);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.ai-engine-item__role {
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  margin-left: 4px;
+}
+
+.ai-engine-item__reason {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+
+.ai-contrast-note {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  background: rgba(255, 193, 7, 0.08);
+  border-left: 3px solid #ffc107;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin: 0;
+}
+
+.ai-tradeoffs {
+  margin: 0;
+  padding-left: var(--space-md);
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+
+.ai-tradeoffs li {
+  margin-bottom: 2px;
 }
 
 /* ---------------------------------------------------------------------------

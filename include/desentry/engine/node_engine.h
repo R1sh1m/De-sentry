@@ -35,6 +35,7 @@
 #include "desentry/ledger/outbox_store.h"
 #include "desentry/ledger/transit_store.h"
 #include "desentry/net/identity.h"
+#include "desentry/net/receipt_tracker.h"
 #include "desentry/storage/storage_engine.h"
 
 namespace desentry {
@@ -84,6 +85,15 @@ class NodeEngine {
     uint32_t transit_ttl_seconds = 7 * 24 * 3600;
     uint32_t replication_factor = 3;
     bool supervisor = false;
+    // Transit hold budget in bytes, 0 == unbounded (quota_mb == 0). Wired
+    // from quota_split.transit_store in node.json; the capacity gate in
+    // HoldForOfflineOwner refuses bytes past this rather than silently
+    // overfilling the store.
+    uint64_t transit_budget_bytes = 0;
+    // Max chunk size for striped transit envelopes (config
+    // transit_chunk_bytes). Documents bigger than this are held as one
+    // envelope per chunk, each with its own ledger intent.
+    uint32_t transit_chunk_bytes = 256 * 1024;
   };
 
   static StatusOr<std::unique_ptr<NodeEngine>> Open(const Options& options);
@@ -153,8 +163,22 @@ class NodeEngine {
   // -- transit (offline-owner flow) ----------------------------------------
   // Called on a replica when a write lands for a key whose placement targets
   // an unreachable owner: stores the bytes and appends TRANSIT_INTENT.
+  //
+  // Capacity-gated: bytes past transit_budget_bytes are refused with
+  // ResourceExhausted rather than silently overfilling the store (a full
+  // holder simply doesn't hold; gossip still converges the document, only
+  // the transit fast-path is lost). All-or-nothing per document: the full
+  // size is checked before the first chunk is stored, so a partial hold can
+  // never strand unclaimed intents that pin the checkpoint gate.
+  //
+  // Documents bigger than transit_chunk_bytes are striped: one envelope +
+  // one intent per chunk, each chunk named by TransitChunkKeyHash(doc hash,
+  // index). `only_chunks` restricts the hold to the caller's assigned chunk
+  // indexes (the network layer's deterministic holder selection); null
+  // means hold every chunk.
   Status HoldForOfflineOwner(const std::string& owner_node, const std::string& collection,
-                              const std::string& key, const std::string& encoded_doc);
+                              const std::string& key, const std::string& encoded_doc,
+                              const std::vector<uint32_t>* only_chunks = nullptr);
 
   // Envelopes this node is holding for `owner_node` -- what a kTransitQuery
   // from that peer is answered with.
@@ -182,6 +206,22 @@ class NodeEngine {
   // Returns the total bytes staged in the outbox.
   uint64_t OutboxBytesHeld() const;
 
+  // Waits for signed merge receipts from peers for the local write
+  // identified by `message_id`. Returns when `durability` distinct
+  // receipts have arrived (counting self as 1), or when `timeout_ms`
+  // elapses. Returns the receipts received (may be fewer than requested
+  // on timeout). This is a blocking call with zero residual state -- the
+  // waiter is the HTTP request handler, and the map entry is erased on
+  // completion or timeout.
+  struct DurabilityReport {
+    uint32_t requested = 0;
+    uint32_t achieved = 0;
+    bool timed_out = false;
+    std::vector<std::string> replicas;  // node_ids that acknowledged
+  };
+  StatusOr<DurabilityReport> WaitForDurability(const std::string& message_id,
+                                                uint32_t durability, uint32_t timeout_ms);
+
   // -- ledger ---------------------------------------------------------------
   WriteAheadLog::LedgerTip LedgerTip() const { return storage_->LedgerTip(); }
   WriteAheadLog::VerifyResult VerifyLedger();
@@ -189,6 +229,20 @@ class NodeEngine {
   StatusOr<std::vector<WalRecord>> LedgerEntries(lsn_t from, lsn_t to) {
     return storage_->LedgerEntries(from, to);
   }
+
+  // TRANSIT_INTENT entries naming this node as the owner. Used by
+  // ClaimPendingTransit to discover holders directly instead of polling all
+  // peers. Returns (intent_lsn, key_hash, holder_node, chunk_index, chunk_total,
+  // doc_size_bytes) sorted by intent_lsn.
+  struct TransitIntent {
+    lsn_t intent_lsn = kInvalidLsn;
+    std::string key_hash;
+    std::string holder_node;
+    uint32_t chunk_index = 0;
+    uint32_t chunk_total = 1;
+    uint64_t doc_size_bytes = 0;
+  };
+  std::vector<TransitIntent> TransitIntentsForSelf();
 
   // Signs the current ledger chain tip (entry_id + entry_hash) with this
   // node's persistent Ed25519 identity key, binding the tip to a node_id a
@@ -220,6 +274,7 @@ class NodeEngine {
   std::unique_ptr<TransitStore> transit_;
   std::unique_ptr<OutboxStore> outbox_;
   std::unique_ptr<ChangeFeed> changes_;
+  std::unique_ptr<ReceiptTracker> receipt_tracker_;
   std::function<void(const std::string&, const std::string&, const std::string&)> on_local_write_;
   std::function<std::string(const std::string&)> resolve_public_key_;
   std::function<bool()> reachability_provider_;

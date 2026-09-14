@@ -103,15 +103,14 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   let mouseY = -1000;
 
   const handleMouseMove = (e: MouseEvent) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseX = e.clientX - rect.left;
-    mouseY = e.clientY - rect.top;
+    mouseX = e.clientX;
+    mouseY = e.clientY;
   };
   const handleMouseLeave = () => {
     mouseX = -1000;
     mouseY = -1000;
   };
-  window.addEventListener("mousemove", handleMouseMove);
+  window.addEventListener("mousemove", handleMouseMove, { passive: true });
   document.addEventListener("mouseleave", handleMouseLeave);
 
   const reduceQuery =
@@ -121,23 +120,22 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   let palette = readPalette();
 
-  // Particle pool
-  const PARTICLE_COUNT = 65;
-  const CONNECT_DIST = 135;
+  const CONNECT_DIST = 145;
   const CONNECT_DIST_SQ = CONNECT_DIST * CONNECT_DIST;
 
   let particles: Particle[] = [];
 
   const initParticles = (w: number, h: number) => {
     particles = [];
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const count = Math.max(75, Math.min(135, Math.floor((w * h) / 14000)));
+    for (let i = 0; i < count; i++) {
       particles.push({
         x: Math.random() * w,
         y: Math.random() * h,
-        z: 0.2 + Math.random() * 0.8,
-        vx: (Math.random() - 0.5) * 0.45,
-        vy: (Math.random() - 0.5) * 0.45,
-        radius: 1.5 + Math.random() * 2,
+        z: 0.25 + Math.random() * 0.75,
+        vx: (Math.random() - 0.5) * 0.40,
+        vy: (Math.random() - 0.5) * 0.40,
+        radius: 1.6 + Math.random() * 2.2,
         phase: Math.random() * Math.PI * 2,
       });
     }
@@ -145,9 +143,8 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   const resize = (): void => {
     if (destroyed) return;
-    const parent = canvas.parentElement;
-    const w = Math.max(1, Math.floor(parent?.clientWidth ?? window.innerWidth));
-    const h = Math.max(1, Math.floor(parent?.clientHeight ?? window.innerHeight));
+    const w = Math.max(1, window.innerWidth);
+    const h = Math.max(1, window.innerHeight);
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     canvas.width = Math.floor(w * dpr);
     canvas.height = Math.floor(h * dpr);

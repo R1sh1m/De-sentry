@@ -34,27 +34,27 @@
         "Relational schema with primary keys, foreign key constraints, multi-table joins, and ACID transaction guarantees."
       ],
       "keywords": {
-        "sql": 3.0,
-        "relational": 3.0,
-        "table": 2.0,
-        "tables": 2.0,
+        "sql": 3,
+        "relational": 3,
+        "table": 2,
+        "tables": 2,
         "join": 2.5,
         "joins": 2.5,
         "schema": 1.5,
         "column": 1.5,
         "columns": 1.5,
-        "row": 1.0,
-        "rows": 1.0,
-        "foreign key": 3.0,
-        "normalised": 2.0,
-        "normalized": 2.0,
+        "row": 1,
+        "rows": 1,
+        "foreign key": 3,
+        "normalised": 2,
+        "normalized": 2,
         "transaction": 1.5,
         "invoice": 1.5,
-        "ledger": 1.0,
+        "ledger": 1,
         "orders": 1.5,
         "customers": 1.5,
         "inventory": 1.5,
-        "report": 1.0,
+        "report": 1,
         "aggregate": 1.5
       },
       "engines": [
@@ -98,7 +98,29 @@
             ]
           }
         }
-      ]
+      ],
+      "rationale": {
+        "summary": "Structured tabular records with fixed schemas, primary keys, foreign key constraints, and relational joins.",
+        "key_signals": [
+          "tables",
+          "columns",
+          "joins",
+          "foreign keys",
+          "ACID transactions",
+          "normalised schema",
+          "orders/invoices"
+        ],
+        "engine_rationales": {
+          "sqlite": "Full SQL relational engine with foreign key enforcement, B+Tree page indexing, and transactional ACID guarantees.",
+          "kv": "Secondary key-value fallback storage for raw blob cache and unindexed configuration records."
+        },
+        "quota_rationale": "Standard 60% database page cache allocation to optimize query plan execution and buffer B+Tree table pages.",
+        "trade_offs": [
+          "Schema changes require explicit migration steps.",
+          "Foreign key cascades and secondary indexes increase write amplification.",
+          "Page-level concurrency is constrained compared to key-partitioned stores."
+        ]
+      }
     },
     {
       "workload": "nosql-doc",
@@ -111,31 +133,31 @@
         "A media library that stores image files and their filenames, captions, and metadata without searching by visual similarity."
       ],
       "keywords": {
-        "document": 3.0,
-        "documents": 3.0,
+        "document": 3,
+        "documents": 3,
         "json": 2.5,
-        "nosql": 3.0,
+        "nosql": 3,
         "key value": 2.5,
         "key-value": 2.5,
         "mongo": 2.5,
         "flexible": 1.5,
-        "schemaless": 3.0,
+        "schemaless": 3,
         "blob": 1.5,
         "image": 2.5,
         "images": 2.5,
         "photo": 2.5,
         "photos": 2.5,
-        "video": 2.0,
-        "file": 2.0,
-        "files": 2.0,
-        "media": 2.0,
+        "video": 2,
+        "file": 2,
+        "files": 2,
+        "media": 2,
         "notes": 1.5,
-        "profile": 1.0,
-        "profiles": 1.0,
+        "profile": 1,
+        "profiles": 1,
         "settings": 1.5,
-        "cache": 1.0,
+        "cache": 1,
         "session": 1.5,
-        "content": 1.0
+        "content": 1
       },
       "engines": [
         "kv"
@@ -160,36 +182,55 @@
           "retention_days": 0,
           "schema": null
         }
-      ]
+      ],
+      "rationale": {
+        "summary": "Flexible JSON document store with dynamic fields and key-based retrieval, without rigid schema constraints.",
+        "key_signals": [
+          "JSON documents",
+          "schemaless blobs",
+          "key-value access",
+          "dynamic payload",
+          "user profiles",
+          "settings"
+        ],
+        "engine_rationales": {
+          "kv": "High-throughput key-value engine offering single-hop point lookups and low-overhead document persistence without schema enforcement."
+        },
+        "quota_rationale": "Standard 60% DB buffer with 15% transit store to smoothly absorb bursts of unstructured JSON document writes.",
+        "trade_offs": [
+          "No cross-document referential integrity constraints.",
+          "Filtered queries without secondary indexes require scanning document collections."
+        ]
+      }
     },
     {
       "workload": "time-series",
       "label": "Time series",
       "text": "Measurements stamped with a time and a series name, arriving continuously from sensors or meters, read back as ranges and averages over hours or days, and eventually thrown away once they are old enough.",
       "keywords": {
-        "time series": 4.0,
-        "timeseries": 4.0,
-        "sensor": 3.0,
-        "sensors": 3.0,
+        "time series": 4,
+        "timeseries": 4,
+        "sensor": 3,
+        "sensors": 3,
         "metric": 2.5,
         "metrics": 2.5,
-        "telemetry": 3.0,
+        "telemetry": 3,
         "readings": 2.5,
-        "reading": 2.0,
+        "reading": 2,
         "measurement": 2.5,
-        "temperature": 2.0,
+        "temperature": 2,
         "logging": 1.5,
         "logs": 1.5,
-        "monitoring": 2.0,
-        "hourly": 2.0,
+        "monitoring": 2,
+        "hourly": 2,
         "daily": 1.5,
-        "per second": 2.0,
-        "retention": 2.0,
-        "downsample": 3.0,
-        "rollup": 3.0,
-        "iot": 3.0,
-        "history": 1.0,
-        "over time": 2.0
+        "per second": 2,
+        "retention": 2,
+        "downsample": 3,
+        "rollup": 3,
+        "iot": 3,
+        "history": 1,
+        "over time": 2
       },
       "engines": [
         "ts_rollup",
@@ -239,32 +280,52 @@
       "texts": [
         "Continuous sensor readings, telemetry, and IoT temperature data stamped with timestamps, sampled periodically and rolled up.",
         "Time-series monitoring metrics and device telemetry arriving continuously, downsampled and queried across time windows."
-      ]
+      ],
+      "rationale": {
+        "summary": "High-frequency timestamped telemetry and metric series, optimized for streaming writes and time-window rollups.",
+        "key_signals": [
+          "sensor readings",
+          "metrics",
+          "telemetry",
+          "hourly/daily rollups",
+          "time windows",
+          "retention expiration"
+        ],
+        "engine_rationales": {
+          "ts_rollup": "Tiered time-series engine with automatic downsampling (raw -> 1m -> 1h), compact delta encoding, and scheduled retention pruning.",
+          "kv": "Fast lookup for latest measurement state and series registration metadata."
+        },
+        "quota_rationale": "Ledger increased to 20% (+10%) to provide a deep append-log buffer for uninterrupted streaming ingestion.",
+        "trade_offs": [
+          "Expired records are permanently pruned based on retention policy.",
+          "Random past-timestamp writes require re-sorting rollup buckets."
+        ]
+      }
     },
     {
       "workload": "vector",
       "label": "Vectors and similarity",
       "text": "Embeddings of text or images stored as numeric vectors and searched by similarity, so that asking for something returns the nearest matches by meaning rather than by exact value.",
       "keywords": {
-        "vector": 4.0,
-        "vectors": 4.0,
-        "embedding": 4.0,
-        "embeddings": 4.0,
+        "vector": 4,
+        "vectors": 4,
+        "embedding": 4,
+        "embeddings": 4,
         "similarity": 3.5,
-        "semantic": 3.0,
-        "nearest neighbour": 4.0,
-        "nearest neighbor": 4.0,
-        "knn": 3.0,
-        "rag": 3.0,
+        "semantic": 3,
+        "nearest neighbour": 4,
+        "nearest neighbor": 4,
+        "knn": 3,
+        "rag": 3,
         "retrieval": 2.5,
         "search": 1.5,
         "recommend": 2.5,
         "recommendation": 2.5,
-        "image search": 3.0,
-        "visual similarity": 4.0,
-        "reverse image": 4.0,
-        "image embedding": 4.0,
-        "cosine": 3.0
+        "image search": 3,
+        "visual similarity": 4,
+        "reverse image": 4,
+        "image embedding": 4,
+        "cosine": 3
       },
       "engines": [
         "vector_hnsw_lite",
@@ -309,7 +370,27 @@
         "Vector embeddings index for neural search, RAG retrieval pipelines, and cosine similarity matching over embedding vectors.",
         "Images converted into embeddings and searched for visually similar pictures or nearest matching images.",
         "Reverse image search using visual feature vectors to find photos with similar content."
-      ]
+      ],
+      "rationale": {
+        "summary": "High-dimensional vector embeddings indexed for semantic retrieval and approximate nearest-neighbor similarity.",
+        "key_signals": [
+          "embeddings",
+          "vector similarity",
+          "semantic search",
+          "cosine distance",
+          "nearest neighbor",
+          "RAG retrieval"
+        ],
+        "engine_rationales": {
+          "vector_hnsw_lite": "Hierarchical Navigable Small World graph index for sub-millisecond approximate nearest neighbor search over dense embeddings.",
+          "kv": "Stores associated text chunks, document payloads, and filter attributes linked to vector IDs."
+        },
+        "quota_rationale": "Cache/Index increased to 25% (+15%) to maintain the HNSW graph and vector index in memory for low-latency queries.",
+        "trade_offs": [
+          "Higher memory consumption to keep the vector graph resident in RAM.",
+          "Building HNSW index edges incurs CPU overhead on batch vector ingestion."
+        ]
+      }
     },
     {
       "workload": "graph",
@@ -320,26 +401,26 @@
         "Graph traversal across connected entities, finding paths between nodes, hierarchical trees, and network connections."
       ],
       "keywords": {
-        "graph": 4.0,
-        "edge": 3.0,
-        "edges": 3.0,
-        "node": 1.0,
+        "graph": 4,
+        "edge": 3,
+        "edges": 3,
+        "node": 1,
         "relationship": 2.5,
         "relationships": 2.5,
-        "network": 2.0,
-        "hierarchy": 3.0,
-        "tree": 2.0,
-        "parent": 2.0,
-        "children": 2.0,
+        "network": 2,
+        "hierarchy": 3,
+        "tree": 2,
+        "parent": 2,
+        "children": 2,
         "follows": 2.5,
         "social": 2.5,
-        "dependency": 3.0,
-        "dependencies": 3.0,
-        "traverse": 3.0,
-        "traversal": 3.0,
-        "ancestors": 3.0,
-        "descendants": 3.0,
-        "org chart": 3.0
+        "dependency": 3,
+        "dependencies": 3,
+        "traverse": 3,
+        "traversal": 3,
+        "ancestors": 3,
+        "descendants": 3,
+        "org chart": 3
       },
       "engines": [
         "graph_adj",
@@ -376,7 +457,28 @@
             "required": []
           }
         }
-      ]
+      ],
+      "rationale": {
+        "summary": "Interconnected entities and directional relationships optimized for multi-hop graph traversals and hierarchy queries.",
+        "key_signals": [
+          "nodes and edges",
+          "relationships",
+          "graph traversal",
+          "hierarchy",
+          "org chart",
+          "dependencies",
+          "social network"
+        ],
+        "engine_rationales": {
+          "graph_adj": "Adjacency-list graph engine supporting fast pointer-chasing and deep recursive relationship traversals.",
+          "kv": "Stores vertex and edge property maps and metadata payloads."
+        },
+        "quota_rationale": "Standard 60% database page buffer to keep high-degree adjacency lists cached in memory.",
+        "trade_offs": [
+          "Traversals on dense nodes can consume significant memory without depth limits.",
+          "Graph-wide pattern matching is more memory-intensive than flat table scans."
+        ]
+      }
     },
     {
       "workload": "semi-structured",
@@ -387,25 +489,25 @@
         "Batch import of CSV data and log records with variable fields, aggregated and summarised across millions of rows."
       ],
       "keywords": {
-        "semi structured": 4.0,
-        "semi-structured": 4.0,
+        "semi structured": 4,
+        "semi-structured": 4,
         "csv": 2.5,
-        "import": 2.0,
-        "imported": 2.0,
+        "import": 2,
+        "imported": 2,
         "events": 2.5,
-        "event": 2.0,
+        "event": 2,
         "scrape": 2.5,
         "scraped": 2.5,
-        "mixed": 2.0,
+        "mixed": 2,
         "analytics": 2.5,
         "analytical": 2.5,
-        "columnar": 3.0,
-        "scan": 2.0,
-        "aggregate": 2.0,
-        "summarise": 2.0,
-        "summarize": 2.0,
+        "columnar": 3,
+        "scan": 2,
+        "aggregate": 2,
+        "summarise": 2,
+        "summarize": 2,
         "warehouse": 2.5,
-        "olap": 3.0
+        "olap": 3
       },
       "engines": [
         "columnar_lite",
@@ -436,7 +538,28 @@
           "retention_days": 0,
           "schema": null
         }
-      ]
+      ],
+      "rationale": {
+        "summary": "Analytical event logs and tabular exports with variable schemas, optimized for columnar OLAP aggregations.",
+        "key_signals": [
+          "server logs",
+          "events",
+          "columnar scans",
+          "OLAP aggregations",
+          "CSV imports",
+          "clickstream"
+        ],
+        "engine_rationales": {
+          "duckdb": "Vectorized analytical engine executing parallel scans and aggregations across millions of rows.",
+          "columnar_lite": "Lightweight built-in columnar format with dictionary compression for efficient range queries.",
+          "kv": "Ingestion buffer for raw events prior to columnar compaction."
+        },
+        "quota_rationale": "Standard 60% database buffer configured with wide block caching for sequential scan throughput.",
+        "trade_offs": [
+          "Single-record write latency is higher than key-value stores due to columnar block construction.",
+          "OLAP memory consumption spikes during wide grouped aggregations."
+        ]
+      }
     },
     {
       "workload": "oops-rdbms",
@@ -449,19 +572,19 @@
       "keywords": {
         "object": 2.5,
         "objects": 2.5,
-        "oop": 4.0,
-        "class": 3.0,
-        "classes": 3.0,
-        "inheritance": 4.0,
+        "oop": 4,
+        "class": 3,
+        "classes": 3,
+        "inheritance": 4,
         "instance": 2.5,
         "instances": 2.5,
-        "orm": 4.0,
-        "entity": 2.0,
-        "entities": 2.0,
+        "orm": 4,
+        "entity": 2,
+        "entities": 2,
         "model": 1.5,
         "models": 1.5,
-        "attribute": 2.0,
-        "attributes": 2.0,
+        "attribute": 2,
+        "attributes": 2,
         "polymorphic": 3.5,
         "subclass": 3.5
       },
@@ -507,7 +630,28 @@
             ]
           }
         }
-      ]
+      ],
+      "rationale": {
+        "summary": "Object-oriented class hierarchies and domain models persisted transparently into relational tables and relationship graphs.",
+        "key_signals": [
+          "OOP classes",
+          "inheritance",
+          "ORM mapping",
+          "polymorphic models",
+          "entities",
+          "subclasses"
+        ],
+        "engine_rationales": {
+          "graph_adj": "Tracks class inheritance trees and polymorphic relationship pointers.",
+          "sqlite": "Stores flattened entity attributes and property columns in relational tables.",
+          "kv": "Fast object identity cache for active instances."
+        },
+        "quota_rationale": "Standard 60% database buffer allocated between tabular property tables and inheritance hierarchy graphs.",
+        "trade_offs": [
+          "Object-relational mapping impedance incurs minor translation overhead.",
+          "Deep polymorphic queries may require multiple table joins or graph hops."
+        ]
+      }
     }
   ]
 }

@@ -6,6 +6,7 @@
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/net/admission.h"
 #include "desentry/storage/engines/graph_adj.h"
 #include "desentry/storage/engines/ts_rollup.h"
 #include "desentry/storage/engines/vector_hnsw_lite.h"
@@ -85,7 +86,8 @@ JsonValue LedgerEntryToJson(const WalRecord& rec) {
   return JsonValue(std::move(e));
 }
 
-JsonValue PeerToJson(const PeerInfo& p, lsn_t network_max) {
+JsonValue PeerToJson(const PeerInfo& p, lsn_t network_max, int64_t now_ms,
+                     int64_t liveness_threshold_ms) {
   JsonValue::Object obj;
   obj.emplace_back("node_id", JsonValue(p.node_id));
   obj.emplace_back("host", JsonValue(p.host));
@@ -95,6 +97,8 @@ JsonValue PeerToJson(const PeerInfo& p, lsn_t network_max) {
   obj.emplace_back("last_seen_ms", JsonValue(static_cast<int64_t>(p.last_seen_ms)));
   obj.emplace_back("supervisor", JsonValue(p.is_supervisor));
   obj.emplace_back("state", JsonValue(NodeLifecycleStateName(p.state)));
+  obj.emplace_back("suspicion",
+                   JsonValue(PeerSuspicionName(p.Suspicion(now_ms, liveness_threshold_ms))));
 
   JsonValue::Object fitness;
   fitness.emplace_back("latency_ms", JsonValue(p.fitness.latency_ms));
@@ -180,15 +184,34 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
       if (!schema_st.ok()) return StatusError(schema_st);
     }
 
+    // Durability options: local-only (1, default), or replicated:N with timeout.
+    const uint32_t durability = static_cast<uint32_t>(std::max<int64_t>(1, QueryInt(req, "durability", 1)));
+    const uint32_t timeout_ms = static_cast<uint32_t>(std::max<int64_t>(0, QueryInt(req, "timeout_ms", 5000)));
+
     Status st = engine->PutDocument(collection, key, body, self());
     if (!st.ok()) return StatusError(st);
+
+    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
+    auto durability_report = engine->WaitForDurability(message_id, durability, timeout_ms);
+    if (!durability_report.ok()) return StatusError(durability_report.status());
 
     JsonValue::Object obj;
     obj.emplace_back("ok", JsonValue(true));
     obj.emplace_back("collection", JsonValue(collection));
     obj.emplace_back("key", JsonValue(key));
     obj.emplace_back("entry_id", JsonValue(static_cast<int64_t>(engine->LedgerTip().entry_id)));
-    return JsonOk(JsonValue(std::move(obj)));
+    obj.emplace_back("message_id", JsonValue(message_id));
+    const auto& report = durability_report.value();
+    JsonValue::Object dur_obj;
+    dur_obj.emplace_back("requested", JsonValue(static_cast<int64_t>(report.requested)));
+    dur_obj.emplace_back("achieved", JsonValue(static_cast<int64_t>(report.achieved)));
+    dur_obj.emplace_back("timed_out", JsonValue(report.timed_out));
+    JsonValue::Array replicas_arr;
+    for (const std::string& r : report.replicas) replicas_arr.emplace_back(JsonValue(r));
+    dur_obj.emplace_back("replicas", JsonValue(std::move(replicas_arr)));
+    obj.emplace_back("durability", JsonValue(std::move(dur_obj)));
+    int status_code = report.timed_out && report.achieved < report.requested ? 202 : 200;
+    return HttpResponse{status_code, "application/json", JsonValue(std::move(obj)).Dump()};
   });
 
   server->Get("/db/:collection/:key", [engine, self](const HttpRequest& req) -> HttpResponse {
@@ -198,9 +221,36 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
   });
 
   server->Del("/db/:collection/:key", [engine, self](const HttpRequest& req) -> HttpResponse {
-    Status st = engine->DeleteDocument(req.params.at("collection"), req.params.at("key"), self());
+    const std::string& collection = req.params.at("collection");
+    const std::string& key = req.params.at("key");
+
+    const uint32_t durability = static_cast<uint32_t>(std::max<int64_t>(1, QueryInt(req, "durability", 1)));
+    const uint32_t timeout_ms = static_cast<uint32_t>(std::max<int64_t>(0, QueryInt(req, "timeout_ms", 5000)));
+
+    Status st = engine->DeleteDocument(collection, key, self());
     if (!st.ok()) return StatusError(st);
-    return Ok();
+
+    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
+    auto durability_report = engine->WaitForDurability(message_id, durability, timeout_ms);
+    if (!durability_report.ok()) return StatusError(durability_report.status());
+
+    JsonValue::Object obj;
+    obj.emplace_back("ok", JsonValue(true));
+    obj.emplace_back("collection", JsonValue(collection));
+    obj.emplace_back("key", JsonValue(key));
+    obj.emplace_back("entry_id", JsonValue(static_cast<int64_t>(engine->LedgerTip().entry_id)));
+    obj.emplace_back("message_id", JsonValue(message_id));
+    const auto& report = durability_report.value();
+    JsonValue::Object dur_obj;
+    dur_obj.emplace_back("requested", JsonValue(static_cast<int64_t>(report.requested)));
+    dur_obj.emplace_back("achieved", JsonValue(static_cast<int64_t>(report.achieved)));
+    dur_obj.emplace_back("timed_out", JsonValue(report.timed_out));
+    JsonValue::Array replicas_arr;
+    for (const std::string& r : report.replicas) replicas_arr.emplace_back(JsonValue(r));
+    dur_obj.emplace_back("replicas", JsonValue(std::move(replicas_arr)));
+    obj.emplace_back("durability", JsonValue(std::move(dur_obj)));
+    int status_code = report.timed_out && report.achieved < report.requested ? 202 : 200;
+    return HttpResponse{status_code, "application/json", JsonValue(std::move(obj)).Dump()};
   });
 
   server->Get("/db/:collection", [engine, self](const HttpRequest& req) -> HttpResponse {
@@ -389,8 +439,11 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
 
   server->Get("/_peers", [network](const HttpRequest&) -> HttpResponse {
     const lsn_t network_max = network->peers().NetworkMaxLedgerEntryId();
+    const int64_t now_ms = NowMs();
+    const int64_t liveness_threshold_ms = network->config().liveness_threshold_ms;
     JsonValue::Array arr;
-    for (const PeerInfo& p : network->peers().Ranked()) arr.emplace_back(PeerToJson(p, network_max));
+    for (const PeerInfo& p : network->peers().Ranked())
+      arr.emplace_back(PeerToJson(p, network_max, now_ms, liveness_threshold_ms));
     return JsonOk(JsonValue(std::move(arr)));
   });
 
@@ -431,6 +484,13 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     bcast_obj.emplace_back("rate_limited", JsonValue(static_cast<int64_t>(bcast.rate_limited)));
     bcast_obj.emplace_back("queued", JsonValue(static_cast<int64_t>(bcast.queued)));
     obj.emplace_back("broadcast", JsonValue(std::move(bcast_obj)));
+
+    const NetworkManager::ProbeStats probes = network->probe_stats();
+    JsonValue::Object probes_obj;
+    probes_obj.emplace_back("completed", JsonValue(static_cast<int64_t>(probes.completed)));
+    probes_obj.emplace_back("dropped", JsonValue(static_cast<int64_t>(probes.dropped)));
+    probes_obj.emplace_back("queued", JsonValue(static_cast<int64_t>(probes.queued)));
+    obj.emplace_back("probes", JsonValue(std::move(probes_obj)));
 
     return JsonOk(JsonValue(std::move(obj)));
   });
@@ -605,6 +665,21 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     if (!dropped_or.ok()) return StatusError(dropped_or.status());
     JsonValue::Object obj;
     obj.emplace_back("expired", JsonValue(static_cast<int64_t>(dropped_or.value())));
+    return JsonOk(JsonValue(std::move(obj)));
+  });
+
+  // -- outbox (stage-anywhere, sync-on-reconnect flow) --------------------------
+  server->Get("/_outbox", [engine](const HttpRequest&) -> HttpResponse {
+    JsonValue::Object obj;
+    obj.emplace_back("entries_staged", JsonValue(static_cast<int64_t>(engine->OutboxSize())));
+    obj.emplace_back("bytes_staged", JsonValue(static_cast<int64_t>(engine->OutboxBytesHeld())));
+    return JsonOk(JsonValue(std::move(obj)));
+  });
+
+  server->Post("/_outbox/flush", [engine](const HttpRequest&) -> HttpResponse {
+    const size_t replayed = engine->FlushOutbox();
+    JsonValue::Object obj;
+    obj.emplace_back("replayed", JsonValue(static_cast<int64_t>(replayed)));
     return JsonOk(JsonValue(std::move(obj)));
   });
 
@@ -825,8 +900,11 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     }
 
     const lsn_t network_max = network->peers().NetworkMaxLedgerEntryId();
+    const int64_t peers_now_ms = NowMs();
+    const int64_t peers_liveness_ms = network->config().liveness_threshold_ms;
     JsonValue::Array peers;
-    for (const PeerInfo& p : network->peers().Ranked()) peers.emplace_back(PeerToJson(p, network_max));
+    for (const PeerInfo& p : network->peers().Ranked())
+      peers.emplace_back(PeerToJson(p, network_max, peers_now_ms, peers_liveness_ms));
 
     JsonValue::Object ledger_tip;
     ledger_tip.emplace_back("entry_id", JsonValue(static_cast<int64_t>(tip.entry_id)));

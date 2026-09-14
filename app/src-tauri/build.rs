@@ -2,6 +2,30 @@ fn main() {
     let target = std::env::var("TARGET").unwrap_or_default();
     let is_windows_gnu = target.contains("windows-gnu");
 
+    // Ensure the sidecar binary path exists for the target so cargo check/test
+    // can run without requiring a prior manual stage-sidecar step.
+    // Release builds (and `npm run tauri:build`) run stage-sidecar.mjs beforehand,
+    // which replaces this stub with the real compiled desentryd binary.
+    if !target.is_empty() {
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let binaries_dir = std::path::PathBuf::from(manifest_dir).join("binaries");
+            let ext = if target.contains("windows") { ".exe" } else { "" };
+            let sidecar_name = format!("desentryd-{}{}", target, ext);
+            let sidecar_path = binaries_dir.join(&sidecar_name);
+            if !sidecar_path.exists() {
+                let _ = std::fs::create_dir_all(&binaries_dir);
+                let _ = std::fs::write(&sidecar_path, b"");
+            }
+            if is_windows_gnu {
+                let msvc_path =
+                    binaries_dir.join(format!("desentryd-x86_64-pc-windows-msvc{}", ext));
+                if !msvc_path.exists() {
+                    let _ = std::fs::write(&msvc_path, b"");
+                }
+            }
+        }
+    }
+
     let attrs = if is_windows_gnu {
         let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
         tauri_build::Attributes::new().windows_attributes(windows)

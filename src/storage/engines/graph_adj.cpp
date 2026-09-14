@@ -8,7 +8,6 @@
 
 #include "desentry/common/byte_buffer.h"
 #include "desentry/common/json.h"
-#include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/storage/document_codec.h"
 
@@ -230,7 +229,9 @@ void GraphAdjBackend::UnindexDocumentLocked(CollectionState* state, const std::s
   // survives, which is the whole reason edges carry an owner.
   auto declared_it = state->declared.find(key);
   if (declared_it != state->declared.end()) {
-    for (const auto& [from, to] : declared_it->second) {
+    for (const auto& edge_pair : declared_it->second) {
+      const auto& from = edge_pair.first;
+      const auto& to = edge_pair.second;
       auto out_it = state->out_edges.find(from);
       if (out_it != state->out_edges.end()) {
         std::vector<GraphEdge>& list = out_it->second;

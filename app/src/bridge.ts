@@ -80,6 +80,35 @@ export interface DraftCollection {
   retention_days: number;
 }
 
+export interface EngineRationale {
+  engine: string;
+  role: string;
+  reason: string;
+}
+
+export interface SizingReasoning {
+  summary: string;
+  key_matched_signals: string[];
+  engine_rationales: EngineRationale[];
+  quota_rationale: string;
+  runner_up_contrast: string | null;
+  operational_trade_offs: string[];
+}
+
+export interface ClarificationOption {
+  label: string;
+  description: string;
+  target_workload: string;
+  appended_context: string;
+}
+
+export interface ClarifyingQuestion {
+  id: string;
+  prompt: string;
+  rationale: string;
+  options: ClarificationOption[];
+}
+
 export interface SizingDecision {
   /** The winning prototype: sql, nosql-doc, time-series, vector, graph, semi-structured, oops-rdbms. */
   workload: string;
@@ -94,6 +123,8 @@ export interface SizingDecision {
   confidence_floor: number;
   description: string;
   decided_at_ms: number;
+  reasoning?: SizingReasoning | null;
+  clarifying_questions?: ClarifyingQuestion[];
 }
 
 export interface CreateNodeRequest {

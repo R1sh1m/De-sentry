@@ -17,6 +17,39 @@ const char* NodeLifecycleStateName(NodeLifecycleState state) {
   return "unknown";
 }
 
+const char* PeerSuspicionName(PeerSuspicion suspicion) {
+  switch (suspicion) {
+    case PeerSuspicion::kHealthy: return "healthy";
+    case PeerSuspicion::kSuspect: return "suspect";
+    case PeerSuspicion::kDead: return "dead";
+  }
+  return "unknown";
+}
+
+PeerSuspicion PeerInfo::Suspicion(int64_t now_ms, int64_t liveness_threshold_ms) const {
+  // A peer we have never heard from is unknown, not condemned: suspect is
+  // the honest reading. (Bootstrap placeholders get a last_seen_ms at
+  // creation, so this mostly covers hand-crafted table entries in tests.)
+  if (last_seen_ms == 0) return PeerSuspicion::kSuspect;
+  const int64_t threshold = liveness_threshold_ms > 0 ? liveness_threshold_ms : 5000;
+  const int64_t silent_ms = now_ms - last_seen_ms;
+  PeerSuspicion tier = silent_ms > 3 * threshold   ? PeerSuspicion::kDead
+                       : silent_ms > threshold ? PeerSuspicion::kSuspect
+                                               : PeerSuspicion::kHealthy;
+  // A peer that answers but fails is worse than one that is merely quiet:
+  // upgrade on probe record. Bounds mirror the EWMA math in RecordProbe --
+  // four straight failures decay 1.0 to ~0.32, eight to ~0.10 -- so these
+  // cutoffs fire on sustained failure, not one bad round.
+  if (fitness.probes >= 4 && fitness.success_rate < 0.5 &&
+      tier == PeerSuspicion::kHealthy) {
+    tier = PeerSuspicion::kSuspect;
+  }
+  if (fitness.probes >= 8 && fitness.success_rate < 0.15) {
+    tier = PeerSuspicion::kDead;
+  }
+  return tier;
+}
+
 bool ValidNodeTransition(NodeLifecycleState from, NodeLifecycleState to) {
   if (from == to) return true;  // idempotent re-assertion of the current state
   switch (from) {
@@ -143,13 +176,20 @@ void PeerTable::RecordProbe(const std::string& node_id, double latency_ms, bool 
 }
 
 void PeerTable::RecordReport(const std::string& node_id, lsn_t ledger_entry_id,
-                              uint64_t free_quota_mb) {
+                              uint64_t free_quota_mb, bool quota_limited,
+                              uint64_t transit_bytes_held, uint64_t transit_budget_bytes) {
   std::lock_guard<std::mutex> lock(mu_);
   auto it = peers_.find(node_id);
   if (it == peers_.end()) return;
   it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
   it->second.fitness.free_quota_mb = free_quota_mb;
-  it->second.fitness.quota_reported = true;
+  // An unlimited node reports free == 0 with quota_limited == false; only a
+  // limited node with a real figure counts as having reported quota, so the
+  // supervisor's out-of-space marking (supervisor.cpp) keeps reading
+  // unlimited nodes as unbounded rather than full.
+  it->second.fitness.quota_reported = quota_limited;
+  it->second.fitness.transit_bytes_held = transit_bytes_held;
+  it->second.fitness.transit_budget_bytes = transit_budget_bytes;
 }
 
 void PeerTable::RecordLedgerHeight(const std::string& node_id, lsn_t ledger_entry_id) {

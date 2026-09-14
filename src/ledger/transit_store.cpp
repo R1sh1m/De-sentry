@@ -20,7 +20,11 @@ namespace {
 // On-disk framing: [u32 body_len][body][u32 crc32(body)], mirroring the
 // cross-engine index. A truncated tail from a crash costs the last record.
 constexpr uint32_t kTransitMagic = 0x44534E54;  // "DSNT"
-constexpr uint32_t kTransitVersion = 1;
+// v2 adds the striping fields (doc_size_bytes, chunk_index, chunk_total).
+// transit.log is node-local -- never shipped -- so no mixed-version wire
+// concern: Load() reads both versions, new holds always write v2.
+constexpr uint32_t kTransitVersion = 2;
+constexpr uint32_t kTransitVersionV1 = 1;
 constexpr uint32_t kTransitRecordCap = 1u << 20;  // 1MiB: absurdly generous for one envelope
 
 constexpr uint8_t kRecordHold = 1;
@@ -70,6 +74,9 @@ std::string TransitStore::EncodeEnvelope(const TransitEnvelope& envelope) {
   w.Bytes(envelope.holder_node);
   w.I64(envelope.intent_lsn);
   w.I64(envelope.expires_ms);
+  w.U64(envelope.doc_size_bytes);
+  w.U32(envelope.chunk_index);
+  w.U32(envelope.chunk_total);
   return w.TakeString();
 }
 
@@ -94,7 +101,8 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
   try {
     ByteReader r(body);
     if (r.U32() != kTransitMagic) return Status::Corruption("transit record is not an envelope");
-    if (r.U32() != kTransitVersion) {
+    const uint32_t version = r.U32();
+    if (version != kTransitVersion && version != kTransitVersionV1) {
       return Status::Corruption("transit record has an unsupported envelope version");
     }
     const uint8_t kind = r.U8();
@@ -119,6 +127,15 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
     envelope.holder_node = r.Bytes();
     envelope.intent_lsn = r.I64();
     envelope.expires_ms = r.I64();
+    if (version == kTransitVersion) {
+      envelope.doc_size_bytes = r.U64();
+      envelope.chunk_index = r.U32();
+      envelope.chunk_total = r.U32();
+      if (envelope.chunk_total == 0 || envelope.chunk_index >= envelope.chunk_total) {
+        return Status::Corruption("transit record has invalid chunk fields");
+      }
+    }
+    // else: v1 record -- whole-document defaults (chunk_total == 1) stand.
     if (r.remaining() != 0) return Status::Corruption("transit record has trailing bytes");
     if (envelope.owner_node.empty() || envelope.key_hash.size() != kWalHashLen) {
       return Status::Corruption("transit record has invalid envelope fields");

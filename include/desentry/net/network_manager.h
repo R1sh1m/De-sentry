@@ -38,6 +38,7 @@
 #include "desentry/net/gossip.h"
 #include "desentry/net/peer.h"
 #include "desentry/net/placement.h"
+#include "desentry/net/receipt_tracker.h"
 #include "desentry/net/tcp_transport.h"
 #include "desentry/net/udp_discovery.h"
 
@@ -55,6 +56,10 @@ class NetworkManager {
   TcpTransport* transport() { return transport_.get(); }
   PlacementPolicy& placement() { return *placement_; }
   const NodeConfig& config() const { return config_; }
+
+  // Resolves a node_id to its Ed25519 public key from the peer table.
+  // Returns empty string if unknown. Used for receipt signature verification.
+  std::string ResolvePublicKey(const std::string& node_id) const;
 
   // Recomputes the placement ring from current membership. Called on
   // membership change rather than per write.
@@ -86,13 +91,33 @@ class NetworkManager {
   };
   BroadcastStats broadcast_stats() const;
 
+  // Liveness-probe statistics for the decoupled ProbeLoop, surfaced by
+  // GET /_status alongside the broadcast figures. A rising dropped count
+  // here means the probe pool is saturated (too many silent peers for the
+  // pool), not that peers are down -- the two failure modes read
+  // differently, which is why this is separate from BroadcastStats.
+  struct ProbeStats {
+    uint64_t completed = 0;
+    uint64_t dropped = 0;
+    size_t queued = 0;
+  };
+  ProbeStats probe_stats() const;
+
  private:
   WireMessage HandleRequest(const std::string& peer_node_id, const WireMessage& request);
   WireMessage HandleDigest(const std::string& peer_node_id, const DigestPayload& digest);
   WireMessage HandleOpBroadcast(const std::string& peer_node_id, const OpBroadcastPayload& broadcast);
-  WireMessage HandleTransitQuery(const std::string& peer_node_id);
+  WireMessage HandleTransitQuery(const std::string& peer_node_id, const TransitQueryPayload& query);
   WireMessage HandleTransitClaim(const std::string& peer_node_id, const TransitClaimPayload& claim);
+  WireMessage HandleTransitHeld(const std::string& peer_node_id, const TransitHeldPayload& held);
   WireMessage HandleLedgerDigest(const std::string& peer_node_id, const LedgerDigestPayload& digest);
+  // Liveness heartbeat (kHeartbeat): folds the requester's figures into its
+  // fitness record and answers with this node's own heartbeat, so one round
+  // trip updates both sides. The figures are advisory (see PeerFitness);
+  // a peer that inflates them still has to serve what it claims when asked.
+  // A malformed request payload is ignored -- liveness (last_seen_ms, which
+  // HandleRequest already refreshed) still counts.
+  WireMessage HandleHeartbeat(const std::string& peer_node_id, const HeartbeatPayload& request);
 
   void BroadcastLocalWrite(const std::string& collection, const std::string& key,
                             const std::string& encoded_doc);
@@ -101,6 +126,17 @@ class NetworkManager {
   // this node instead of being dropped.
   void HoldForUnreachableOwners(const std::string& collection, const std::string& key,
                                  const std::string& encoded_doc);
+  // Builds this node's outbound heartbeat: ledger tip, quota/load figures
+  // and self-assessed servability (degraded when over quota, running
+  // otherwise). Informational for peers' fitness tables; lifecycle
+  // transitions stay supervisor-driven.
+  HeartbeatPayload OwnHeartbeat() const;
+  // One measured liveness probe against a single peer: heartbeat exchange
+  // with RTT timing, fitness/record updates, bootstrap identity adoption and
+  // suspicion-driven state transitions. Runs on the probe pool, never on the
+  // loop thread, so a hung peer costs one bounded slot rather than stalling
+  // every other peer's liveness tracking.
+  void ProbePeer(PeerInfo peer);
   void ProbeLoop();
 
   NodeEngine* engine_;
@@ -111,6 +147,16 @@ class NetworkManager {
   std::unique_ptr<GossipEngine> gossip_;
   std::unique_ptr<PlacementPolicy> placement_;
   std::unique_ptr<WorkerPool> broadcast_pool_;
+  // Bounded pool for liveness probes, deliberately separate from the
+  // broadcast pool: probe drops and fan-out drops are different failure
+  // modes with different counters (ProbeStats vs BroadcastStats), and a
+  // write burst must never starve liveness tracking or vice versa.
+  std::unique_ptr<WorkerPool> probe_pool_;
+  // Receipt tracker for blocking durability API: awaits signed merge
+  // receipts from peers for a given message_id. Zero residual state -- the
+  // waiter is the HTTP request handler, and the map entry is erased on
+  // completion or timeout.
+  std::unique_ptr<ReceiptTracker> receipt_tracker_;
   std::unique_ptr<TokenBucketLimiter> limiter_;
   std::unique_ptr<MessageDedup> dedup_;
 

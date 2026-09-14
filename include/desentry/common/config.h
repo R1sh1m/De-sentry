@@ -64,6 +64,21 @@ struct NodeConfig {
   // Gossip anti-entropy interval.
   uint32_t gossip_interval_ms = 2000;
 
+  // Liveness / failure-detector cadence (net/peer.h PeerSuspicion,
+  // net/network_manager.cpp ProbeLoop). A peer silent longer than
+  // liveness_threshold_ms without any inbound traffic (gossip, discovery,
+  // handshake) gets an active heartbeat; past 3x it reads dead. Decoupled
+  // from the slow fitness lane below: liveness is cheap timestamp checks
+  // plus on-demand heartbeats, while full RTT/capacity measurement runs at
+  // the relaxed fitness cadence. A hung peer therefore costs one bounded
+  // worker slot, never a stalled probe loop.
+  uint32_t liveness_threshold_ms = 5000;
+  // Relaxed cadence for the full measured sweep (heartbeat request/response
+  // with RTT timing) across all known peers. EWMA fitness (kFitnessAlpha)
+  // smooths ~12 samples, so 15-30s per-peer measurement is plenty; gossip
+  // rounds contribute RTT samples in between.
+  uint32_t fitness_probe_interval_ms = 20000;
+
   // Buffer pool size, in 4KiB pages. 1024 pages == 4MiB, deliberately small
   // so the LRU replacer's eviction path is easy to exercise in the demo.
   uint32_t buffer_pool_pages = 1024;
@@ -103,6 +118,17 @@ struct NodeConfig {
   // Bytes held on behalf of an offline owner expire after this long
   // (ledger/transit_store.h). 0 == never expire.
   uint32_t transit_ttl_seconds = 7 * 24 * 3600;
+
+  // Coordinated transit holder sets (net/placement.h SelectTransitHolders).
+  // At most this many replicas hold bytes for one offline owner+key, chosen
+  // by deterministic rank -- so a 50-node mesh holds 3 copies, not 50.
+  // 1 == today's single-holder behaviour (modulo the rank gate).
+  uint32_t transit_max_holders = 3;
+  // Documents bigger than this are striped into chunks of at most this size
+  // before holding: one envelope per chunk, each with its own ledger intent.
+  // Keeps every envelope far under the transit record cap (1MiB) and lets a
+  // returning owner pull chunks in parallel from several holders.
+  uint32_t transit_chunk_bytes = 256 * 1024;
 
   // Per-collection retention for time-series-shaped engines; 0 == keep all.
   uint32_t retention_days = 0;

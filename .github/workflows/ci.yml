@@ -88,6 +88,8 @@ jobs:
       - name: Rust check and tests (fallback path, no ONNX)
         working-directory: app/src-tauri
         run: |
+          mkdir -p binaries
+          touch binaries/desentryd-x86_64-unknown-linux-gnu
           cargo check --no-default-features
           cargo test --no-default-features
 

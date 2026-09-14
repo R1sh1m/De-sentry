@@ -89,10 +89,14 @@ class StorageEngine {
 
   // Same, but for a specific ledger operation type -- how the transit flow
   // records TRANSIT_INTENT / TRANSIT_CLAIMED without going through the
-  // document write path.
+  // document write path. The trailing options carry transit routing metadata
+  // (holder, size, chunking) for TRANSIT_INTENT; callers that don't hold
+  // bytes omit it.
   StatusOr<lsn_t> AppendLedgerOp(WalRecordType type, const std::string& collection,
                                   const std::string& key, const std::string& payload,
-                                  const HLCTimestamp& hlc);
+                                  const HLCTimestamp& hlc,
+                                  const WriteAheadLog::AppendOptions& options =
+                                      WriteAheadLog::AppendOptions());
 
   StatusOr<std::string> GetRaw(const std::string& collection, const std::string& key);
 

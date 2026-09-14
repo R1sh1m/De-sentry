@@ -207,10 +207,11 @@ Status StorageEngine::PutRaw(const std::string& collection, const std::string& k
 
 StatusOr<lsn_t> StorageEngine::AppendLedgerOp(WalRecordType type, const std::string& collection,
                                                const std::string& key, const std::string& payload,
-                                               const HLCTimestamp& hlc) {
-  WriteAheadLog::AppendOptions options;
-  options.hlc = hlc;
-  auto lsn_or = wal_->Append(type, collection, key, payload, options);
+                                               const HLCTimestamp& hlc,
+                                               const WriteAheadLog::AppendOptions& options) {
+  WriteAheadLog::AppendOptions wal_options = options;
+  wal_options.hlc = hlc;
+  auto lsn_or = wal_->Append(type, collection, key, payload, wal_options);
   if (!lsn_or.ok()) return lsn_or.status();
   {
     std::lock_guard<std::mutex> lock(observer_mu_);

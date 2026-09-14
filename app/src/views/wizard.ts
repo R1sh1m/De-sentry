@@ -546,41 +546,194 @@ export function createWizard(): WizardHandles {
 
     const decision = spec.decision;
     const lowConfidence = decision.confidence < decision.confidence_floor;
+    const reasoning = decision.reasoning;
+    const questions = decision.clarifying_questions ?? [];
 
-    return el(
-      "div",
-      { class: "stack" },
-      el("p", { class: "wizard__eyebrow", text: "Step 3 of 5" }),
-      el("h2", { class: "wizard__title", text: `Looks like: ${WORKLOAD_LABELS[decision.workload] ?? decision.workload}` }),
-      section(
-        "Confidence",
-        confidenceMeter(decision.confidence),
-        el("p", {
-          class: lowConfidence ? "error-note" : "muted",
-          text: lowConfidence
-            ? `${percent(decision.confidence, 1)} — below the ${percent(decision.confidence_floor, 0)} floor, so choose the engines yourself below.`
-            : `${percent(decision.confidence, 1)} against the next-closest workload.`,
+    const container = el("div", { class: "stack" });
+    container.appendChild(el("p", { class: "wizard__eyebrow", text: "Step 3 of 5" }));
+
+    if (lowConfidence) {
+      container.appendChild(
+        el("h2", {
+          class: "wizard__title",
+          text: questions.length > 0 ? "Let's clarify your workload shape" : `Looks like: ${WORKLOAD_LABELS[decision.workload] ?? decision.workload}`,
         }),
-        decision.method === "keyword" &&
-          el("p", {
-            class: "error-note",
-            text: `The embedding model did not load (${decision.fallback_reason || "reason not reported"}), so this came from the keyword fallback. It is deterministic but much blunter.`,
-          }),
+      );
+    } else {
+      container.appendChild(
+        el("h2", {
+          class: "wizard__title",
+          text: `Looks like: ${WORKLOAD_LABELS[decision.workload] ?? decision.workload}`,
+        }),
+      );
+    }
+
+    // Confidence Section
+    const confidenceSection = section(
+      "Confidence",
+      confidenceMeter(decision.confidence),
+      el("p", {
+        class: lowConfidence ? "error-note" : "muted",
+        text: lowConfidence
+          ? `${percent(decision.confidence, 1)} — below the ${percent(decision.confidence_floor, 0)} floor. Choose an architectural clarification below to tailor the proposal, or select engines manually.`
+          : `${percent(decision.confidence, 1)} against the next-closest workload.`,
+      }),
+      decision.method === "keyword" &&
+        el("p", {
+          class: "error-note",
+          text: `The embedding model did not load (${decision.fallback_reason || "reason not reported"}), so this came from the keyword fallback. It is deterministic but much blunter.`,
+        }),
+      el(
+        "div",
+        { class: "row" },
+        ...decision.scores
+          .slice()
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 4)
+          .map((s) =>
+            el("span", {
+              class: "chip",
+              text: `${WORKLOAD_LABELS[s.workload] ?? s.workload} ${s.score.toFixed(2)}`,
+            }),
+          ),
+      ),
+    );
+    container.appendChild(confidenceSection);
+
+    // Interactive Clarification Box (when low confidence or ambiguous)
+    if (lowConfidence && questions.length > 0) {
+      const clarifyBox = el("div", { class: "ai-clarify-box" });
+      clarifyBox.appendChild(
         el(
           "div",
-          { class: "row" },
-          ...decision.scores
-            .slice()
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 4)
-            .map((s) =>
-              el("span", {
-                class: "chip",
-                text: `${WORKLOAD_LABELS[s.workload] ?? s.workload} ${s.score.toFixed(2)}`,
-              }),
-            ),
+          { class: "ai-clarify-box__header" },
+          el("span", { class: "ai-clarify-box__badge", text: "AI Refinement" }),
+          el("span", { class: "muted", text: "Answering will tailor the architecture and boost confidence" }),
         ),
-      ),
+      );
+
+      for (const q of questions) {
+        const qBlock = el("div", { class: "stack", style: "margin-top: var(--space-xs)" });
+        qBlock.appendChild(el("p", { class: "ai-clarify-box__prompt", text: q.prompt }));
+        qBlock.appendChild(el("p", { class: "ai-clarify-box__rationale", text: q.rationale }));
+
+        const optionsGrid = el("div", { class: "ai-clarify-options" });
+        for (const opt of q.options) {
+          const btn = el(
+            "button",
+            { class: "ai-clarify-btn", type: "button" },
+            el("span", { class: "ai-clarify-btn__label", text: opt.label }),
+            el("span", { class: "ai-clarify-btn__desc", text: opt.description }),
+          );
+          on(btn, "click", () => {
+            const trimmed = draft.description.trim();
+            if (trimmed.length === 0 || trimmed.split(" ").length < 5) {
+              draft.description = opt.appended_context;
+            } else if (!trimmed.toLowerCase().includes(opt.appended_context.toLowerCase())) {
+              draft.description = `${trimmed}, ${opt.appended_context}`;
+            }
+            void runSizing();
+          });
+          optionsGrid.appendChild(btn);
+        }
+        qBlock.appendChild(optionsGrid);
+        clarifyBox.appendChild(qBlock);
+      }
+      container.appendChild(section("Clarifying Questions", clarifyBox));
+    }
+
+    // AI Reasoning & Architecture Breakdown (when reasoning is available)
+    if (reasoning) {
+      const reasoningSection = section("AI Reasoning & Architecture");
+      const reasoningCard = el("div", { class: "ai-reasoning-card" });
+      reasoningCard.appendChild(el("p", { class: "ai-reasoning-card__summary", text: reasoning.summary }));
+
+      if (reasoning.key_matched_signals.length > 0) {
+        const signalsRow = el(
+          "div",
+          { class: "ai-reasoning-signals" },
+          el("span", { class: "ai-reasoning-signals__label", text: "Matched Signals:" }),
+          ...reasoning.key_matched_signals.map((sig) => el("span", { class: "ai-signal-chip", text: sig })),
+        );
+        reasoningCard.appendChild(signalsRow);
+      }
+
+      if (reasoning.engine_rationales.length > 0) {
+        const enginesList = el("div", { class: "ai-engines-list" });
+        for (const er of reasoning.engine_rationales) {
+          enginesList.appendChild(
+            el(
+              "div",
+              { class: "ai-engine-item" },
+              el(
+                "div",
+                {},
+                el("span", { class: "ai-engine-item__name", text: engineLabel(er.engine) }),
+                el("span", { class: "ai-engine-item__role", text: `(${er.role})` }),
+              ),
+              el("div", { class: "ai-engine-item__reason", text: er.reason }),
+            ),
+          );
+        }
+        reasoningCard.appendChild(enginesList);
+      }
+
+      if (reasoning.runner_up_contrast) {
+        reasoningCard.appendChild(el("p", { class: "ai-contrast-note", text: reasoning.runner_up_contrast }));
+      }
+
+      if (reasoning.operational_trade_offs.length > 0) {
+        const tradeoffsBlock = el("div", { class: "stack", style: "gap: 4px; margin-top: var(--space-xs)" });
+        tradeoffsBlock.appendChild(
+          el("span", { class: "ai-reasoning-signals__label", text: "Operational Trade-Offs:" }),
+        );
+        const ul = el(
+          "ul",
+          { class: "ai-tradeoffs" },
+          ...reasoning.operational_trade_offs.map((t) => el("li", { text: t })),
+        );
+        tradeoffsBlock.appendChild(ul);
+        reasoningCard.appendChild(tradeoffsBlock);
+      }
+
+      // Fine-tuning refinement options (when already confident)
+      if (!lowConfidence && questions.length > 0) {
+        const tuneBlock = el("div", {
+          class: "stack",
+          style:
+            "margin-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); padding-top: var(--space-xs); gap: 6px",
+        });
+        tuneBlock.appendChild(el("span", { class: "ai-reasoning-signals__label", text: "Fine-Tune This Proposal:" }));
+        for (const q of questions) {
+          tuneBlock.appendChild(el("p", { class: "muted", style: "margin: 0", text: q.prompt }));
+          const optionsRow = el("div", { class: "row", style: "flex-wrap: wrap" });
+          for (const opt of q.options) {
+            const chip = el("button", {
+              class: "chip",
+              type: "button",
+              text: opt.label,
+              title: opt.description,
+            });
+            on(chip, "click", () => {
+              const trimmed = draft.description.trim();
+              if (!trimmed.toLowerCase().includes(opt.appended_context.toLowerCase())) {
+                draft.description = `${trimmed} ${opt.appended_context}`;
+              }
+              void runSizing();
+            });
+            optionsRow.appendChild(chip);
+          }
+          tuneBlock.appendChild(optionsRow);
+        }
+        reasoningCard.appendChild(tuneBlock);
+      }
+
+      reasoningSection.appendChild(reasoningCard);
+      container.appendChild(reasoningSection);
+    }
+
+    // Engines section
+    container.appendChild(
       section(
         "Engines",
         el("p", {
@@ -591,19 +744,40 @@ export function createWizard(): WizardHandles {
         }),
         enginePicker(),
       ),
-      section("Budget split", quotaSplitBars(spec.quota_split, draft.quotaMb)),
-      spec.collections.length > 0 &&
+    );
+
+    // Budget split section
+    container.appendChild(
+      section(
+        "Budget split",
+        quotaSplitBars(spec.quota_split, draft.quotaMb),
+        reasoning?.quota_rationale
+          ? el("p", { class: "muted", style: "margin-top: var(--space-xs)", text: reasoning.quota_rationale })
+          : null,
+      ),
+    );
+
+    // Collections
+    if (spec.collections.length > 0) {
+      container.appendChild(
         section(
           "Collections it will create",
           el(
             "div",
             { class: "row" },
             ...spec.collections.map((c) =>
-              el("span", { class: "chip", title: c.schema ? "With a schema" : "No schema", text: `${c.name} · ${engineLabel(c.engine)}` }),
+              el("span", {
+                class: "chip",
+                title: c.schema ? "With a schema" : "No schema",
+                text: `${c.name} · ${engineLabel(c.engine)}`,
+              }),
             ),
           ),
         ),
-    );
+      );
+    }
+
+    return container;
   }
 
   function enginePicker(): HTMLElement {

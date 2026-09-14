@@ -516,12 +516,13 @@ export interface SidebarHandles {
 }
 
 export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: string) => void): SidebarHandles {
+  void onNewNode;
   const tree = el("div", { class: "stack", role: "tree", "aria-label": "Devices and nodes" });
 
   const searchInput = el("input", {
     class: "sidebar__search-input",
     type: "search",
-    placeholder: "Filter nodes or collections…",
+    placeholder: "Search nodes or collections…",
     "aria-label": "Filter storage",
   }) as HTMLInputElement;
 
@@ -537,43 +538,94 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     searchInput,
   );
 
-  const navRow = el(
-    "div",
-    { class: "sidebar__nav-row", style: "display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: var(--space-xs);" },
-    (() => {
-      const dropBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "justify-content: center;" }, "📥 Dropbox");
-      on(dropBtn, "click", () => store.select({ kind: "dropbox" }));
-      return dropBtn;
-    })(),
-    (() => {
-      const consoleBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "justify-content: center;" }, "⚡ Console");
-      on(consoleBtn, "click", () => {
-        const sel = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-        store.select({ kind: "console", nodeId: sel });
-      });
-      return consoleBtn;
-    })(),
-  );
+  const pinnedNav = el("div", { class: "sidebar__pinned-nav", role: "navigation", "aria-label": "Primary views" });
 
   const element = el(
     "aside",
     { class: "sidebar", "data-open": "false" },
-    el(
-      "div",
-      { class: "row row--between", style: "margin-bottom: var(--space-xs);" },
-      el("span", { class: "tree__group-label", text: "Topology" }),
-      (() => {
-        const button = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.plus, 13), "New");
-        on(button, "click", onNewNode);
-        return button;
-      })(),
-    ),
-    navRow,
+    pinnedNav,
     searchBox,
     tree,
   );
 
+  function renderPinnedNav(): HTMLElement {
+    const sel = store.state.selection;
+    const isMeshSelected = sel.kind === "none" || sel.kind === "node";
+    const isDropboxSelected = sel.kind === "dropbox";
+    const isConsoleSelected = sel.kind === "console";
+    const isLedgerSelected = sel.kind === "ledger";
+
+    const meshBtn = el(
+      "button",
+      {
+        class: "tree__row sidebar__pinned-item",
+        type: "button",
+        "aria-selected": String(isMeshSelected),
+      },
+      icon(Icons.mesh, 14),
+      el("span", { class: "tree__label", text: "Mesh Map" }),
+      el("span", { class: "tree__meta", text: store.state.canvasMode }),
+    );
+    on(meshBtn, "click", () => {
+      const first = store.selectedNode() ?? store.dataNodes()[0];
+      store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+    });
+
+    const dropBtn = el(
+      "button",
+      {
+        class: "tree__row sidebar__pinned-item",
+        type: "button",
+        "aria-selected": String(isDropboxSelected),
+      },
+      icon(Icons.inbox, 14),
+      el("span", { class: "tree__label", text: "Dropbox" }),
+    );
+    on(dropBtn, "click", () => store.select({ kind: "dropbox" }));
+
+    const consoleBtn = el(
+      "button",
+      {
+        class: "tree__row sidebar__pinned-item",
+        type: "button",
+        "aria-selected": String(isConsoleSelected),
+      },
+      icon(Icons.terminal, 14),
+      el("span", { class: "tree__label", text: "Console" }),
+    );
+    on(consoleBtn, "click", () => {
+      const activeNode = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+      store.select({ kind: "console", nodeId: activeNode });
+    });
+
+    const ledgerBtn = el(
+      "button",
+      {
+        class: "tree__row sidebar__pinned-item",
+        type: "button",
+        "aria-selected": String(isLedgerSelected),
+      },
+      icon(Icons.ledger, 14),
+      el("span", { class: "tree__label", text: "Ledger Feed" }),
+    );
+    on(ledgerBtn, "click", () => {
+      const activeNode = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+      if (activeNode) store.select({ kind: "ledger", nodeId: activeNode });
+    });
+
+    return el(
+      "div",
+      { class: "stack", style: "gap: 2px; margin-bottom: var(--space-sm);" },
+      meshBtn,
+      dropBtn,
+      consoleBtn,
+      ledgerBtn,
+    );
+  }
+
   function render(): void {
+    replace(pinnedNav, renderPinnedNav());
+
     const groups = buildGroups();
     const tip = meshTip();
     const children: (Node | string)[] = [];

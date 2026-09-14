@@ -95,6 +95,25 @@ struct WalRecord {
   std::string prev_hash;       // 32 raw bytes; chain link (zero bytes for genesis)
   std::string entry_hash;      // 32 raw bytes; SHA-256(content || prev_hash)
 
+  // -- transit routing metadata (TRANSIT_INTENT only) ----------------------
+  // Which holder is keeping the bytes, how big the document is, and which
+  // chunk of it this intent names. Serialized AFTER entry_hash as an
+  // unsigned envelope extension: old readers verify the chain over the
+  // signed content above (which is unchanged) and ignore the tail, while
+  // new readers learn whom to ask without querying every peer.
+  //
+  // Unsigned is deliberate, not an oversight. The security-critical fields
+  // (key_hash, collection/key) stay inside the signed content; a holder
+  // that tampers with the tail can only misdirect the owner to a peer with
+  // no bytes (detected: key_hash verification on claim fails or the bytes
+  // never arrive) -- never to silently wrong bytes, which the claim-time
+  // key_hash check rules out. Misdirection degrades to the ask-everyone
+  // fallback and gossip convergence, exactly as if no intent existed.
+  std::string transit_holder;        // node_id holding the bytes; empty if unknown
+  uint64_t transit_size_bytes = 0;   // full document size, not just this chunk
+  uint32_t transit_chunk_index = 0;  // 0-based; 0 with total 1 == whole document
+  uint32_t transit_chunk_total = 1;
+
   bool IsTransit() const {
     return type == WalRecordType::kTransitIntent || type == WalRecordType::kTransitClaimed;
   }
@@ -105,6 +124,13 @@ struct WalRecord {
 // too (to match an incoming INTENT against a local key) and the two must
 // agree exactly.
 std::string LedgerKeyHash(const std::string& collection, const std::string& key);
+
+// Derives the per-chunk key hash for a striped transit envelope:
+// SHA-256(doc_key_hash || 0x00 || big-endian chunk_index). Chunk intent/claimed
+// pairs match on these exactly like whole-document pairs match on the doc
+// hash, so checkpoint pair-matching needs no chunk awareness. The 0x00
+// separator follows the same discipline as LedgerKeyHash.
+std::string TransitChunkKeyHash(const std::string& doc_key_hash, uint32_t chunk_index);
 
 class WriteAheadLog {
  public:
@@ -125,6 +151,18 @@ class WriteAheadLog {
     // Transit ops name the node the bytes are being held for; ignored for
     // PUT/DEL/CHECKPOINT.
     std::string transit_owner;
+    // Routing metadata stamped onto TRANSIT_INTENT records (see WalRecord).
+    // Ignored for all other op types.
+    std::string transit_holder;
+    uint64_t transit_size_bytes;
+    uint32_t transit_chunk_index;
+    uint32_t transit_chunk_total;
+    // Explicit constructor rather than default member initializers: this
+    // struct is used as a defaulted function argument (`= {}` below) inside
+    // the enclosing class body, where NSDMIs on a nested struct are not
+    // accepted by every compiler this tree builds with.
+    AppendOptions()
+        : transit_size_bytes(0), transit_chunk_index(0), transit_chunk_total(1) {}
   };
 
   // Appends a record and fsyncs before returning -- this is the durability

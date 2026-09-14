@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
@@ -48,7 +49,14 @@ Status NetworkManager::Start() {
   }
   dedup_ = std::make_unique<MessageDedup>();
   broadcast_pool_ = std::make_unique<WorkerPool>(config_.max_peer_threads,
-                                                  config_.max_peer_threads * 64);
+                                                   config_.max_peer_threads * 64);
+  // Liveness probes get their own bounded pool: a write burst must never
+  // starve failure detection, and a mesh full of silent peers must never
+  // starve eager broadcast. Four threads is plenty -- probes are short
+  // request/response exchanges, and the pool only bounds concurrency, not
+  // the peer count (overflow drops with a counter, counted in ProbeStats).
+probe_pool_ = std::make_unique<WorkerPool>(4, 64);
+  receipt_tracker_ = std::make_unique<ReceiptTracker>();
 
   PlacementOptions placement_opts;
   placement_opts.replication_factor = config_.replication_factor;
@@ -145,6 +153,7 @@ void NetworkManager::Stop() {
   if (gossip_) gossip_->Stop();
   if (discovery_) discovery_->Stop();
   if (broadcast_pool_) broadcast_pool_->Stop();
+  if (probe_pool_) probe_pool_->Stop();
   if (transport_) transport_->Stop();
 }
 
@@ -181,11 +190,19 @@ WireMessage NetworkManager::HandleRequest(const std::string& peer_node_id,
       case MessageType::kOpBroadcast:
         return HandleOpBroadcast(peer_node_id, OpBroadcastPayload::Decode(request.payload));
       case MessageType::kTransitQuery:
-        return HandleTransitQuery(peer_node_id);
+        // Old peers send an empty query (no cursor); Decode maps that to
+        // offset 0, so they keep working unchanged.
+        return HandleTransitQuery(peer_node_id, TransitQueryPayload::Decode(request.payload));
       case MessageType::kTransitClaim:
         return HandleTransitClaim(peer_node_id, TransitClaimPayload::Decode(request.payload));
       case MessageType::kLedgerDigest:
         return HandleLedgerDigest(peer_node_id, LedgerDigestPayload::Decode(request.payload));
+      case MessageType::kHeartbeat:
+        return HandleHeartbeat(peer_node_id, HeartbeatPayload::Decode(request.payload));
+      case MessageType::kTransitHeld:
+        // A holder confirms it has stored bytes for an offline owner.
+        // The holder is the authenticated peer; we just log it.
+        return HandleTransitHeld(peer_node_id, TransitHeldPayload::Decode(request.payload));
       case MessageType::kPing:
         return WireMessage{MessageType::kPong, engine_->identity().node_id()};
       default:
@@ -283,13 +300,27 @@ WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
   return WireMessage{MessageType::kPong, ""};
 }
 
-WireMessage NetworkManager::HandleTransitQuery(const std::string& peer_node_id) {
+WireMessage NetworkManager::HandleTransitQuery(const std::string& peer_node_id,
+                                                const TransitQueryPayload& query) {
   TransitResponsePayload response;
   // The requester is the handshake-authenticated peer, so it can only ever
   // ask for bytes held for *itself*. There is no owner field in the query
   // for exactly that reason.
   constexpr size_t kMaxEntriesPerResponse = 256;
-  for (const TransitEnvelope& envelope : engine_->PendingTransitFor(peer_node_id)) {
+  // Stable order (intent_lsn) so the offset cursor stays meaningful across
+  // calls: page N always resumes where page N-1 stopped, even as new
+  // envelopes arrive (they append at higher LSNs, behind the cursor).
+  std::vector<TransitEnvelope> pending = engine_->PendingTransitFor(peer_node_id);
+  std::sort(pending.begin(), pending.end(),
+            [](const TransitEnvelope& a, const TransitEnvelope& b) {
+              return a.intent_lsn < b.intent_lsn;
+            });
+  size_t skipped = 0;
+  for (const TransitEnvelope& envelope : pending) {
+    if (skipped < query.offset) {
+      ++skipped;
+      continue;
+    }
     if (response.entries.size() >= kMaxEntriesPerResponse) {
       response.truncated = true;
       break;
@@ -301,17 +332,21 @@ WireMessage NetworkManager::HandleTransitQuery(const std::string& peer_node_id) 
     entry.encoded_doc = envelope.encoded_doc;
     entry.intent_lsn = envelope.intent_lsn;
     entry.holder_node = envelope.holder_node;
+    entry.doc_size_bytes = envelope.doc_size_bytes;
+    entry.chunk_index = envelope.chunk_index;
+    entry.chunk_total = envelope.chunk_total;
     response.entries.push_back(std::move(entry));
   }
+  response.next_offset = query.offset + response.entries.size();
   if (!response.entries.empty()) {
     DSN_LOG_INFO("transit", "serving " << response.entries.size() << " held document(s) to returning "
-                                        << peer_node_id);
+                                        << peer_node_id << " (offset " << query.offset << ")");
   }
   return WireMessage{MessageType::kTransitResponse, response.Encode()};
 }
 
 WireMessage NetworkManager::HandleTransitClaim(const std::string& peer_node_id,
-                                                const TransitClaimPayload& claim) {
+                                                 const TransitClaimPayload& claim) {
   // The claimer is the authenticated peer, not whatever the payload says --
   // otherwise any peer could claim on another's behalf and cause its held
   // bytes to be released.
@@ -321,6 +356,18 @@ WireMessage NetworkManager::HandleTransitClaim(const std::string& peer_node_id,
     if (st.ok()) ++recorded;
   }
   DSN_LOG_INFO("transit", "recorded " << recorded << " claim(s) from " << peer_node_id);
+  return WireMessage{MessageType::kPong, ""};
+}
+
+WireMessage NetworkManager::HandleTransitHeld(const std::string& peer_node_id,
+                                               const TransitHeldPayload& held) {
+  // The holder (peer_node_id) confirms it has stored bytes for an offline
+  // owner. We verify the signature and log it. The held-ack is primarily
+  // for the writer's durability tracking -- the receipt_tracker will pick
+  // it up if it matches a pending message_id. Here we just log.
+  DSN_LOG_INFO("transit", "held-ack from " << peer_node_id
+                                            << " for key_hash " << HexEncode(held.key_hash)
+                                            << " intent_lsn=" << held.intent_lsn);
   return WireMessage{MessageType::kPong, ""};
 }
 
@@ -351,6 +398,10 @@ WireMessage NetworkManager::HandleLedgerDigest(const std::string& peer_node_id,
     summary.origin_signature = rec.origin_signature;
     summary.hlc_physical_ms = static_cast<int64_t>(rec.hlc.physical_ms);
     summary.hlc_logical = rec.hlc.logical;
+    summary.transit_holder = rec.transit_holder;
+    summary.transit_size_bytes = rec.transit_size_bytes;
+    summary.transit_chunk_index = rec.transit_chunk_index;
+    summary.transit_chunk_total = rec.transit_chunk_total;
     // The hash-only property: a peer that is not a reader of the collection
     // still receives the entry hash, the chain links and the origin
     // signature -- everything it needs to verify the chain -- but neither
@@ -365,6 +416,105 @@ WireMessage NetworkManager::HandleLedgerDigest(const std::string& peer_node_id,
     response.entries.push_back(std::move(summary));
   }
   return WireMessage{MessageType::kLedgerDelta, response.Encode()};
+}
+
+HeartbeatPayload NetworkManager::OwnHeartbeat() const {
+  HeartbeatPayload hb;
+  hb.node_id = engine_->identity().node_id();
+  hb.ledger_tip_entry_id = engine_->LedgerTip().entry_id;
+  const StorageEngine::QuotaStatus quota = engine_->Quota();
+  hb.quota_limited = quota.limit_bytes > 0;
+  hb.free_quota_mb =
+      quota.limit_bytes > quota.used_bytes ? (quota.limit_bytes - quota.used_bytes) / (1024 * 1024) : 0;
+  hb.transit_bytes_held = engine_->transit().BytesHeld();
+  hb.transit_budget_bytes = config_.quota_split.TransitBytes(config_.quota_mb);
+  // Self-assessed servability, not lifecycle: a node serving heartbeats is
+  // alive; it reports degraded only when its own quota says writes would
+  // fail. Lifecycle transitions stay supervisor-driven.
+  hb.lifecycle_state = static_cast<uint8_t>(
+      quota.over_limit ? NodeLifecycleState::kDegraded : NodeLifecycleState::kRunning);
+  return hb;
+}
+
+WireMessage NetworkManager::HandleHeartbeat(const std::string& peer_node_id,
+                                            const HeartbeatPayload& request) {
+  // One round trip updates both sides: fold the requester's figures in,
+  // answer with our own. Advisory only -- see the header comment.
+  peer_table_.RecordReport(peer_node_id, request.ledger_tip_entry_id, request.free_quota_mb,
+                           request.quota_limited, request.transit_bytes_held,
+                           request.transit_budget_bytes);
+  return WireMessage{MessageType::kHeartbeat, OwnHeartbeat().Encode()};
+}
+
+void NetworkManager::ProbePeer(PeerInfo peer) {
+  const std::string self = engine_->identity().node_id();
+  if (peer.p2p_port == 0 || peer.node_id == self) return;
+  const int64_t threshold =
+      config_.liveness_threshold_ms > 0 ? static_cast<int64_t>(config_.liveness_threshold_ms) : 5000;
+
+  const int64_t started = MonotonicMs();
+  auto response = transport_->SendRequest(peer.host, peer.p2p_port,
+                                          WireMessage{MessageType::kHeartbeat, OwnHeartbeat().Encode()});
+
+  // Mixed-version fallback: a v1 peer answers kHeartbeat with kError (no
+  // such message type). It is alive but speaks the old protocol -- fall
+  // back to kPing rather than condemning it for that. Only old peers pay
+  // the second round trip.
+  std::string proven_id;
+  bool legacy = false;
+  if (response.ok() && response.value().type == MessageType::kError) {
+    legacy = true;
+    response = transport_->SendRequest(peer.host, peer.p2p_port, WireMessage{MessageType::kPing, ""});
+  }
+  const double rtt = static_cast<double>(MonotonicMs() - started);
+  const bool ok = response.ok() && (response.value().type == MessageType::kHeartbeat ||
+                                    (legacy && response.value().type == MessageType::kPong));
+  peer_table_.RecordProbe(peer.node_id, rtt, ok);
+  if (!ok) {
+    // Slow condemn, matching the graded tiers: a single failed probe makes
+    // a peer suspect (its score already drops via success_rate); only a
+    // dead reading -- silent past 3x threshold or persistently failing --
+    // flips lifecycle state, which is what excludes it from placement.
+    PeerInfo current;
+    if (peer_table_.Get(peer.node_id, &current) &&
+        current.Suspicion(NowMs(), threshold) == PeerSuspicion::kDead) {
+      peer_table_.SetState(peer.node_id, NodeLifecycleState::kDegraded);
+    }
+    return;
+  }
+
+  std::string key = peer.node_id;
+  if (!legacy) {
+    try {
+      const HeartbeatPayload hb = HeartbeatPayload::Decode(response.value().payload);
+      peer_table_.RecordReport(peer.node_id, hb.ledger_tip_entry_id, hb.free_quota_mb,
+                               hb.quota_limited, hb.transit_bytes_held, hb.transit_budget_bytes);
+      proven_id = hb.node_id;
+    } catch (const std::exception&) {
+      // Reachable but garbled: liveness counts (last_seen_ms below), the
+      // figures don't. A peer whose heartbeats never decode keeps its old
+      // fitness numbers, which is the honest reading of "no new data".
+    }
+  } else {
+    // The kPing response carries the responder's handshake-proven node_id,
+    // so a successful legacy probe is also an identification: retire a
+    // `bootstrap#host:port` placeholder under the real identity. Trusted
+    // because it arrived over the authenticated channel (same reasoning as
+    // the old ping loop).
+    proven_id = response.value().payload;
+  }
+  if (!proven_id.empty() && proven_id != key) {
+    if (peer_table_.AdoptIdentity(key, proven_id)) key = proven_id;
+  }
+  PeerInfo seen;
+  if (!peer_table_.Get(key, &seen)) seen = peer;
+  seen.node_id = key;
+  seen.last_seen_ms = NowMs();
+  // Fast recovery, slow condemn: one answered probe clears a degraded
+  // marking (the peer proved it is back); condemning takes sustained
+  // failure via the suspicion tiers above.
+  if (seen.state == NodeLifecycleState::kDegraded) seen.state = NodeLifecycleState::kRunning;
+  peer_table_.Upsert(seen);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,11 +534,30 @@ void NetworkManager::FanOut(const OpBroadcastPayload& payload, const std::string
     const uint16_t port = peer.p2p_port;
     const std::string node_id = peer.node_id;
     TcpTransport* transport = transport_.get();
-    const bool queued = broadcast_pool_->Submit([this, transport, host, port, node_id, msg]() {
+    const bool queued = broadcast_pool_->Submit([this, transport, host, port, node_id, msg, payload]() {
       const int64_t started = MonotonicMs();
       auto result = transport->SendRequest(host, port, msg);
       peer_table_.RecordProbe(node_id, static_cast<double>(MonotonicMs() - started), result.ok());
-      if (result.ok()) broadcasts_sent_.fetch_add(1);
+      if (result.ok()) {
+        broadcasts_sent_.fetch_add(1);
+        // Check for a merge receipt in the kPong response.
+        if (result.value().type == MessageType::kPong) {
+          try {
+            const MergeReceipt receipt = MergeReceipt::Decode(result.value().payload);
+            // Verify the signature matches the applier's public key.
+            const std::string public_key = ResolvePublicKey(receipt.applier_node);
+            if (!public_key.empty() && NodeIdentity::DeriveNodeId(public_key) == receipt.applier_node) {
+              const std::string message = receipt.message_id + receipt.key_hash +
+                                          std::to_string(receipt.applied_lsn);
+              if (NodeIdentity::Verify(public_key, message, receipt.signature)) {
+                if (receipt_tracker_) receipt_tracker_->NoteReceipt(receipt);
+              }
+            }
+          } catch (const std::exception&) {
+            // Not a receipt (e.g., legacy kPong with node_id string), ignore.
+          }
+        }
+      }
     });
     if (!queued) {
       // Dropping an eager push is safe: gossip anti-entropy is the
@@ -446,20 +615,87 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
   std::vector<std::string> candidates = plan.displaced_owners;
   candidates.insert(candidates.end(), plan.replicas.begin(), plan.replicas.end());
 
+  const std::string self = engine_->identity().node_id();
+  const uint32_t max_holders =
+      config_.transit_max_holders > 0 ? config_.transit_max_holders : 3;
+  const int64_t threshold = config_.liveness_threshold_ms > 0
+                                ? static_cast<int64_t>(config_.liveness_threshold_ms)
+                                : 5000;
+
+  // Holder candidates: this node plus every dialable peer. Mirrors the
+  // placement ring's exclusions (no supervisors, no reclaimed nodes, no
+  // un-handshaked placeholders) and additionally skips dead-suspicion peers
+  // -- a holder that cannot be reached cannot serve the bytes back. Ranked
+  // deterministically per (owner, key) by SelectTransitHolders, so every
+  // replica independently picks the same top-H without a coordination round.
+  std::vector<std::string> holder_candidates;
+  holder_candidates.push_back(self);
+  for (const PeerInfo& peer : peer_table_.List()) {
+    if (peer.node_id == self || peer.p2p_port == 0) continue;
+    if (peer.node_id.rfind("bootstrap#", 0) == 0) continue;
+    if (peer.is_supervisor) continue;
+    if (peer.state == NodeLifecycleState::kReclaimed) continue;
+    if (peer.Suspicion(now, threshold) == PeerSuspicion::kDead) continue;
+    holder_candidates.push_back(peer.node_id);
+  }
+
+  const std::string doc_key_hash = LedgerKeyHash(collection, key);
+  const uint32_t chunk_total =
+      TransitChunkCount(encoded_doc.size(), config_.transit_chunk_bytes);
+
   for (const std::string& replica : candidates) {
-    if (replica == engine_->identity().node_id()) continue;
+    if (replica == self) continue;
     PeerInfo info;
     if (!peer_table_.Get(replica, &info)) continue;
     const bool unreachable = info.last_seen_ms == 0 || (now - info.last_seen_ms) > stale_ms ||
                              info.state == NodeLifecycleState::kDegraded;
     if (!unreachable) continue;
-    // This replica should hold these bytes but cannot be reached. Hold them
-    // here and record the intent, so the owner discovers them on return
-    // instead of the write simply never arriving.
-    Status st = engine_->HoldForOfflineOwner(replica, collection, key, encoded_doc);
+    // This replica should hold these bytes but cannot be reached. Hold the
+    // chunks this node is assigned by deterministic rank -- at most
+    // max_holders copies mesh-wide instead of one per online replica -- and
+    // record the intent, so the owner discovers them on return instead of
+    // the write simply never arriving. Chunks rotate across holders, so a
+    // striped document spreads rather than stacking on the same top-H.
+    std::vector<uint32_t> my_chunks;
+    for (uint32_t c = 0; c < chunk_total; ++c) {
+      const std::vector<std::string> holders = SelectTransitHolders(
+          replica, doc_key_hash, holder_candidates, max_holders, c);
+      if (std::find(holders.begin(), holders.end(), self) != holders.end()) {
+        my_chunks.push_back(c);
+      }
+    }
+    if (my_chunks.empty()) continue;  // not in any chunk's holder set
+    Status st = engine_->HoldForOfflineOwner(replica, collection, key, encoded_doc, &my_chunks);
     if (!st.ok()) {
       DSN_LOG_WARN("transit", "could not hold bytes for offline owner " << replica << ": "
                                                                         << st.message());
+      continue;
+    }
+    // Send held-ack to the writer (the offline owner) so they can count it
+    // toward their durability target. The intent LSNs were just appended
+    // with our holder_node; fetch them and send a signed ack per chunk.
+    auto intents = engine_->TransitIntentsForSelf();
+    for (const auto& intent : intents) {
+      // TransitIntentsForSelf already filters to intents where collection == self.
+      // Check if this intent is for one of our chunks.
+      bool is_ours = false;
+      for (uint32_t c : my_chunks) {
+        if (intent.chunk_index == c) { is_ours = true; break; }
+      }
+      if (!is_ours) continue;
+      // Send held-ack to the writer (replica is the owner_node)
+      PeerInfo holder_info;
+      if (!peer_table_.Get(replica, &holder_info) || holder_info.p2p_port == 0) continue;
+      TransitHeldPayload held;
+      held.message_id = "";  // TODO: track message_id from broadcast
+      held.key_hash = intent.key_hash;
+      held.holder_node = self;
+      held.intent_lsn = intent.intent_lsn;
+      // Sign the held-ack
+      const std::string message = held.message_id + held.key_hash + std::to_string(held.intent_lsn);
+      held.signature = engine_->identity().Sign(message);
+      transport_->SendRequest(holder_info.host, holder_info.p2p_port,
+                              WireMessage{MessageType::kTransitHeld, held.Encode()});
     }
   }
 }
@@ -468,8 +704,92 @@ NetworkManager::ClaimReport NetworkManager::ClaimPendingTransit() {
   ClaimReport report;
   const std::string self = engine_->identity().node_id();
 
+  // Phase 1: targeted claim from locally-synced TRANSIT_INTENTs.
+  // The ledger entries naming this node as owner tell us exactly which
+  // holders have bytes for us and which chunks they hold. We query them
+  // directly instead of polling all peers.
+  const std::vector<NodeEngine::TransitIntent> local_intents = engine_->TransitIntentsForSelf();
+  if (!local_intents.empty()) {
+    DSN_LOG_INFO("transit", "targeted claim: found " << local_intents.size()
+                                                     << " local intent(s) naming us as owner");
+    // Group intents by holder to make one query per holder.
+    std::map<std::string, std::vector<NodeEngine::TransitIntent>> by_holder;
+    for (const auto& intent : local_intents) {
+      if (!intent.holder_node.empty()) by_holder[intent.holder_node].push_back(intent);
+    }
+    for (const auto& [holder, intents] : by_holder) {
+      if (holder == self) continue;  // can't hold for self
+      PeerInfo holder_info;
+      if (!peer_table_.Get(holder, &holder_info)) continue;
+      if (holder_info.p2p_port == 0) continue;
+
+      // Build a targeted query for just these chunks. The holder's
+      // TransitQuery supports offset, but since we know exactly which
+      // intents we want, we can ask for them in batches.
+      uint64_t offset = 0;
+      while (true) {
+        TransitQueryPayload query;
+        query.offset = offset;
+        auto response = transport_->SendRequest(holder_info.host, holder_info.p2p_port,
+                                                WireMessage{MessageType::kTransitQuery, query.Encode()});
+        ++report.peers_asked;
+        if (!response.ok() || response.value().type != MessageType::kTransitResponse) {
+          ++report.failures;
+          break;
+        }
+        TransitResponsePayload payload;
+        try {
+          payload = TransitResponsePayload::Decode(response.value().payload);
+        } catch (const std::exception&) {
+          ++report.failures;
+          break;
+        }
+        if (payload.entries.empty()) break;
+
+        TransitClaimPayload claim;
+        claim.claimer_node = self;
+        bool any = false;
+        for (const TransitEntry& entry : payload.entries) {
+          if (LedgerKeyHash(entry.collection, entry.key) != entry.key_hash) {
+            DSN_LOG_WARN("transit", "holder " << holder << " returned an entry whose key does not "
+                                              << "match its key_hash; ignoring");
+            ++report.failures;
+            continue;
+          }
+          Status st = engine_->ApplyClaimedTransit(entry.collection, entry.key, entry.encoded_doc);
+          if (!st.ok()) {
+            DSN_LOG_WARN("transit", "could not apply held document " << entry.collection << "/"
+                                                                      << entry.key << ": " << st.message());
+            ++report.failures;
+            continue;
+          }
+          claim.key_hashes.push_back(entry.key_hash);
+          ++report.documents_claimed;
+          any = true;
+        }
+        if (any) {
+          transport_->SendRequest(holder_info.host, holder_info.p2p_port,
+                                  WireMessage{MessageType::kTransitClaim, claim.Encode()});
+        }
+        if (!payload.truncated) break;
+        offset = payload.next_offset;
+      }
+    }
+  }
+
+  // Phase 2: fallback ask-everyone sweep for any holders not captured
+  // by local intents (e.g., intents from a peer we haven't synced with
+  // yet, or a new holder since our last gossip round).
   for (const PeerInfo& peer : peer_table_.Ranked()) {
     if (peer.p2p_port == 0 || peer.node_id == self) continue;
+    // Skip holders we already queried in Phase 1.
+    if (!local_intents.empty()) {
+      bool skip = false;
+      for (const auto& intent : local_intents) {
+        if (intent.holder_node == peer.node_id) { skip = true; break; }
+      }
+      if (skip) continue;
+    }
     ++report.peers_asked;
 
     auto response = transport_->SendRequest(peer.host, peer.p2p_port,
@@ -496,7 +816,7 @@ NetworkManager::ClaimReport NetworkManager::ClaimPendingTransit() {
       // otherwise be applied verbatim.
       if (LedgerKeyHash(entry.collection, entry.key) != entry.key_hash) {
         DSN_LOG_WARN("transit", "holder " << peer.node_id << " returned an entry whose key does not "
-                                           << "match its key_hash; ignoring");
+                                            << "match its key_hash; ignoring");
         ++report.failures;
         continue;
       }
@@ -570,48 +890,79 @@ std::vector<ReplicaTip> NetworkManager::CollectReplicaTips() {
 }
 
 void NetworkManager::ProbeLoop() {
-  // Periodic liveness + capacity probing. Deliberately separate from gossip:
-  // a gossip round only touches a couple of peers, while fitness needs a view
-  // of everyone, and a probe is far cheaper than a digest exchange.
+  // Decoupled liveness, in two lanes. Deliberately separate from gossip: a
+  // gossip round only touches a couple of peers, while fitness needs a view
+  // of everyone, and a heartbeat is far cheaper than a digest exchange.
+  //
+  //   * **Fast lane (passive-first).** The loop thread only compares
+  //     timestamps; an RPC is spent solely on peers with nothing heard from
+  //     in the last liveness_threshold_ms. Gossip, discovery and handshakes
+  //     all refresh last_seen_ms for free, so a healthy mesh costs almost no
+  //     active probes.
+  //   * **Slow lane (measured sweep).** Every fitness_probe_interval_ms each
+  //     dialable peer gets a full timed heartbeat, refreshing RTT even for
+  //     chatty peers whose last_seen_ms is fresh from passive traffic.
+  //
+  // All RPCs run on the bounded probe pool -- the loop thread never blocks
+  // on a peer, so one hung node costs a pool slot instead of stalling
+  // placement rebuilds, outbox flushes and every other peer's liveness.
+  const int64_t threshold = config_.liveness_threshold_ms > 0
+                                ? static_cast<int64_t>(config_.liveness_threshold_ms)
+                                : 5000;
+  const int64_t sweep_interval = config_.fitness_probe_interval_ms > 0
+                                     ? static_cast<int64_t>(config_.fitness_probe_interval_ms)
+                                     : 20000;
+  // Check often enough to notice a silence promptly, seldom enough that the
+  // check itself is noise: a quarter of the threshold, clamped.
+  const uint32_t fast_tick_ms =
+      static_cast<uint32_t>(std::max<int64_t>(100, std::min<int64_t>(threshold / 4, 2000)));
+  const int64_t stale_ms = StaleThresholdMs(config_);
+  const std::string self = engine_->identity().node_id();
+
+  int64_t last_slow_sweep = 0;
   int64_t last_outbox_flush = 0;
   while (running_) {
-    const int64_t deadline = MonotonicMs() + config_.discovery_interval_ms * 2;
+    const int64_t now = NowMs();
+    std::unordered_set<std::string> submitted;
+
+    auto submit_probe = [this, &submitted](const PeerInfo& peer) {
+      if (!running_ || peer.p2p_port == 0) return;
+      if (!submitted.insert(peer.node_id).second) return;  // already queued this tick
+      const bool queued = probe_pool_->Submit([this, peer]() { ProbePeer(peer); });
+      if (!queued) {
+        // Dropping a probe is safe: the peer stays at its current suspicion
+        // tier and is retried next tick. Counted in ProbeStats so a
+        // saturated pool reads as pool pressure, never as peer failure.
+        DSN_LOG_DEBUG("network", "probe pool full; skipping probe of " << peer.node_id);
+      }
+    };
+
     bool had_reachable_peer = false;
     for (const PeerInfo& peer : peer_table_.List()) {
       if (!running_) break;
-      if (peer.p2p_port == 0) continue;
-      const int64_t started = MonotonicMs();
-      auto response = transport_->SendRequest(peer.host, peer.p2p_port,
-                                               WireMessage{MessageType::kPing, ""});
-      const double rtt = static_cast<double>(MonotonicMs() - started);
-      const bool ok = response.ok() && response.value().type == MessageType::kPong;
-      peer_table_.RecordProbe(peer.node_id, rtt, ok);
-      if (ok) {
+      if (peer.p2p_port == 0 || peer.node_id == self) continue;
+      if (peer.last_seen_ms != 0 && now - peer.last_seen_ms <= stale_ms) {
         had_reachable_peer = true;
-        // The kPing response carries the responder's handshake-proven
-        // node_id, so a successful probe is also an identification: retire a
-        // `bootstrap#host:port` placeholder under the real identity. The id
-        // is trusted because it arrived over the authenticated channel, not
-        // because the peer claims it.
-        const std::string proven = response.value().payload;
-        std::string key = peer.node_id;
-        if (!proven.empty() && proven != key) {
-          if (peer_table_.AdoptIdentity(key, proven)) key = proven;
-        }
-        PeerInfo seen;
-        if (!peer_table_.Get(key, &seen)) seen = peer;
-        seen.node_id = key;
-        seen.last_seen_ms = NowMs();
-        if (seen.state == NodeLifecycleState::kDegraded) seen.state = NodeLifecycleState::kRunning;
-        peer_table_.Upsert(seen);
-      } else if (peer.state == NodeLifecycleState::kRunning) {
-        peer_table_.SetState(peer.node_id, NodeLifecycleState::kDegraded);
+      }
+      // Fast lane: only spend an RPC on silence. Fresh peers cost nothing.
+      if (peer.last_seen_ms == 0 || now - peer.last_seen_ms > threshold) {
+        submit_probe(peer);
+      }
+    }
+
+    // Slow lane: full measured sweep at the relaxed cadence, skipping peers
+    // the fast lane already queued this tick.
+    if (now - last_slow_sweep >= sweep_interval) {
+      last_slow_sweep = now;
+      for (const PeerInfo& peer : peer_table_.List()) {
+        if (!running_) break;
+        if (peer.p2p_port == 0 || peer.node_id == self) continue;
+        submit_probe(peer);
       }
     }
     RebuildPlacement();
 
     // Periodically flush the outbox when we have reachable peers.
-    const int64_t now = MonotonicMs();
     if (had_reachable_peer && now - last_outbox_flush >= 30000) {  // every 30s
       const size_t replayed = engine_->FlushOutbox();
       if (replayed > 0) {
@@ -620,8 +971,25 @@ void NetworkManager::ProbeLoop() {
       last_outbox_flush = now;
     }
 
+    const int64_t deadline = MonotonicMs() + fast_tick_ms;
     while (running_ && MonotonicMs() < deadline) SleepMs(100);
   }
+}
+
+std::string NetworkManager::ResolvePublicKey(const std::string& node_id) const {
+  PeerInfo info;
+  if (!peer_table_.Get(node_id, &info)) return std::string();
+  return info.ed25519_pubkey;
+}
+
+NetworkManager::ProbeStats NetworkManager::probe_stats() const {
+  ProbeStats stats;
+  if (probe_pool_) {
+    stats.completed = probe_pool_->completed();
+    stats.dropped = probe_pool_->dropped();
+    stats.queued = probe_pool_->queued();
+  }
+  return stats;
 }
 
 NetworkManager::BroadcastStats NetworkManager::broadcast_stats() const {

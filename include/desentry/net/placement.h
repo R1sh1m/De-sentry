@@ -96,6 +96,35 @@ struct PlacementPlan {
 std::string PlacementHashInput(const std::string& collection, const std::string& key,
                                 const std::string& shard_key_value);
 
+// Deterministic transit holder selection: which peers keep bytes for an
+// offline owner+key (docs/architecture-v2.md Sec 5.2, transit workstream).
+//
+// Every replica that sees a write for an unreachable owner runs this
+// locally with its own candidate list and holds iff its own id is in the
+// returned set -- no coordination round, no authority. The ranking is a pure
+// function of (owner, key_hash, candidate ids): SHA-256 with 0x00
+// separators (the same discipline as LedgerKeyHash), ordered by the first
+// eight bytes big-endian (the same idiom as HashToRing), ties broken by
+// node_id. Two nodes with the same candidate list pick the same holders on
+// every platform.
+//
+// `chunk_index` rotates the ranking for striped documents, so chunks spread
+// across holders instead of stacking on the same top-H. `max_holders` caps
+// the set (config transit_max_holders): a 50-node mesh holds a few copies,
+// not 50. Returns at most min(max_holders, candidates.size()).
+//
+// Imperfect agreement is safe by construction, not by assumption: candidate
+// lists may differ across nodes (different peer tables), so the mesh may
+// hold slightly more or fewer copies than H. Over-holding wastes bytes
+// bounded by quota + TTL + checkpoint release; under-holding only loses the
+// transit fast-path (gossip anti-entropy still converges the document).
+// Either way the intent ledger names the actual holders, so the returning
+// owner learns whom to ask.
+std::vector<std::string> SelectTransitHolders(const std::string& owner_node,
+                                              const std::string& doc_key_hash,
+                                              const std::vector<std::string>& candidates,
+                                              uint32_t max_holders, uint32_t chunk_index = 0);
+
 // Builds the ring from a peer table plus this node's own id, applying the
 // filters described in the header comment.
 struct PlacementOptions {

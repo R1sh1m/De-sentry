@@ -124,6 +124,8 @@ int main(int argc, char** argv) {
   engine_opts.engines = config.engines;
   engine_opts.default_engine = config.default_engine;
   engine_opts.transit_ttl_seconds = config.transit_ttl_seconds;
+  engine_opts.transit_budget_bytes = config.quota_split.TransitBytes(config.quota_mb);
+  engine_opts.transit_chunk_bytes = config.transit_chunk_bytes;
   engine_opts.replication_factor = config.replication_factor;
   engine_opts.supervisor = config.supervisor;
 

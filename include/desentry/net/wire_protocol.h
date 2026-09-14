@@ -34,6 +34,12 @@ enum class MessageType : uint8_t {
   kTransitClaim = 10,    // "I applied these; you may release them after checkpoint"
   kLedgerDigest = 11,    // hash-only ledger convergence: my tip + recent entry hashes
   kLedgerDelta = 12,     // the entries the requester is missing, hashes-only if not a reader
+  // -- liveness ---------------------------------------------------------------
+  kHeartbeat = 13,  // graded-failure-detector heartbeat: my tip + load + servability
+  // -- receipts ---------------------------------------------------------------
+  kMergeReceipt = 14,  // signed merge receipt from a peer (carried in kPong)
+  // -- transit held-ack -------------------------------------------------------
+  kTransitHeld = 15,  // holder confirms it has stored bytes for an offline owner
 };
 
 const char* MessageTypeName(MessageType type);
@@ -111,13 +117,35 @@ struct TransitEntry {
   std::string collection;
   std::string key;
   std::string key_hash;     // 32 raw bytes
-  std::string encoded_doc;
+  std::string encoded_doc;  // one chunk's bytes when chunk_total > 1
   int64_t intent_lsn = -1;
   std::string holder_node;
+  // Striping (see TransitEnvelope): full document size plus this chunk's
+  // position. Whole documents read chunk_total == 1.
+  uint64_t doc_size_bytes = 0;
+  uint32_t chunk_index = 0;
+  uint32_t chunk_total = 1;
+};
+// "Are you holding anything for me?" The requester is the authenticated
+// peer, so no owner field: a node can only ever ask for its own bytes.
+// `offset` resumes a truncated listing (see TransitResponsePayload).
+struct TransitQueryPayload {
+  uint64_t offset = 0;  // envelopes to skip, in the holder's stable order
+  std::string Encode() const;
+  static TransitQueryPayload Decode(const std::string& bytes);
 };
 struct TransitResponsePayload {
   std::vector<TransitEntry> entries;
   bool truncated = false;  // more envelopes exist than fit in one response
+  // Resume cursor: pass as the next query's offset to continue the listing
+  // where this response stopped. Ordering is the holder's stable
+  // intent_lsn order, so a cursor stays meaningful across calls.
+  uint64_t next_offset = 0;
+  // Wire versioning: Encode prefixes a magic ("DTR2"); Decode branches to
+  // the v1 parse (no striping tail, no cursor) when it is absent, so old
+  // holders stay readable. Trailing-field tolerance would be unsound here:
+  // inside a repeated element a v1 entry followed by more entries is
+  // indistinguishable from a tailed v2 entry.
   std::string Encode() const;
   static TransitResponsePayload Decode(const std::string& bytes);
 };
@@ -128,6 +156,35 @@ struct TransitClaimPayload {
   std::string claimer_node;
   std::string Encode() const;
   static TransitClaimPayload Decode(const std::string& bytes);
+};
+
+// Holder confirms it has stored bytes for an offline owner (carried in
+// kTransitHeld). Sent from holder to writer so the writer can count it
+// toward its durability target when the owner is offline.
+struct TransitHeldPayload {
+  std::string message_id;       // the original broadcast's message_id
+  std::string key_hash;         // 32 raw bytes (doc or chunk hash)
+  std::string holder_node;      // node_id of the holder
+  int64_t intent_lsn = -1;      // LSN of the TRANSIT_INTENT on holder's ledger
+  std::string signature;        // Ed25519 over (message_id || key_hash || intent_lsn)
+  std::string Encode() const;
+  static TransitHeldPayload Decode(const std::string& bytes);
+};
+
+// Signed merge receipt: a peer acknowledges applying a local write.
+// Carried in the kPong response payload on the broadcast/fulfilment path
+// (kPing/kPong for liveness still carries just the node_id string, so
+// old peers and bootstrap adoption keep working). The two are
+// distinguished by message type: HandleOpBroadcast gets kPong with a
+// receipt; HandlePing gets kPong with a node_id.
+struct MergeReceipt {
+  std::string message_id;
+  std::string key_hash;       // 32 raw bytes
+  std::string applier_node;   // node_id of the peer that applied the merge
+  int64_t applied_lsn = -1;   // LSN on the applier's ledger
+  std::string signature;      // Ed25519 over (message_id || key_hash || applied_lsn)
+  std::string Encode() const;
+  static MergeReceipt Decode(const std::string& bytes);
 };
 
 // Hash-only ledger convergence. Peers exchange the SET of entry hashes they
@@ -159,12 +216,55 @@ struct LedgerEntrySummary {
   // collection. The gossip byte filter (net/gossip.cpp) is what strips them.
   std::string collection;
   std::string key;
+  // Transit routing metadata, meaningful on TRANSIT_INTENT entries: which
+  // holder keeps the bytes and which chunk this entry names. Carried for
+  // every peer (reader or not) -- like key_hash, it names bytes without
+  // disclosing them, and it is what lets a returning owner ask the right
+  // holder directly instead of querying the whole mesh.
+  std::string transit_holder;
+  uint64_t transit_size_bytes = 0;
+  uint32_t transit_chunk_index = 0;
+  uint32_t transit_chunk_total = 1;
 };
 struct LedgerDeltaPayload {
   std::vector<LedgerEntrySummary> entries;
   bool hashes_only = false;  // true when the requester is not a reader
+  // Wire versioning, same scheme as TransitResponsePayload: Encode prefixes
+  // a magic ("DLD2"); Decode branches to the v1 parse (entries end at key)
+  // when it is absent.
   std::string Encode() const;
   static LedgerDeltaPayload Decode(const std::string& bytes);
+};
+
+// Liveness heartbeat for the graded failure detector (net/peer.h
+// PeerSuspicion). Request and response share this shape: the requester sends
+// its own heartbeat and the responder replies with its own, so one round
+// trip updates both sides' liveness, ledger-height and load figures without
+// a second exchange. Runs over the authenticated channel, so node_id is the
+// handshake-proven identity, not a claim.
+//
+// Replaces kPing/kPong between current peers (kept for mixed-version
+// safety: an old peer answers kHeartbeat with kError, and the prober falls
+// back to kPing rather than marking it dead for speaking v1).
+struct HeartbeatPayload {
+  std::string node_id;  // sender's id; the responder's in the reply
+  int64_t ledger_tip_entry_id = -1;
+  uint64_t free_quota_mb = 0;
+  // True when the sender enforces a quota (limit_bytes > 0). An unlimited
+  // node reports free_quota_mb == 0 with quota_limited == false -- the same
+  // honesty rule as PeerFitness::quota_reported.
+  bool quota_limited = false;
+  // Transit-store load: bytes held for offline owners, and the budget they
+  // count against (0 == unbounded). Feeds holder-set sizing in the transit
+  // flow; advisory, never authoritative.
+  uint64_t transit_bytes_held = 0;
+  uint64_t transit_budget_bytes = 0;
+  // Self-assessed servability as a NodeLifecycleState byte (kRunning when
+  // serving normally, kDegraded when over quota). Informational for the mesh
+  // view; lifecycle transitions stay supervisor-driven, never inferred here.
+  uint8_t lifecycle_state = 3;
+  std::string Encode() const;
+  static HeartbeatPayload Decode(const std::string& bytes);
 };
 
 // -- Framing over a raw fd ------------------------------------------------

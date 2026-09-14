@@ -4,6 +4,7 @@
 
 #include "desentry/ledger/outbox_store.h"
 
+#include <algorithm>
 #include <fstream>
 
 #include "desentry/common/byte_buffer.h"

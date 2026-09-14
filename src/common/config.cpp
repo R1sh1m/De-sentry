@@ -74,6 +74,8 @@ NodeConfig NodeConfig::LoadFromFile(const std::string& path) {
   uint16_field("discovery_port", &cfg.discovery_port);
   uint32_field("discovery_interval_ms", &cfg.discovery_interval_ms);
   uint32_field("gossip_interval_ms", &cfg.gossip_interval_ms);
+  uint32_field("liveness_threshold_ms", &cfg.liveness_threshold_ms);
+  uint32_field("fitness_probe_interval_ms", &cfg.fitness_probe_interval_ms);
   uint32_field("buffer_pool_pages", &cfg.buffer_pool_pages);
   str_field("node_name", &cfg.node_name);
 
@@ -90,6 +92,8 @@ NodeConfig NodeConfig::LoadFromFile(const std::string& path) {
   str_field("default_engine", &cfg.default_engine);
   uint32_field("replication_factor", &cfg.replication_factor);
   uint32_field("transit_ttl_seconds", &cfg.transit_ttl_seconds);
+  uint32_field("transit_max_holders", &cfg.transit_max_holders);
+  uint32_field("transit_chunk_bytes", &cfg.transit_chunk_bytes);
   uint32_field("retention_days", &cfg.retention_days);
   bool_field("encrypt_at_rest", &cfg.encrypt_at_rest);
   str_field("keychain_ref", &cfg.keychain_ref);
@@ -157,6 +161,16 @@ std::string NodeConfig::Validate() const {
     return "default_engine \"" + default_engine + "\" is not listed in engines[]";
   }
   if (replication_factor == 0) return "replication_factor must be >= 1";
+  if (transit_max_holders == 0 || transit_max_holders > 16) {
+    return "transit_max_holders must be in [1, 16]";
+  }
+  // Chunks must stay far under the transit record cap (1MiB per envelope
+  // including framing), with room for envelope overhead on any doc shape.
+  if (transit_chunk_bytes < 4096 || transit_chunk_bytes > (1u << 20)) {
+    return "transit_chunk_bytes must be in [4096, 1048576]";
+  }
+  if (liveness_threshold_ms == 0) return "liveness_threshold_ms must be > 0";
+  if (fitness_probe_interval_ms == 0) return "fitness_probe_interval_ms must be > 0";
   return std::string();
 }
 
@@ -177,6 +191,9 @@ std::string NodeConfig::ToJson() const {
   o.emplace_back("bootstrap_peers", JsonValue(std::move(peers)));
 
   o.emplace_back("gossip_interval_ms", JsonValue(static_cast<int64_t>(gossip_interval_ms)));
+  o.emplace_back("liveness_threshold_ms", JsonValue(static_cast<int64_t>(liveness_threshold_ms)));
+  o.emplace_back("fitness_probe_interval_ms",
+                 JsonValue(static_cast<int64_t>(fitness_probe_interval_ms)));
   o.emplace_back("buffer_pool_pages", JsonValue(static_cast<int64_t>(buffer_pool_pages)));
   o.emplace_back("supervisor", JsonValue(supervisor));
   o.emplace_back("quota_mb", JsonValue(static_cast<int64_t>(quota_mb)));
@@ -195,6 +212,8 @@ std::string NodeConfig::ToJson() const {
   o.emplace_back("default_engine", JsonValue(default_engine));
   o.emplace_back("replication_factor", JsonValue(static_cast<int64_t>(replication_factor)));
   o.emplace_back("transit_ttl_seconds", JsonValue(static_cast<int64_t>(transit_ttl_seconds)));
+  o.emplace_back("transit_max_holders", JsonValue(static_cast<int64_t>(transit_max_holders)));
+  o.emplace_back("transit_chunk_bytes", JsonValue(static_cast<int64_t>(transit_chunk_bytes)));
   o.emplace_back("retention_days", JsonValue(static_cast<int64_t>(retention_days)));
   o.emplace_back("encrypt_at_rest", JsonValue(encrypt_at_rest));
   o.emplace_back("keychain_ref", JsonValue(keychain_ref));

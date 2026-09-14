@@ -44,6 +44,7 @@ class OutboxStore {
   // Opens (creating if absent) the outbox log under `data_dir`.
   static StatusOr<std::unique_ptr<OutboxStore>> Open(const std::string& data_dir,
                                                       std::string local_node_id);
+  ~OutboxStore();
 
   // Stores an entry for a write made while isolated. Upserts on
   // (collection, key_hash): a newer write for the same key replaces the old.

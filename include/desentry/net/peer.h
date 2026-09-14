@@ -54,6 +54,30 @@ enum class NodeLifecycleState : uint8_t {
 const char* NodeLifecycleStateName(NodeLifecycleState state);
 bool ValidNodeTransition(NodeLifecycleState from, NodeLifecycleState to);
 
+// Graded liveness suspicion for a known peer, derived from locally-measured
+// signals only (last-seen staleness + probe success rate). This is the
+// failure detector the header comment says was missing: not a consensus
+// membership protocol, just a three-tier reading that callers use to decide
+// how much to rely on a peer right now.
+//
+//   * kHealthy -- heard from recently and probes succeeding. Full trust.
+//   * kSuspect -- silent past the liveness threshold, or a worrying probe
+//     record. Usable as a last resort, skipped when better options exist.
+//   * kDead -- silent past 3x the threshold, or probes failing persistently.
+//     Treated as unreachable for placement, holder selection and gossip.
+//
+// Suspicion never changes lifecycle state on its own and never removes a
+// peer: a peer that reappears keeps its identity and fitness history (see
+// StalerThan). NetworkManager promotes kDead to the Degraded lifecycle
+// state; that is policy, kept next to the other policy.
+enum class PeerSuspicion : uint8_t {
+  kHealthy = 0,
+  kSuspect = 1,
+  kDead = 2,
+};
+
+const char* PeerSuspicionName(PeerSuspicion suspicion);
+
 // Locally-measured (and partly peer-reported) fitness signals. See the
 // header comment for which is which and why it matters.
 struct PeerFitness {
@@ -66,6 +90,14 @@ struct PeerFitness {
   // yet" (zero) is indistinguishable from "no space left" (zero), and every
   // healthy peer -- including every unlimited-quota node -- reads as full.
   bool quota_reported = false;
+  // Transit-store load the peer advertised in its heartbeat: bytes currently
+  // held for offline owners, and the transit budget they count against (0 ==
+  // unbounded / unlimited quota). Advisory only -- holder selection
+  // (net/network_manager.cpp) uses it to size the holder set -- and never
+  // part of Score(), for the same reason capacity is weighted least there:
+  // it is self-asserted without proof.
+  uint64_t transit_bytes_held = 0;
+  uint64_t transit_budget_bytes = 0;
   uint64_t probes = 0;
   int64_t updated_ms = 0;
 
@@ -87,6 +119,11 @@ struct PeerInfo {
   bool is_supervisor = false;  // app-local supervisors are never placement targets
   NodeLifecycleState state = NodeLifecycleState::kDiscovered;
   PeerFitness fitness;
+
+  // Graded liveness reading for this peer at `now_ms` (wall clock, same
+  // basis as last_seen_ms). Pure and deterministic -- unit-testable without
+  // a network. See PeerSuspicion for what each tier means to callers.
+  PeerSuspicion Suspicion(int64_t now_ms, int64_t liveness_threshold_ms) const;
 };
 
 class PeerTable {
@@ -103,8 +140,13 @@ class PeerTable {
   // is not a measurement of anything).
   void RecordProbe(const std::string& node_id, double latency_ms, bool ok);
 
-  // Records the capacity/freshness figures a peer reported via /_brain.
-  void RecordReport(const std::string& node_id, lsn_t ledger_entry_id, uint64_t free_quota_mb);
+  // Records the capacity/freshness figures a peer reported in its heartbeat
+  // (net/wire_protocol.h HeartbeatPayload; /_brain remains the human-facing
+  // view of the same numbers). `quota_limited` distinguishes "no space left"
+  // from "no quota configured": an unlimited node reports free_quota_mb == 0
+  // with quota_limited == false, and must not read as full.
+  void RecordReport(const std::string& node_id, lsn_t ledger_entry_id, uint64_t free_quota_mb,
+                    bool quota_limited, uint64_t transit_bytes_held, uint64_t transit_budget_bytes);
 
   // Records only the peer's ledger height, without touching its quota
   // figures. Used by the gossip path, which learns heights from ledger

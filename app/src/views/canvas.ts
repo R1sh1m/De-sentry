@@ -14,11 +14,7 @@ import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "
 import { count, engineLabel, percent, shortHash, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
 import { sentryWatermarkSvg } from "../util/logo.js";
-import { createMeshGlobe, type GlobeHandle, type GlobeLink, type GlobeNodePoint } from "../util/meshGlobe.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
-
-/** The live backdrop globe. At most one runs: rebuilt with the mesh view. */
-let activeGlobe: GlobeHandle | null = null;
 
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
@@ -315,23 +311,6 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
   const controls = el("div", { class: "canvas__controls" }, zoomInBtn, zoomOutBtn, resetBtn);
   wrapper.appendChild(controls);
 
-  try {
-    const globePoints: GlobeNodePoint[] = placed.map((p) => ({
-      id: p.node.process.node_id,
-      status: p.status,
-    }));
-    const globeLinks: GlobeLink[] = edges.map((e) => ({
-      a: e.a.node.process.node_id,
-      b: e.b.node.process.node_id,
-      live: e.live,
-      fitness: e.fitness,
-    }));
-    activeGlobe?.setData(globePoints, globeLinks);
-    activeGlobe?.setOnBattery(store.state.appInfo?.on_battery ?? false);
-  } catch {
-    // The mesh must work even if the backdrop cannot start (no 2d context).
-  }
-
   return wrapper;
 }
 
@@ -441,22 +420,14 @@ export interface CanvasHandles {
 }
 
 export function createCanvas(onNewNode: () => void): CanvasHandles {
-  const backdrop = el("canvas", { class: "mesh__backdrop", "aria-hidden": "true" });
-  try {
-    activeGlobe = createMeshGlobe(backdrop as HTMLCanvasElement);
-  } catch {
-    activeGlobe = null;
-  }
-
   const body = el("div", { style: "width: 100%; height: 100%; position: relative; z-index: 1;" });
   const summary = el("span", { class: "muted", style: "font: var(--text-fine);" });
   const toolbar = el("div", { class: "canvas__toolbar", style: "position: relative; z-index: 2;" }, summary);
-  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, backdrop, toolbar, body);
+  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, toolbar, body);
 
   function render(): void {
     const nodes = store.dataNodes();
     const mode = store.state.canvasMode;
-    const tip = meshTip();
 
     const reachable = nodes.filter((n) => n.reachable).length;
     const held = nodes.reduce((sum, n) => sum + (n.brain?.transit_documents_held ?? 0), 0);
@@ -464,13 +435,6 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
       nodes.length === 0
         ? ""
         : `${reachable}/${nodes.length} answering${held > 0 ? ` · ${count(held)} documents held in transit` : ""}`;
-
-    const globePoints: GlobeNodePoint[] = nodes.map((n) => ({
-      id: n.process.node_id,
-      status: convergenceOf(n, tip),
-    }));
-    activeGlobe?.setData(globePoints, []);
-    activeGlobe?.setOnBattery(store.state.appInfo?.on_battery ?? false);
 
     if (nodes.length === 0) {
       replace(body, emptyCanvas(onNewNode));

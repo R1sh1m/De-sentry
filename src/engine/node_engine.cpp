@@ -60,6 +60,8 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   ChangeFeed* feed = engine->changes_.get();
   engine->storage_->SetTipObserver([feed](lsn_t tip) { feed->Publish(tip); });
 
+  engine->receipt_tracker_ = std::make_unique<ReceiptTracker>();
+
   DSN_LOG_INFO("engine", "node engine ready, node_id=" << engine->identity_->node_id()
                                                         << (options.supervisor ? " (supervisor)" : ""));
   return engine;
@@ -310,33 +312,85 @@ CollectionSummary NodeEngine::Summarize(const std::string& collection) {
 // ---------------------------------------------------------------------------
 
 Status NodeEngine::HoldForOfflineOwner(const std::string& owner_node, const std::string& collection,
-                                        const std::string& key, const std::string& encoded_doc) {
+                                        const std::string& key, const std::string& encoded_doc,
+                                        const std::vector<uint32_t>* only_chunks) {
   if (owner_node.empty() || owner_node == identity_->node_id()) {
     return Status::InvalidArgument("transit: an owner must be another node");
   }
+  const size_t chunk_size =
+      options_.transit_chunk_bytes > 0 ? options_.transit_chunk_bytes : 256 * 1024;
+  // Shared with the network layer's holder selection (TransitChunkCount):
+  // both sides must agree on chunk indexes for the same document.
+  const uint32_t chunk_total = TransitChunkCount(encoded_doc.size(), options_.transit_chunk_bytes);
+  const std::string doc_key_hash = LedgerKeyHash(collection, key);
 
-  TransitEnvelope envelope;
-  envelope.owner_node = owner_node;
-  envelope.collection = collection;
-  envelope.key = key;
-  envelope.key_hash = LedgerKeyHash(collection, key);
-  envelope.encoded_doc = encoded_doc;
-  envelope.holder_node = identity_->node_id();
+  // Select the chunks this call holds, validating the assignment: an index
+  // past the end is a caller bug, not a partial hold.
+  std::vector<uint32_t> indexes;
+  if (only_chunks != nullptr) {
+    for (uint32_t i : *only_chunks) {
+      if (i >= chunk_total) {
+        return Status::InvalidArgument("transit: chunk index out of range");
+      }
+      indexes.push_back(i);
+    }
+  } else {
+    for (uint32_t i = 0; i < chunk_total; ++i) indexes.push_back(i);
+  }
 
-  // Ledger first, bytes second. If the process dies between the two, the
-  // intent names bytes that are missing -- which a returning owner discovers
-  // and reports. The reverse order would leave bytes nothing points at,
-  // which nothing would ever discover.
-  const HLCTimestamp ts = clock_->Now();
-  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitIntent, owner_node, key,
-                                          envelope.key_hash, ts);
-  if (!lsn_or.ok()) return lsn_or.status();
-  envelope.intent_lsn = lsn_or.value();
+  // Capacity gate, all-or-nothing: the bytes this call would add are checked
+  // against the transit budget before the first chunk is stored, so a full
+  // holder refuses the whole document instead of stranding a partial hold
+  // whose unclaimed intents would pin the checkpoint gate. A zero budget is
+  // unbounded (quota_mb == 0) and always fits.
+  uint64_t new_bytes = 0;
+  for (uint32_t i : indexes) {
+    const size_t off = static_cast<size_t>(i) * chunk_size;
+    new_bytes += std::min(chunk_size, encoded_doc.size() - off);
+  }
+  if (options_.transit_budget_bytes > 0 &&
+      transit_->BytesHeld() + new_bytes > options_.transit_budget_bytes) {
+    return Status::OutOfSpace("transit: holder budget exhausted (" +
+                              std::to_string(transit_->BytesHeld()) + " held, " +
+                              std::to_string(new_bytes) + " requested)");
+  }
 
-  Status st = transit_->Hold(envelope);
-  if (!st.ok()) return st;
-  DSN_LOG_INFO("transit", "holding " << collection << "/" << key << " for offline owner "
-                                      << owner_node << " (intent LSN " << envelope.intent_lsn << ")");
+  for (uint32_t i : indexes) {
+    const size_t off = static_cast<size_t>(i) * chunk_size;
+    const size_t len = std::min(chunk_size, encoded_doc.size() - off);
+    TransitEnvelope envelope;
+    envelope.owner_node = owner_node;
+    envelope.collection = collection;
+    envelope.key = key;
+    envelope.key_hash =
+        chunk_total == 1 ? doc_key_hash : TransitChunkKeyHash(doc_key_hash, i);
+    envelope.encoded_doc = encoded_doc.substr(off, len);
+    envelope.holder_node = identity_->node_id();
+    envelope.doc_size_bytes = encoded_doc.size();
+    envelope.chunk_index = i;
+    envelope.chunk_total = chunk_total;
+
+    // Ledger first, bytes second. If the process dies between the two, the
+    // intent names bytes that are missing -- which a returning owner discovers
+    // and reports. The reverse order would leave bytes nothing points at,
+    // which nothing would ever discover.
+    const HLCTimestamp ts = clock_->Now();
+    WriteAheadLog::AppendOptions intent_opts;
+    intent_opts.transit_holder = identity_->node_id();
+    intent_opts.transit_size_bytes = encoded_doc.size();
+    intent_opts.transit_chunk_index = i;
+    intent_opts.transit_chunk_total = chunk_total;
+    auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitIntent, owner_node, key,
+                                            envelope.key_hash, ts, intent_opts);
+    if (!lsn_or.ok()) return lsn_or.status();
+    envelope.intent_lsn = lsn_or.value();
+
+    Status st = transit_->Hold(envelope);
+    if (!st.ok()) return st;
+    DSN_LOG_INFO("transit", "holding " << collection << "/" << key << " chunk " << i << "/"
+                                        << chunk_total << " for offline owner " << owner_node
+                                        << " (intent LSN " << envelope.intent_lsn << ")");
+  }
   return Status::OK();
 }
 
@@ -444,6 +498,34 @@ StorageEngine::VerifyReport NodeEngine::VerifyEverything() {
   return report;
 }
 
+std::vector<NodeEngine::TransitIntent> NodeEngine::TransitIntentsForSelf() {
+  const std::string self = identity_->node_id();
+  std::vector<TransitIntent> intents;
+
+  // Read from the beginning up to the current tip. The ledger is append-only
+  // so this is O(log size) in practice (one read of the full log). For a
+  // returning node this is a one-time cost; the intents are then used to
+  // target specific holders instead of polling everyone.
+  auto entries_or = storage_->LedgerEntries(kInvalidLsn, storage_->LedgerTip().entry_id);
+  if (!entries_or.ok()) return intents;
+
+  for (const WalRecord& rec : entries_or.value()) {
+    if (rec.type != WalRecordType::kTransitIntent) continue;
+    // Transit intents record the owner in the collection field.
+    if (rec.collection != self) continue;
+
+    TransitIntent intent;
+    intent.intent_lsn = rec.lsn;
+    intent.key_hash = rec.key_hash;
+    intent.holder_node = rec.transit_holder;
+    intent.chunk_index = rec.transit_chunk_index;
+    intent.chunk_total = rec.transit_chunk_total;
+    intent.doc_size_bytes = rec.transit_size_bytes;
+    intents.push_back(std::move(intent));
+  }
+  return intents;
+}
+
 // ---------------------------------------------------------------------------
 // Outbox (stage-anywhere, sync-on-reconnect flow)
 // ---------------------------------------------------------------------------
@@ -482,6 +564,44 @@ size_t NodeEngine::OutboxSize() const {
 uint64_t NodeEngine::OutboxBytesHeld() const {
   if (!outbox_) return 0;
   return outbox_->BytesHeld();
+}
+
+StatusOr<NodeEngine::DurabilityReport> NodeEngine::WaitForDurability(
+    const std::string& message_id, uint32_t durability, uint32_t timeout_ms) {
+  // Count self as 1 (local write is already fsync'd and on the ledger).
+  uint32_t wanted_from_peers = durability > 1 ? durability - 1 : 0;
+  DurabilityReport report;
+  report.requested = durability;
+  report.achieved = 1;  // self
+  report.replicas.push_back(identity_->node_id());
+
+  if (wanted_from_peers == 0) {
+    return report;  // local-only durability, nothing to wait for
+  }
+
+  if (!receipt_tracker_) {
+    // No receipt tracker means we're running without network layer --
+    // return what we have (just self).
+    report.timed_out = true;
+    return report;
+  }
+
+  auto result = receipt_tracker_->WaitFor(message_id, wanted_from_peers, timeout_ms);
+  if (!result.ok()) {
+    // Tracker stopped or other error -- return partial.
+    report.timed_out = true;
+    return report;
+  }
+
+  const auto& receipts = result.value();
+  report.achieved = 1 + static_cast<uint32_t>(receipts.size());
+  for (const MergeReceipt& r : receipts) {
+    report.replicas.push_back(r.applier_node);
+  }
+  if (receipts.size() < wanted_from_peers) {
+    report.timed_out = true;
+  }
+  return report;
 }
 
 }  // namespace desentry

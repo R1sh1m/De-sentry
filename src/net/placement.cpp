@@ -182,6 +182,43 @@ PlacementPlan PlacementPolicy::Place(const std::string& collection, const std::s
   return plan;
 }
 
+std::vector<std::string> SelectTransitHolders(const std::string& owner_node,
+                                              const std::string& doc_key_hash,
+                                              const std::vector<std::string>& candidates,
+                                              uint32_t max_holders, uint32_t chunk_index) {
+  if (candidates.empty() || max_holders == 0) return {};
+  // Rank every candidate by SHA-256(owner || 0x00 || key_hash || 0x00 ||
+  // candidate). Fixed-width separators keep ("ab","c") distinct from
+  // ("a","bc") at every join, the LedgerKeyHash discipline applied twice.
+  std::vector<std::pair<uint64_t, std::string>> ranked;
+  ranked.reserve(candidates.size());
+  for (const std::string& candidate : candidates) {
+    if (candidate.empty()) continue;
+    std::string material = owner_node;
+    material.push_back('\0');
+    material += doc_key_hash;
+    material.push_back('\0');
+    material += candidate;
+    ranked.emplace_back(ConsistentHashRing::HashToRing(material), candidate);
+  }
+  // Highest rank first; node_id breaks the (astronomically unlikely) tie so
+  // the order is total and identical on every node.
+  std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+    if (a.first != b.first) return a.first > b.first;
+    return a.second < b.second;
+  });
+  // Rotate for striped chunks so chunk c's holders slide across the ranking
+  // instead of every chunk stacking on the same top-H.
+  if (!ranked.empty()) {
+    std::rotate(ranked.begin(), ranked.begin() + (chunk_index % ranked.size()), ranked.end());
+  }
+  std::vector<std::string> holders;
+  const size_t want = std::min<size_t>(max_holders, ranked.size());
+  holders.reserve(want);
+  for (size_t i = 0; i < want; ++i) holders.push_back(ranked[i].second);
+  return holders;
+}
+
 std::map<std::string, std::vector<std::string>> PlacementPolicy::GroupByPrimary(
     const std::string& collection, const std::vector<std::string>& keys) const {
   std::map<std::string, std::vector<std::string>> grouped;

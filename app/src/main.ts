@@ -10,11 +10,12 @@
 
 import { apiFor } from "./api.js";
 import { sidecar } from "./bridge.js";
-import { boot, refreshNodeList, refreshTopology, stopAllSubscriptions, store } from "./state.js";
+import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
+import { createMeshGlobe, type GlobeHandle, type GlobeNodePoint } from "./util/meshGlobe.js";
 import { createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
 import { createHealthAlerts } from "./views/healthAlerts.js";
@@ -259,6 +260,14 @@ function build(): void {
     store.select({ kind: "node", nodeId });
   });
 
+  const backdrop = el("canvas", { class: "mesh__backdrop mesh__backdrop--fullscreen", "aria-hidden": "true" }) as HTMLCanvasElement;
+  let activeGlobe: GlobeHandle | null = null;
+  try {
+    activeGlobe = createMeshGlobe(backdrop);
+  } catch {
+    activeGlobe = null;
+  }
+
   // Header ------------------------------------------------------------------
   const titleRow = el(
     "div",
@@ -286,15 +295,20 @@ function build(): void {
   on(meshModeBtn, "click", () => store.setCanvasMode("mesh"));
   const viewSegmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" }, treeModeBtn, meshModeBtn);
 
-  const themeButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Appearance" });
+  const themeButton = el("button", {
+    class: "btn btn--sm btn--ghost btn--icon-only",
+    type: "button",
+    title: "Toggle appearance",
+    "aria-label": "Toggle appearance",
+  });
   const themes: Theme[] = ["system", "light", "dark"];
   let theme = storedTheme();
   const paintTheme = () => {
     replace(
       themeButton,
       theme === "light" ? icon(Icons.sun, 14) : theme === "dark" ? icon(Icons.moon, 14) : icon(Icons.refresh, 14),
-      theme === "system" ? " Auto" : theme === "light" ? " Light" : " Dark",
     );
+    themeButton.title = `Appearance: ${theme} (click to cycle)`;
     applyTheme(theme);
   };
   on(themeButton, "click", () => {
@@ -303,22 +317,25 @@ function build(): void {
   });
   paintTheme();
 
-  const pairButton = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.shield, 14), "Pair");
+  const pairButton = el(
+    "button",
+    {
+      class: "btn btn--sm btn--ghost btn--icon-only",
+      type: "button",
+      title: "Pair another device (QR code)",
+      "aria-label": "Pair another device",
+    },
+    icon(Icons.shield, 14),
+  );
   on(pairButton, "click", openPairingSheet);
 
-  const refreshButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Refresh everything (Ctrl+R)" }, icon(Icons.refresh, 14));
-  on(refreshButton, "click", () => {
-    void refreshNodeList();
-    void refreshTopology();
-  });
-
-  const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 14), "New node");
+  const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
 
   let inspectorCollapsed = false;
   const inspectorToggle = el(
     "button",
-    { class: "btn btn--sm btn--ghost", type: "button", title: "Toggle Inspector (Ctrl+I)" },
+    { class: "btn btn--sm btn--ghost btn--icon-only", type: "button", title: "Toggle Inspector (Ctrl+I)", "aria-label": "Toggle Inspector" },
     icon(Icons.inspector, 14),
   );
   const toggleInspector = () => {
@@ -329,37 +346,22 @@ function build(): void {
   };
   on(inspectorToggle, "click", toggleInspector);
 
-  const busyNote = el("span", { class: "muted" });
-
-  const dropboxButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Universal Mesh Dropbox (5)" }, icon(Icons.drive, 14), "Dropbox");
-  on(dropboxButton, "click", () => store.select({ kind: "dropbox" }));
-
-  const consoleButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Interactive Engine Console (4)" }, icon(Icons.inspector, 14), "Console");
-  on(consoleButton, "click", () => {
-    const sel = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-    store.select({ kind: "console", nodeId: sel });
-  });
-
   const header = el(
     "header",
     { class: "header" },
     title,
     el("span", { class: "header__spacer" }),
     viewSegmented,
-    dropboxButton,
-    consoleButton,
     el("span", { class: "header__spacer" }),
-    busyNote,
     themeButton,
     pairButton,
-    refreshButton,
     inspectorToggle,
     newButton,
   );
 
   const centre = el("div", {});
   root.removeAttribute("data-loading");
-  replace(root, header, sidebar.element, healthAlerts.element, centre, inspector.element);
+  replace(root, backdrop, header, sidebar.element, healthAlerts.element, centre, inspector.element);
   document.body.appendChild(wizard.element);
 
   // Toasts ------------------------------------------------------------------
@@ -408,18 +410,25 @@ function build(): void {
     const nodes = store.dataNodes();
     const reachable = nodes.filter((n) => n.reachable).length;
     const info = state.appInfo;
+    const tip = meshTip();
+
+    const globePoints: GlobeNodePoint[] = nodes.map((n) => ({
+      id: n.process.node_id,
+      status: convergenceOf(n, tip),
+    }));
+    activeGlobe?.setData(globePoints, []);
+    activeGlobe?.setOnBattery(info?.on_battery ?? false);
+
     const subtitle = [
-      state.supervisorPort === null ? "supervisor starting…" : "supervisor running",
-      `${reachable}/${nodes.length} nodes answering`,
-      info?.on_battery ? "on battery — gossip throttled" : null,
-      info?.background_mode ? "syncing in the background" : null,
+      state.busy !== "" ? state.busy : state.supervisorPort === null ? "supervisor starting…" : "supervisor active",
+      `${reachable}/${nodes.length} answering`,
+      info?.on_battery ? "on battery" : null,
+      info?.background_mode ? "background sync" : null,
     ]
       .filter(Boolean)
       .join(" · ");
     const sub = title.querySelector(".header__sub");
     if (sub !== null) sub.textContent = subtitle;
-
-    busyNote.textContent = state.busy;
 
     sidebar.render();
     inspector.render();

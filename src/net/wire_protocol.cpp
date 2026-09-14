@@ -1,10 +1,10 @@
 #include "desentry/net/wire_protocol.h"
 
-
 #include <cerrno>
 #include <cstring>
 
 #include "desentry/common/byte_buffer.h"
+#include "desentry/security/crypto.h"
 
 namespace desentry {
 
@@ -119,8 +119,43 @@ OpBroadcastPayload OpBroadcastPayload::Decode(const std::string& bytes) {
 
 // -- v2 payloads -----------------------------------------------------------
 
+namespace {
+
+// Magic prefixing v2 payloads whose repeated elements grew new trailing
+// fields. The WAL uses the same trick (kWalRecordMagicV2): an old payload
+// starts with a count/flag field that can never equal the magic in practice,
+// so the decoder can branch to the v1 parse instead of misreading old
+// entries as new-tailed ones. Old decoders on new payloads throw (caught by
+// every caller), which is the graceful direction for a best-effort path.
+constexpr uint32_t kTransitResponseMagicV2 = 0x44545232;  // "DTR2"
+constexpr uint32_t kLedgerDeltaMagicV2 = 0x444C4432;      // "DLD2"
+
+bool HasMagic(const std::string& bytes, uint32_t magic) {
+  if (bytes.size() < 4) return false;
+  uint32_t v = 0;
+  std::memcpy(&v, bytes.data(), 4);
+  return v == magic;
+}
+
+}  // namespace
+
+std::string TransitQueryPayload::Encode() const {
+  ByteWriter w;
+  w.U64(offset);
+  return w.TakeString();
+}
+TransitQueryPayload TransitQueryPayload::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  TransitQueryPayload p;
+  // An empty query is a zero offset: old peers send kTransitQuery with no
+  // payload at all, and they must keep working.
+  if (!bytes.empty()) p.offset = r.U64();
+  return p;
+}
+
 std::string TransitResponsePayload::Encode() const {
   ByteWriter w;
+  w.U32(kTransitResponseMagicV2);
   w.U32(static_cast<uint32_t>(entries.size()));
   for (const TransitEntry& e : entries) {
     w.Bytes(e.collection);
@@ -129,12 +164,38 @@ std::string TransitResponsePayload::Encode() const {
     w.Bytes(e.encoded_doc);
     w.I64(e.intent_lsn);
     w.Bytes(e.holder_node);
+    w.U64(e.doc_size_bytes);
+    w.U32(e.chunk_index);
+    w.U32(e.chunk_total);
   }
   w.U8(truncated ? 1 : 0);
+  w.U64(next_offset);
   return w.TakeString();
 }
 TransitResponsePayload TransitResponsePayload::Decode(const std::string& bytes) {
+  // v1 payloads (no magic) predate striping: entries end at holder_node,
+  // whole-document defaults apply, and there is no resume cursor. The v1
+  // branch is the exact old parse, kept so old holders stay readable.
+  if (!HasMagic(bytes, kTransitResponseMagicV2)) {
+    ByteReader r(bytes);
+    TransitResponsePayload p;
+    uint32_t n = r.U32();
+    p.entries.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      TransitEntry e;
+      e.collection = r.Bytes();
+      e.key = r.Bytes();
+      e.key_hash = r.Bytes();
+      e.encoded_doc = r.Bytes();
+      e.intent_lsn = r.I64();
+      e.holder_node = r.Bytes();
+      p.entries.push_back(std::move(e));
+    }
+    if (r.remaining() > 0) p.truncated = r.U8() != 0;
+    return p;
+  }
   ByteReader r(bytes);
+  (void)r.U32();  // magic
   TransitResponsePayload p;
   uint32_t n = r.U32();
   p.entries.reserve(n);
@@ -146,9 +207,14 @@ TransitResponsePayload TransitResponsePayload::Decode(const std::string& bytes) 
     e.encoded_doc = r.Bytes();
     e.intent_lsn = r.I64();
     e.holder_node = r.Bytes();
+    e.doc_size_bytes = r.U64();
+    e.chunk_index = r.U32();
+    e.chunk_total = r.U32();
+    if (e.chunk_total == 0) e.chunk_total = 1;
     p.entries.push_back(std::move(e));
   }
   if (r.remaining() > 0) p.truncated = r.U8() != 0;
+  if (r.remaining() > 0) p.next_offset = r.U64();
   return p;
 }
 
@@ -167,6 +233,46 @@ TransitClaimPayload TransitClaimPayload::Decode(const std::string& bytes) {
   p.key_hashes.reserve(n);
   for (uint32_t i = 0; i < n; ++i) p.key_hashes.push_back(r.Bytes());
   return p;
+}
+
+std::string TransitHeldPayload::Encode() const {
+  ByteWriter w;
+  w.Bytes(message_id);
+  w.Bytes(key_hash);
+  w.Bytes(holder_node);
+  w.I64(intent_lsn);
+  w.Bytes(signature);
+  return w.TakeString();
+}
+TransitHeldPayload TransitHeldPayload::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  TransitHeldPayload p;
+  p.message_id = r.Bytes();
+  p.key_hash = r.Bytes();
+  p.holder_node = r.Bytes();
+  p.intent_lsn = r.I64();
+  p.signature = r.Bytes();
+  return p;
+}
+
+std::string MergeReceipt::Encode() const {
+  ByteWriter w;
+  w.Bytes(message_id);
+  w.Bytes(key_hash);
+  w.Bytes(applier_node);
+  w.I64(applied_lsn);
+  w.Bytes(signature);
+  return w.TakeString();
+}
+MergeReceipt MergeReceipt::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  MergeReceipt m;
+  m.message_id = r.Bytes();
+  m.key_hash = r.Bytes();
+  m.applier_node = r.Bytes();
+  m.applied_lsn = r.I64();
+  m.signature = r.Bytes();
+  return m;
 }
 
 std::string LedgerDigestPayload::Encode() const {
@@ -194,6 +300,7 @@ LedgerDigestPayload LedgerDigestPayload::Decode(const std::string& bytes) {
 
 std::string LedgerDeltaPayload::Encode() const {
   ByteWriter w;
+  w.U32(kLedgerDeltaMagicV2);
   w.U8(hashes_only ? 1 : 0);
   w.U32(static_cast<uint32_t>(entries.size()));
   for (const LedgerEntrySummary& e : entries) {
@@ -208,31 +315,93 @@ std::string LedgerDeltaPayload::Encode() const {
     w.U32(e.hlc_logical);
     w.Bytes(e.collection);
     w.Bytes(e.key);
+    w.Bytes(e.transit_holder);
+    w.U64(e.transit_size_bytes);
+    w.U32(e.transit_chunk_index);
+    w.U32(e.transit_chunk_total);
   }
   return w.TakeString();
 }
+
+// Reads one v1 (pre-routing-tail) entry. Shared by the v1 branch below.
+namespace {
+LedgerEntrySummary DecodeLedgerEntryV1(ByteReader* r) {
+  LedgerEntrySummary e;
+  e.entry_id = r->I64();
+  e.operation = r->U8();
+  e.key_hash = r->Bytes();
+  e.entry_hash = r->Bytes();
+  e.prev_hash = r->Bytes();
+  e.origin_node_id = r->Bytes();
+  e.origin_signature = r->Bytes();
+  e.hlc_physical_ms = r->I64();
+  e.hlc_logical = r->U32();
+  e.collection = r->Bytes();
+  e.key = r->Bytes();
+  return e;
+}
+}  // namespace
+
 LedgerDeltaPayload LedgerDeltaPayload::Decode(const std::string& bytes) {
+  // v1 deltas (no magic) predate the transit routing tail: entries end at
+  // key, whole-document defaults apply. Without the version branch, a v1
+  // entry followed by more entries would misparse as a tailed v2 entry --
+  // trailing-field tolerance is only sound at message end, never inside a
+  // repeated element.
+  if (!HasMagic(bytes, kLedgerDeltaMagicV2)) {
+    ByteReader r(bytes);
+    LedgerDeltaPayload p;
+    p.hashes_only = r.U8() != 0;
+    uint32_t n = r.U32();
+    p.entries.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) p.entries.push_back(DecodeLedgerEntryV1(&r));
+    return p;
+  }
   ByteReader r(bytes);
+  (void)r.U32();  // magic
   LedgerDeltaPayload p;
   p.hashes_only = r.U8() != 0;
   uint32_t n = r.U32();
   p.entries.reserve(n);
   for (uint32_t i = 0; i < n; ++i) {
-    LedgerEntrySummary e;
-    e.entry_id = r.I64();
-    e.operation = r.U8();
-    e.key_hash = r.Bytes();
-    e.entry_hash = r.Bytes();
-    e.prev_hash = r.Bytes();
-    e.origin_node_id = r.Bytes();
-    e.origin_signature = r.Bytes();
-    e.hlc_physical_ms = r.I64();
-    e.hlc_logical = r.U32();
-    e.collection = r.Bytes();
-    e.key = r.Bytes();
+    LedgerEntrySummary e = DecodeLedgerEntryV1(&r);
+    e.transit_holder = r.Bytes();
+    e.transit_size_bytes = r.U64();
+    e.transit_chunk_index = r.U32();
+    e.transit_chunk_total = r.U32();
+    if (e.transit_chunk_total == 0) e.transit_chunk_total = 1;
     p.entries.push_back(std::move(e));
   }
   return p;
+}
+
+std::string HeartbeatPayload::Encode() const {
+  ByteWriter w;
+  w.Bytes(node_id);
+  w.I64(ledger_tip_entry_id);
+  w.U64(free_quota_mb);
+  w.U8(quota_limited ? 1 : 0);
+  w.U64(transit_bytes_held);
+  w.U64(transit_budget_bytes);
+  w.U8(lifecycle_state);
+  return w.TakeString();
+}
+HeartbeatPayload HeartbeatPayload::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  HeartbeatPayload h;
+  h.node_id = r.Bytes();
+  h.ledger_tip_entry_id = r.I64();
+  h.free_quota_mb = r.U64();
+  // Fields after free_quota_mb postdate the first heartbeat version. An old
+  // peer never sends kHeartbeat at all (it answers kError, and the prober
+  // falls back to kPing), but a truncated or forwarded payload must still
+  // decode rather than throw -- the same mixed-version rule as
+  // OpBroadcastPayload above.
+  if (r.remaining() > 0) h.quota_limited = r.U8() != 0;
+  if (r.remaining() > 0) h.transit_bytes_held = r.U64();
+  if (r.remaining() > 0) h.transit_budget_bytes = r.U64();
+  if (r.remaining() > 0) h.lifecycle_state = r.U8();
+  return h;
 }
 
 const char* MessageTypeName(MessageType type) {
@@ -249,6 +418,8 @@ const char* MessageTypeName(MessageType type) {
     case MessageType::kTransitClaim: return "TRANSIT_CLAIM";
     case MessageType::kLedgerDigest: return "LEDGER_DIGEST";
     case MessageType::kLedgerDelta: return "LEDGER_DELTA";
+    case MessageType::kHeartbeat: return "HEARTBEAT";
+    case MessageType::kMergeReceipt: return "MERGE_RECEIPT";
   }
   return "UNKNOWN";
 }

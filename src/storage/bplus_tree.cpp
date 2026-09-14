@@ -96,7 +96,7 @@ page_id_t BPlusTree::FindLeaf(const std::string& key) const {
   // handful of pages (fanout is in the hundreds). Anything past this bound
   // is a cycle through a corrupt or never-flushed page -- and without the
   // bound that cycle spins forever, wedging the whole node process.
-  constexpr int kMaxDescent = 256;
+  constexpr int kMaxDescent = 64;
   page_id_t cur = root_page_id_;
   // A descent is bounded by the tree's height, and the height is bounded by
   // log(fanout) of anything that fits on this disk -- 64 hops is orders of
@@ -105,7 +105,7 @@ page_id_t BPlusTree::FindLeaf(const std::string& key) const {
   // parses as "internal node, no keys, child 0": follow that and the descent
   // walks to page 0 and stays there, spinning at full CPU forever. Recovery
   // must fail, not hang.
-  for (int hop = 0; hop < 64; ++hop) {
+  for (int hop = 0; hop < kMaxDescent; ++hop) {
     if (cur == kInvalidPageId) return kInvalidPageId;
     Page* p = bpm_->FetchPage(cur);
     if (p == nullptr) return kInvalidPageId;

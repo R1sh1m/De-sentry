@@ -68,6 +68,39 @@ pub struct WorkloadScore {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineRationale {
+    pub engine: String,
+    pub role: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SizingReasoning {
+    pub summary: String,
+    pub key_matched_signals: Vec<String>,
+    pub engine_rationales: Vec<EngineRationale>,
+    pub quota_rationale: String,
+    pub runner_up_contrast: Option<String>,
+    pub operational_trade_offs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationOption {
+    pub label: String,
+    pub description: String,
+    pub target_workload: String,
+    pub appended_context: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarifyingQuestion {
+    pub id: String,
+    pub prompt: String,
+    pub rationale: String,
+    pub options: Vec<ClarificationOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SizingDecision {
     pub workload: String,
     pub confidence: f32,
@@ -79,6 +112,10 @@ pub struct SizingDecision {
     pub confidence_floor: f32,
     pub description: String,
     pub decided_at_ms: i64,
+    #[serde(default)]
+    pub reasoning: Option<SizingReasoning>,
+    #[serde(default)]
+    pub clarifying_questions: Vec<ClarifyingQuestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +173,22 @@ struct Prototype {
     retention_days: u32,
     #[serde(default)]
     collections: Vec<DraftCollection>,
+    #[serde(default)]
+    rationale: Option<PrototypeRationale>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PrototypeRationale {
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    key_signals: Vec<String>,
+    #[serde(default)]
+    engine_rationales: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    quota_rationale: String,
+    #[serde(default)]
+    trade_offs: Vec<String>,
 }
 
 impl Prototype {
@@ -350,6 +403,8 @@ impl Sizer {
             confidence_floor: self.floor,
             description: trimmed.to_owned(),
             decided_at_ms: crate::nodes::now_ms(),
+            reasoning: None,
+            clarifying_questions: Vec::new(),
         };
 
         self.spec_from(prototype, quota_mb, available_engines, decision)
@@ -361,7 +416,7 @@ impl Sizer {
         prototype: &Prototype,
         quota_mb: u64,
         available: &[String],
-        decision: SizingDecision,
+        mut decision: SizingDecision,
     ) -> NodeSpec {
         // Never propose an engine the binary does not contain: an option that
         // fails on selection is worse than one that is not offered.
@@ -380,6 +435,30 @@ impl Sizer {
         } else {
             engines[0].clone()
         };
+
+        let quota_split = prototype.quota_split.normalised();
+
+        let reasoning = self.build_reasoning(
+            prototype,
+            &decision.description,
+            &decision.method,
+            &engines,
+            &default_engine,
+            &quota_split,
+            &decision.scores,
+            decision.confidence,
+        );
+
+        let clarifying_questions = self.build_clarifying_questions(
+            prototype,
+            &decision.description,
+            &decision.scores,
+            decision.confidence,
+            decision.confidence_floor,
+        );
+
+        decision.reasoning = Some(reasoning);
+        decision.clarifying_questions = clarifying_questions;
 
         let collections = prototype
             .collections
@@ -409,13 +488,441 @@ impl Sizer {
         NodeSpec {
             engines,
             default_engine,
-            quota_split: prototype.quota_split.normalised(),
+            quota_split,
             shard_key: prototype.shard_key.clone(),
             replication_factor: prototype.replication_factor,
             secondary_indexes: prototype.secondary_indexes.clone(),
             retention_days: prototype.retention_days,
             collections,
             decision,
+        }
+    }
+
+    fn build_reasoning(
+        &self,
+        prototype: &Prototype,
+        description: &str,
+        method: &str,
+        engines: &[String],
+        default_engine: &str,
+        quota_split: &QuotaSplit,
+        scores: &[WorkloadScore],
+        confidence: f32,
+    ) -> SizingReasoning {
+        let trimmed = description.trim();
+        let label = &prototype.label;
+
+        // 1. Matched signals from user description
+        let mut key_matched_signals = Vec::new();
+        let haystack = trimmed.to_lowercase();
+        for (kw, _) in &prototype.keywords {
+            if contains_word(&haystack, kw) && !key_matched_signals.contains(kw) {
+                key_matched_signals.push(kw.clone());
+            }
+        }
+        if let Some(r) = &prototype.rationale {
+            for sig in &r.key_signals {
+                if contains_word(&haystack, &sig.to_lowercase()) && !key_matched_signals.contains(sig) {
+                    key_matched_signals.push(sig.clone());
+                }
+            }
+        }
+        key_matched_signals.sort();
+        key_matched_signals.dedup();
+        key_matched_signals.truncate(6);
+
+        // 2. High-level summary
+        let summary = if trimmed.is_empty() {
+            "No workload description provided. Defaulting to general-purpose key-value storage.".to_string()
+        } else if method == "onnx" {
+            if !key_matched_signals.is_empty() {
+                format!(
+                    "Neural embedding and semantic matching identified strong alignment with the {label} workload (signals: {signals}).",
+                    signals = key_matched_signals.join(", ")
+                )
+            } else {
+                format!(
+                    "Neural embedding semantic analysis identified close alignment with the {label} profile.",
+                )
+            }
+        } else if !key_matched_signals.is_empty() {
+            format!(
+                "Deterministic keyword analysis matched domain terms ({signals}) corresponding to the {label} shape.",
+                signals = key_matched_signals.join(", ")
+            )
+        } else {
+            format!("Classified as {label} based on structural fallback heuristics.")
+        };
+
+        // 3. Engine rationales
+        let mut engine_rationales = Vec::new();
+        for engine in engines {
+            let is_default = engine == default_engine;
+            let role = if is_default {
+                "Default Engine".to_string()
+            } else {
+                "Secondary Storage".to_string()
+            };
+            let reason = prototype
+                .rationale
+                .as_ref()
+                .and_then(|r| r.engine_rationales.get(engine))
+                .cloned()
+                .unwrap_or_else(|| match engine.as_str() {
+                    "sqlite" => "Relational B+Tree engine for tables with primary/foreign keys and SQL queries.".to_string(),
+                    "kv" => "Lightweight key-value storage engine for point lookups and document payloads.".to_string(),
+                    "ts_rollup" => "Time-series engine with automatic tiered downsampling and delta compression.".to_string(),
+                    "vector_hnsw_lite" => "In-memory HNSW vector index for approximate nearest neighbor similarity searches.".to_string(),
+                    "graph_adj" => "Adjacency-list graph engine for multi-hop relationship traversals.".to_string(),
+                    "columnar_lite" => "Column-oriented storage format optimized for sequential analytical scans.".to_string(),
+                    "duckdb" => "Vectorized analytical engine for fast SQL OLAP aggregations across event logs.".to_string(),
+                    other => format!("Provides dedicated storage backing for {other} collection workloads."),
+                });
+            engine_rationales.push(EngineRationale {
+                engine: engine.clone(),
+                role,
+                reason,
+            });
+        }
+
+        // 4. Quota rationale
+        let quota_rationale = prototype
+            .rationale
+            .as_ref()
+            .map(|r| r.quota_rationale.clone())
+            .filter(|q| !q.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "Budget split allocated: {}% database cache, {}% transit store, {}% cache/hash index, {}% ledger log, and {}% network buffers.",
+                    quota_split.db_pct,
+                    quota_split.transit_store_pct,
+                    quota_split.cache_hash_pct,
+                    quota_split.ledger_pct,
+                    quota_split.net_buffers_pct
+                )
+            });
+
+        // 5. Runner-up contrast
+        let mut sorted_scores = scores.to_vec();
+        sorted_scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        let runner_up_contrast = if sorted_scores.len() > 1 && sorted_scores[0].workload == prototype.workload {
+            let runner_up = &sorted_scores[1];
+            if runner_up.score > 0.15 || (confidence - runner_up.score) < 0.25 {
+                let ru_proto = self.prototypes.iter().find(|p| p.workload == runner_up.workload);
+                let ru_label = ru_proto.map(|p| p.label.as_str()).unwrap_or(&runner_up.workload);
+                let ru_summary = ru_proto
+                    .and_then(|p| p.rationale.as_ref())
+                    .map(|r| r.summary.as_str())
+                    .unwrap_or("alternative data pattern");
+                let my_summary = prototype
+                    .rationale
+                    .as_ref()
+                    .map(|r| r.summary.as_str())
+                    .unwrap_or("target workload");
+                Some(format!(
+                    "Also considered {ru_label} ({score:.1}% confidence share). Selected {label} because your requirements emphasize {my_summary} rather than {ru_summary}.",
+                    score = runner_up.score * 100.0,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 6. Operational trade-offs
+        let operational_trade_offs = prototype
+            .rationale
+            .as_ref()
+            .map(|r| r.trade_offs.clone())
+            .unwrap_or_default();
+
+        SizingReasoning {
+            summary,
+            key_matched_signals,
+            engine_rationales,
+            quota_rationale,
+            runner_up_contrast,
+            operational_trade_offs,
+        }
+    }
+
+    fn build_clarifying_questions(
+        &self,
+        prototype: &Prototype,
+        description: &str,
+        scores: &[WorkloadScore],
+        confidence: f32,
+        floor: f32,
+    ) -> Vec<ClarifyingQuestion> {
+        let trimmed = description.trim();
+        let mut questions = Vec::new();
+        let mut sorted = scores.to_vec();
+        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        let is_below_floor = confidence < floor;
+        let is_vague = trimmed.is_empty() || trimmed.split_whitespace().count() < 6;
+        let is_close_contest = sorted.len() >= 2 && (sorted[0].score - sorted[1].score) < 0.15;
+
+        if is_below_floor || is_vague {
+            let top_workload = sorted.first().map(|s| s.workload.as_str()).unwrap_or("sql");
+            let second_workload = sorted.get(1).map(|s| s.workload.as_str()).unwrap_or("nosql-doc");
+
+            if is_close_contest {
+                if let Some(pair_q) = self.question_for_pair(top_workload, second_workload) {
+                    questions.push(pair_q);
+                }
+            }
+
+            questions.push(ClarifyingQuestion {
+                id: "primary_access_pattern".to_string(),
+                prompt: "How will your application primarily query and access this data?".to_string(),
+                rationale: "De-Sentry features specialized engines for relational SQL, schemaless documents, time-series, vectors, and graphs. Clarifying your primary access pattern ensures optimal engine and quota allocation.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Relational Tables & SQL Joins".to_string(),
+                        description: "Structured entities with foreign keys, column constraints, and SQL joins.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "normalised relational tables with foreign keys and multi-table SQL joins".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Flexible JSON Documents".to_string(),
+                        description: "Schemaless documents or blobs fetched directly by unique ID or key.".to_string(),
+                        target_workload: "nosql-doc".to_string(),
+                        appended_context: "schemaless JSON documents and objects fetched directly by key".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Continuous Time-Series Metrics".to_string(),
+                        description: "Timestamped sensor or telemetry readings rolled up over time windows.".to_string(),
+                        target_workload: "time-series".to_string(),
+                        appended_context: "timestamped time-series sensor telemetry sampled continuously with rollups".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Semantic / Vector Similarity Search".to_string(),
+                        description: "Numeric embeddings searched by cosine similarity or nearest neighbors (RAG).".to_string(),
+                        target_workload: "vector".to_string(),
+                        appended_context: "vector embeddings searched by cosine similarity for nearest neighbor retrieval".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Connected Entity Graphs & Traversal".to_string(),
+                        description: "Deep relationship networks, org charts, dependencies, and path traversals.".to_string(),
+                        target_workload: "graph".to_string(),
+                        appended_context: "connected entity graph traversed along relationship edges and node hierarchies".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Columnar OLAP Analytics on Event Logs".to_string(),
+                        description: "Scanned batches of logs and clickstream events aggregated over millions of rows.".to_string(),
+                        target_workload: "semi-structured".to_string(),
+                        appended_context: "columnar OLAP aggregations across event logs and scraped analytical records".to_string(),
+                    },
+                ],
+            });
+        } else if is_close_contest {
+            let top_workload = &sorted[0].workload;
+            let second_workload = &sorted[1].workload;
+            if let Some(pair_q) = self.question_for_pair(top_workload, second_workload) {
+                questions.push(pair_q);
+            }
+        } else if let Some(tuning_q) = self.fine_tuning_question(&prototype.workload) {
+            questions.push(tuning_q);
+        }
+
+        questions
+    }
+
+    fn question_for_pair(&self, w1: &str, w2: &str) -> Option<ClarifyingQuestion> {
+        let pair = if w1 < w2 { (w1, w2) } else { (w2, w1) };
+        match pair {
+            ("nosql-doc", "vector") => Some(ClarifyingQuestion {
+                id: "pair_nosql_vs_vector".to_string(),
+                prompt: "Are you storing media/files as raw assets, or searching them by visual and semantic similarity?".to_string(),
+                rationale: "Standard document storage uses lightweight key-value records, whereas similarity search requires in-memory HNSW vector indexes.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Store media files by ID & metadata".to_string(),
+                        description: "Uploaded files and pictures fetched by key without embedding similarity.".to_string(),
+                        target_workload: "nosql-doc".to_string(),
+                        appended_context: "store image and media files as blobs by asset ID with metadata".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Search embeddings by semantic / visual similarity".to_string(),
+                        description: "High-dimensional embeddings searched via cosine similarity or nearest neighbor.".to_string(),
+                        target_workload: "vector".to_string(),
+                        appended_context: "search image embeddings by visual similarity and nearest neighbor".to_string(),
+                    },
+                ],
+            }),
+            ("nosql-doc", "sql") => Some(ClarifyingQuestion {
+                id: "pair_sql_vs_nosql".to_string(),
+                prompt: "Do you need strict multi-table referential integrity (foreign keys & joins), or flexible schemaless documents?".to_string(),
+                rationale: "Relational tables enforce schema constraints and foreign keys, while document storage allows dynamic, variable fields.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Strict relational tables with foreign keys & joins".to_string(),
+                        description: "Structured tables with primary keys, foreign keys, and multi-table SQL queries.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "normalised relational tables with foreign keys and ACID joins".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Dynamic JSON documents without rigid schemas".to_string(),
+                        description: "Variable records stored and retrieved directly by document key.".to_string(),
+                        target_workload: "nosql-doc".to_string(),
+                        appended_context: "schemaless JSON documents stored and fetched by key".to_string(),
+                    },
+                ],
+            }),
+            ("sql", "time-series") => Some(ClarifyingQuestion {
+                id: "pair_sql_vs_timeseries".to_string(),
+                prompt: "Is your workload primarily transactional business records, or continuous sensor / telemetry metric streams?".to_string(),
+                rationale: "Business records require relational consistency and joins, whereas telemetry streams benefit from automated time-window rollups.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Transactional business entities requiring ACID joins".to_string(),
+                        description: "Customer accounts, orders, and invoices with referential consistency.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "business records in relational tables with foreign keys and ACID joins".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Continuous timestamped metric streams with rollups".to_string(),
+                        description: "Periodic sensor or server telemetry downsampled over hours/days.".to_string(),
+                        target_workload: "time-series".to_string(),
+                        appended_context: "timestamped telemetry sampled continuously with automated downsampling rollups".to_string(),
+                    },
+                ],
+            }),
+            ("nosql-doc", "semi-structured") => Some(ClarifyingQuestion {
+                id: "pair_nosql_vs_semistructured".to_string(),
+                prompt: "Will you primarily run analytical queries across millions of records, or point lookups of individual documents?".to_string(),
+                rationale: "Batch analytics across events benefit from columnar storage, while point lookups benefit from document key-value storage.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Columnar aggregations and OLAP summaries across large batches".to_string(),
+                        description: "Scanned batches of event logs, clickstreams, and analytical reports.".to_string(),
+                        target_workload: "semi-structured".to_string(),
+                        appended_context: "columnar OLAP aggregations across event logs and analytical tables".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Direct point lookups and updates of individual documents by ID".to_string(),
+                        description: "Single-record operations and profile retrievals by document key.".to_string(),
+                        target_workload: "nosql-doc".to_string(),
+                        appended_context: "document storage with key-value point lookups by ID".to_string(),
+                    },
+                ],
+            }),
+            ("graph", "sql") => Some(ClarifyingQuestion {
+                id: "pair_graph_vs_sql".to_string(),
+                prompt: "Do you primarily need to traverse deep relationship paths, or query structured tables with standard foreign keys?".to_string(),
+                rationale: "Adjacency-list graph engines excel at variable-depth pointer-chasing, whereas relational engines excel at multi-column SQL queries.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Multi-hop graph traversals across entity networks & hierarchies".to_string(),
+                        description: "Org charts, social follower networks, and shortest path traversals.".to_string(),
+                        target_workload: "graph".to_string(),
+                        appended_context: "traversing graph relationships and directional edges between connected nodes".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Standard relational tables with foreign key joins".to_string(),
+                        description: "Normalised SQL tables with fixed columns and indexed joins.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "normalised relational tables with foreign keys and SQL joins".to_string(),
+                    },
+                ],
+            }),
+            ("oops-rdbms", "sql") => Some(ClarifyingQuestion {
+                id: "pair_orm_vs_sql".to_string(),
+                prompt: "Are you mapping an object-oriented class inheritance hierarchy, or working with direct relational database tables?".to_string(),
+                rationale: "ORM class hierarchies need inheritance mapping and polymorphic queries, while relational tables focus on normalized relational schemas.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Polymorphic domain models with class inheritance mapped via an ORM".to_string(),
+                        description: "Classes, subclasses, and instance relationships mapped to tables.".to_string(),
+                        target_workload: "oops-rdbms".to_string(),
+                        appended_context: "class inheritance hierarchy persisted via an ORM into relational tables".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Direct relational database tables and SQL queries".to_string(),
+                        description: "Explicit SQL schema without OOP class mapping overhead.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "normalised relational tables with foreign keys and SQL joins".to_string(),
+                    },
+                ],
+            }),
+            _ => None,
+        }
+    }
+
+    fn fine_tuning_question(&self, workload: &str) -> Option<ClarifyingQuestion> {
+        match workload {
+            "time-series" => Some(ClarifyingQuestion {
+                id: "tune_timeseries_retention".to_string(),
+                prompt: "What is your desired retention window for metric history?".to_string(),
+                rationale: "De-Sentry automatically downsamples and purges expired metric points past the retention horizon to preserve disk quota.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "30 days (short-term operational metrics)".to_string(),
+                        description: "Ideal for real-time monitoring where long-term trends are not required.".to_string(),
+                        target_workload: "time-series".to_string(),
+                        appended_context: "with 30 days retention".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "90 days (quarterly monitoring window)".to_string(),
+                        description: "Balanced history for seasonal monitoring and service-level tracking.".to_string(),
+                        target_workload: "time-series".to_string(),
+                        appended_context: "with 90 days retention".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "365 days (annual historical auditing)".to_string(),
+                        description: "Retains hourly rollups for up to one full calendar year.".to_string(),
+                        target_workload: "time-series".to_string(),
+                        appended_context: "with 365 days retention".to_string(),
+                    },
+                ],
+            }),
+            "vector" => Some(ClarifyingQuestion {
+                id: "tune_vector_source".to_string(),
+                prompt: "What is the primary retrieval task for these vector embeddings?".to_string(),
+                rationale: "Tailoring the embedding profile helps configure secondary metadata collections and shard keys.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "RAG knowledge base document retrieval".to_string(),
+                        description: "Embeddings of text passages for generative AI grounding and question answering.".to_string(),
+                        target_workload: "vector".to_string(),
+                        appended_context: "for RAG document passage retrieval and question answering".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Product / content semantic recommendations".to_string(),
+                        description: "Finding related products or articles based on user preference vectors.".to_string(),
+                        target_workload: "vector".to_string(),
+                        appended_context: "for semantic recommendation similarity across products".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Visual / reverse image search".to_string(),
+                        description: "Feature vectors generated from images for visual nearest neighbor search.".to_string(),
+                        target_workload: "vector".to_string(),
+                        appended_context: "for visual similarity search over image embeddings".to_string(),
+                    },
+                ],
+            }),
+            "sql" => Some(ClarifyingQuestion {
+                id: "tune_sql_workload".to_string(),
+                prompt: "What is the expected transactional profile for these tables?".to_string(),
+                rationale: "Understanding read/write intensity helps configure buffer pool page sizes and secondary indexing.".to_string(),
+                options: vec![
+                    ClarificationOption {
+                        label: "Balanced OLTP transactional reads and writes".to_string(),
+                        description: "Frequent concurrent transactions, order inserts, and status updates.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "with balanced OLTP transactional reads and writes".to_string(),
+                    },
+                    ClarificationOption {
+                        label: "Read-heavy analytical reporting & dashboards".to_string(),
+                        description: "Infrequent batch writes with complex multi-table SQL queries.".to_string(),
+                        target_workload: "sql".to_string(),
+                        appended_context: "with read-heavy analytical reporting queries".to_string(),
+                    },
+                ],
+            }),
+            _ => None,
         }
     }
 
@@ -871,6 +1378,57 @@ mod tests {
     fn softmax_rewards_a_clear_margin() {
         let scores = softmax(&[0.8, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
         assert!(scores[0] > 0.9, "a 0.3 cosine margin should be decisive, got {}", scores[0]);
+    }
+
+    #[test]
+    fn sizing_decision_includes_rich_reasoning() {
+        let sizer = sizer();
+        let spec = sizer.size(
+            "Sensor readings from the workshop, sampled every second and kept for a year",
+            2048,
+            &all_engines(),
+        );
+        let reasoning = spec.decision.reasoning.expect("reasoning must be populated");
+        assert!(!reasoning.summary.is_empty(), "summary should explain the decision");
+        assert!(!reasoning.engine_rationales.is_empty(), "engine rationales should not be empty");
+        for engine in &spec.engines {
+            assert!(
+                reasoning.engine_rationales.iter().any(|er| er.engine == *engine),
+                "must provide rationale for engine {engine}"
+            );
+        }
+        assert!(!reasoning.quota_rationale.is_empty(), "quota rationale must be present");
+        assert!(!reasoning.key_matched_signals.is_empty(), "should extract matched signals from text");
+        assert!(reasoning.key_matched_signals.iter().any(|s| s.contains("sensor")));
+    }
+
+    #[test]
+    fn ambiguous_input_generates_clarifying_questions_that_resolve_intent() {
+        let sizer = sizer();
+        // Vague query below floor
+        let vague = "I need a database for my project";
+        let spec = sizer.size(vague, 1024, &all_engines());
+        assert!(spec.decision.confidence < spec.decision.confidence_floor);
+        assert!(!spec.decision.clarifying_questions.is_empty(), "must propose clarifying questions");
+
+        // The clarifying questions have options with appended_context
+        let ts_opt = spec
+            .decision
+            .clarifying_questions
+            .iter()
+            .flat_map(|q| &q.options)
+            .find(|o| o.target_workload == "time-series")
+            .expect("time-series option exists in questions");
+        let refined_desc = format!("{vague} {}", ts_opt.appended_context);
+        let refined_spec = sizer.size(&refined_desc, 1024, &all_engines());
+
+        assert_eq!(refined_spec.decision.workload, "time-series");
+        assert!(
+            refined_spec.decision.confidence >= refined_spec.decision.confidence_floor,
+            "answering the clarifying question must raise confidence above floor ({:.3} >= {:.3})",
+            refined_spec.decision.confidence,
+            refined_spec.decision.confidence_floor
+        );
     }
 
     /// The full ONNX path against the real fetched files: load the model and

@@ -684,6 +684,16 @@ export class NodeApi {
     return this.request("POST", "/_transit/expire", undefined, options);
   }
 
+  // -- outbox (stage-anywhere) ------------------------------------------------
+  outbox(options?: RequestOptions): Promise<{ entries_staged: number; bytes_staged: number }> {
+    return this.get<{ entries_staged: number; bytes_staged: number }>("/_outbox", options);
+  }
+
+  /** Flushes the outbox, replaying staged writes and broadcasting them. */
+  flushOutbox(options?: RequestOptions): Promise<{ replayed: number }> {
+    return this.request<{ replayed: number }>("POST", "/_outbox/flush", undefined, options);
+  }
+
   /** Supervisor-only; a data node answers 403. */
   checkpoint(options?: RequestOptions): Promise<CheckpointResult> {
     return this.request<CheckpointResult>("POST", "/_checkpoint", undefined, {
