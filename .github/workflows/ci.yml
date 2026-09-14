@@ -36,15 +36,17 @@ jobs:
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake ninja openssl@3 pkg-config python3
+        run: |
+          brew install cmake ninja openssl@3 pkg-config python3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
 
       - name: Configure and build the engine
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build --parallel
+          cmake --build build --config RelWithDebInfo --parallel
 
       - name: Run the C++ test suites
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
 
   app:
     runs-on: ubuntu-22.04
@@ -72,6 +74,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -79,7 +89,7 @@ jobs:
         working-directory: app/src-tauri
         run: |
           cargo check --no-default-features
-          cargo test
+          cargo test --no-default-features
 
   integration-smoke:
     needs: engine
@@ -91,12 +101,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config libssl-dev python3
+            build-essential cmake ninja-build pkg-config libssl-dev python3 net-tools
 
       - name: Build the engine
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build --parallel
+          cmake --build build --config RelWithDebInfo --parallel
 
       - name: Transit replay test
         run: python3 tests/integration/transit_replay_test.py

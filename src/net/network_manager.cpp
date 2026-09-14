@@ -110,9 +110,23 @@ Status NetworkManager::Start() {
   gossip_ = std::make_unique<GossipEngine>(engine_, &peer_table_, transport_.get(), gossip_opts);
   gossip_->Start();
 
-  engine_->SetLocalWriteHook([this](const std::string& collection, const std::string& key,
-                                     const std::string& bytes) {
+engine_->SetLocalWriteHook([this](const std::string& collection, const std::string& key,
+                                      const std::string& bytes) {
     BroadcastLocalWrite(collection, key, bytes);
+  });
+
+  engine_->SetReachabilityProvider([this]() -> bool {
+    // Node is reachable if it has at least one peer with an established
+    // P2P connection (handshake complete, port known, seen recently).
+    const int64_t stale_ms = StaleThresholdMs(config_);
+    const int64_t now = NowMs();
+    for (const auto& peer : peer_table_.List()) {
+      if (peer.p2p_port == 0) continue;
+      if (peer.node_id == engine_->identity().node_id()) continue;
+      if (now - peer.last_seen_ms > stale_ms) continue;
+      return true;  // at least one reachable peer
+    }
+    return false;  // no reachable peers = isolated
   });
 
   running_ = true;

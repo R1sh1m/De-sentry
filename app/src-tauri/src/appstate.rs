@@ -18,9 +18,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::nodes::{self, LaunchSpec, NodeHandle, ProcessState, SupervisedNode};
@@ -28,14 +28,39 @@ use crate::ports::{self, PortAllocation};
 
 /// How often the watchdog checks for exited children.
 const WATCH_INTERVAL: Duration = Duration::from_millis(750);
+/// How often the watchdog runs a discovery scan.
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The channel every sidecar-originated update travels on.
 pub const EVENT: &str = "desentry://sidecar";
+
+/// A node directory found by the supervisor scan that this app is not already
+/// managing. Mirrors the `DataDirCandidate` shape in the supervisor API and
+/// in app/src/api.ts — any field added here must also be added there.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveredCandidate {
+    pub path: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub existing_node: bool,
+    pub adoptable: bool,
+    pub removable: bool,
+    pub encrypted: bool,
+    pub has_node_config: bool,
+    pub has_identity: bool,
+    pub has_data_file: bool,
+    pub has_manifest: bool,
+    pub free_bytes: u64,
+    pub used_bytes: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SidecarEvent {
     NodeState { node: SupervisedNode },
+    /// Emitted when the watchdog's periodic scan finds unmanaged node directories
+    /// or when a volume change triggers an immediate re-scan.
+    NodesDiscovered { candidates: Vec<DiscoveredCandidate> },
     VolumesChanged,
     PowerChanged { on_battery: bool },
     NetworkChanged,
@@ -135,6 +160,17 @@ impl AppState {
         Ok(handle.view())
     }
 
+    pub fn lock_node(&self, node_id: &str) -> Result<SupervisedNode, nodes::NodeError> {
+        let mut nodes = self.nodes.lock().expect("node mutex");
+        let handle = nodes
+            .get_mut(node_id)
+            .ok_or_else(|| nodes::NodeError::Unknown(node_id.to_owned()))?;
+        nodes::stop(handle);
+        handle.spec.unlock_secret = None;
+        self.pending_keys.lock().expect("key mutex").remove(node_id);
+        Ok(handle.view())
+    }
+
     pub fn restart_node(&self, node_id: &str) -> Result<SupervisedNode, nodes::NodeError> {
         // The handle is taken out of the map before the restart and put back
         // afterwards. A restart waits up to twenty seconds for the node to
@@ -220,14 +256,65 @@ pub fn emit(app: &AppHandle, event: SidecarEvent) {
     let _ = app.emit(EVENT, event);
 }
 
+/// Queries the supervisor's scan endpoint and returns unmanaged node candidates.
+///
+/// Unmanaged means: the node directory contains a real node (existing_node)
+/// and its node_id is not in the set of nodes this app currently supervises.
+/// The supervisor itself is filtered out -- it is always managed and should
+/// never appear as a discovery result.
+pub fn scan_for_candidates(state: &AppState) -> Vec<DiscoveredCandidate> {
+    // Grab the supervisor port and the set of already-managed node IDs while
+    // the mutex is held, then release it before making any HTTP calls.
+    let (supervisor_port, managed_ids): (Option<u16>, HashSet<String>) = {
+        let nodes = state.nodes.lock().expect("node mutex");
+        let port = state
+            .supervisor_id
+            .lock()
+            .ok()
+            .and_then(|id| id.clone())
+            .and_then(|id| nodes.get(&id).map(|h| h.spec.api_port));
+        let ids: HashSet<String> = nodes.keys().cloned().collect();
+        (port, ids)
+    };
+
+    let Some(port) = supervisor_port else {
+        return Vec::new();
+    };
+
+    let Ok(body) = crate::http::get(port, "/_supervisor/scan", Duration::from_secs(5)) else {
+        return Vec::new();
+    };
+    let Ok(value): Result<serde_json::Value, _> = serde_json::from_str(&body) else {
+        return Vec::new();
+    };
+    let Some(candidates_raw) = value.get("candidates").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    candidates_raw
+        .iter()
+        .filter_map(|v| serde_json::from_value::<DiscoveredCandidate>(v.clone()).ok())
+        .filter(|c| {
+            // Only surface real nodes that this app does not already manage.
+            c.existing_node && !managed_ids.contains(&c.node_id) && !c.node_id.is_empty()
+        })
+        .collect()
+}
+
 /// Starts the watchdog thread.
 ///
 /// It does three things on each pass: reap exited children, restart the ones
 /// that should come back, and tell the window about anything that changed. It
 /// is the only place a restart is initiated automatically, so the restart
 /// budget in `nodes.rs` is enough to bound them.
+///
+/// Additionally, every DISCOVERY_INTERVAL it runs a supervisor scan and emits
+/// NodesDiscovered when unmanaged node directories are found.
 pub fn start_watchdog(app: AppHandle, state: Arc<AppState>) {
-    std::thread::spawn(move || loop {
+    std::thread::spawn(move || {
+        let mut last_discovery = Instant::now().checked_sub(DISCOVERY_INTERVAL).unwrap_or(Instant::now());
+        let mut last_candidates: Vec<DiscoveredCandidate> = Vec::new();
+    loop {
         std::thread::sleep(WATCH_INTERVAL);
         if state.shutting_down.load(Ordering::SeqCst) {
             return;
@@ -281,6 +368,22 @@ pub fn start_watchdog(app: AppHandle, state: Arc<AppState>) {
                 emit(&app, SidecarEvent::NodeState { node: view });
             }
         }
+
+        // Discovery scan: runs every DISCOVERY_INTERVAL, or immediately after
+        // a volume/network change (the frontend will call scan_for_nodes on
+        // those events, so this periodic pass is the fallback for the LAN-peer
+        // case and for nodes that appear without a mount event).
+        if last_discovery.elapsed() >= DISCOVERY_INTERVAL {
+            last_discovery = Instant::now();
+            let candidates = scan_for_candidates(&state);
+            // Only emit when the candidate set actually changed, to avoid
+            // pushing the same list to the window every thirty seconds.
+            if candidates != last_candidates {
+                last_candidates = candidates.clone();
+                emit(&app, SidecarEvent::NodesDiscovered { candidates });
+            }
+        }
+    }
     });
 }
 

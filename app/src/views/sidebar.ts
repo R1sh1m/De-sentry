@@ -9,10 +9,12 @@
  */
 
 import type { MountPoint, TopologyPeer } from "../api.js";
-import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
+import { convergenceOf, meshTip, refreshDiscovered, refreshNodeList, store, type Convergence, type NodeView } from "../state.js";
 import { bytes, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
+import { sidecar, type DiscoveredCandidate } from "../bridge.js";
+import { openUnlockModal } from "./unlockModal.js";
 
 /** Collapsed groups, remembered for the session only. */
 const collapsed = new Set<string>();
@@ -101,6 +103,150 @@ const GROUP_HEADINGS: Record<Group["kind"], string> = {
   network: "On the network",
 };
 
+// -- discovered candidates section ------------------------------------------
+
+/**
+ * Renders a single discovered-candidate row in the "Discovered" section.
+ *
+ * Local/USB nodes get an "Adopt" button that starts them immediately (encrypted
+ * nodes will prompt for a password because start_existing_node returns an error
+ * that the window handles via the unlock flow). LAN-only peers that cannot be
+ * run locally get "Add as peer" which opens the wizard seeded with the address.
+ */
+function discoveredCandidateRow(
+  candidate: DiscoveredCandidate,
+  onAddAsPeer: (address: string) => void,
+): HTMLElement {
+  const isRemoteOnly = !candidate.has_node_config && !candidate.adoptable;
+  const isEncrypted = candidate.encrypted;
+  const name = candidate.node_name || candidate.node_id.slice(0, 12) || candidate.path.split(/[\\/]/).pop() || "Unknown node";
+
+  const actionLabel = isRemoteOnly ? " Add as peer" : isEncrypted ? " Unlock" : " Adopt";
+  const actionIcon = isRemoteOnly ? Icons.network : isEncrypted ? Icons.inspector : Icons.plug;
+
+  const actionBtn = el(
+    "button",
+    {
+      class: isEncrypted ? "btn btn--sm btn--primary" : "btn btn--sm btn--primary",
+      type: "button",
+      title: isRemoteOnly
+        ? `Add ${name} as a bootstrap peer`
+        : isEncrypted
+          ? `Unlock encrypted node ${name}`
+          : `Adopt ${name} into this app`,
+    },
+    icon(actionIcon, 11),
+    actionLabel,
+  );
+
+  on(actionBtn, "click", async (e) => {
+    e.stopPropagation();
+    if (isEncrypted) {
+      openUnlockModal({ node_id: candidate.node_id, node_name: name, data_dir: candidate.path });
+      return;
+    }
+    actionBtn.setAttribute("disabled", "");
+    if (isRemoteOnly) {
+      onAddAsPeer(candidate.node_id);
+    } else {
+      try {
+        await sidecar.startExistingNode(candidate.path);
+        store.dismissCandidate(candidate.path);
+        await refreshNodeList();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        store.toast("error", `Could not adopt ${name}`, msg);
+        actionBtn.removeAttribute("disabled");
+      }
+    }
+  });
+
+  const dismissBtn = el(
+    "button",
+    {
+      class: "tree__row-action",
+      type: "button",
+      title: `Dismiss ${name}`,
+      "aria-label": `Dismiss ${name}`,
+    },
+    icon(Icons.close, 11),
+  );
+  on(dismissBtn, "click", (e) => {
+    e.stopPropagation();
+    store.dismissCandidate(candidate.path);
+  });
+
+  const kindIcon = candidate.removable ? Icons.drive : isRemoteOnly ? Icons.network : Icons.folder;
+  const meta = candidate.encrypted ? "🔒 encrypted" : candidate.removable ? "removable" : "local";
+
+  return el(
+    "div",
+    {
+      class: "tree__row discovered-row",
+      "data-depth": "1",
+      role: "treeitem",
+      "aria-selected": "false",
+      title: candidate.path || candidate.node_id,
+    },
+    icon(kindIcon, 13),
+    el("span", { class: "tree__label", text: name }),
+    el("span", { class: "tree__meta", text: meta }),
+    actionBtn,
+    dismissBtn,
+  );
+}
+
+/**
+ * Renders the full "Discovered" section, or nothing if the list is empty.
+ */
+function discoveredSection(onAddAsPeer: (address: string) => void): (Node | string)[] {
+  const candidates = store.state.discoveredCandidates;
+  if (candidates.length === 0) return [];
+
+  const autoConnectCheckbox = el("input", {
+    type: "checkbox",
+    style: "cursor: pointer; margin-right: 4px;",
+    title: "Automatically connect to discovered unencrypted nodes and USB drives",
+  }) as HTMLInputElement;
+  autoConnectCheckbox.checked = store.state.autoConnectEnabled;
+  on(autoConnectCheckbox, "change", () => {
+    store.setAutoConnect(autoConnectCheckbox.checked);
+  });
+
+  const autoConnectLabel = el(
+    "label",
+    {
+      class: "row",
+      style: "font-size: var(--text-xs); color: var(--color-ink-muted); cursor: pointer; align-items: center;",
+      title: "Automatically connect to discovered unencrypted nodes and drives",
+    },
+    autoConnectCheckbox,
+    "Auto-connect",
+  );
+
+  const refreshBtn = el(
+    "button",
+    { class: "btn btn--sm btn--ghost", type: "button", title: "Scan again" },
+    icon(Icons.refresh, 11),
+  );
+  on(refreshBtn, "click", () => {
+    void refreshDiscovered();
+  });
+
+  const rows: (Node | string)[] = [
+    el(
+      "div",
+      { class: "discovered-header", style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 8px;" },
+      el("p", { class: "tree__group-label discovered-label", text: "Discovered" }),
+      el("div", { class: "row", style: "gap: 8px; align-items: center;" }, autoConnectLabel, refreshBtn),
+    ),
+  ];
+  for (const candidate of candidates) {
+    rows.push(discoveredCandidateRow(candidate, onAddAsPeer));
+  }
+  return rows;
+}
+
 function statusLabel(status: Convergence): string {
   switch (status) {
     case "converged": return "In sync";
@@ -139,25 +285,73 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       })()
     : el("span", { style: "width: 10px; flex: none;" });
 
-  const deleteBtn = !node.process.supervisor
-    ? el(
+  const ledgerBtn = el(
         "button",
         {
-          class: "tree__row-action text-danger",
+          class: "tree__row-action",
           type: "button",
-          title: `Delete ${name}`,
-          "aria-label": `Delete ${name}`,
+          title: `View ledger for ${name}`,
+          "aria-label": `View ledger for ${name}`,
         },
-        icon(Icons.trash, 12),
-      )
-    : null;
-
-  if (deleteBtn) {
-    on(deleteBtn, "click", (e) => {
+        icon(Icons.inspector, 12),
+      );
+    on(ledgerBtn, "click", (e) => {
       e.stopPropagation();
-      promptDeleteSupervisedNode(node);
+      store.select({ kind: "ledger", nodeId: node.process.node_id });
     });
-  }
+
+    const deleteBtn = !node.process.supervisor
+      ? el(
+          "button",
+          {
+            class: "tree__row-action text-danger",
+            type: "button",
+            title: `Delete ${name}`,
+            "aria-label": `Delete ${name}`,
+          },
+          icon(Icons.trash, 12),
+        )
+      : null;
+
+    if (deleteBtn) {
+      on(deleteBtn, "click", (e) => {
+        e.stopPropagation();
+        promptDeleteSupervisedNode(node);
+      });
+    }
+
+    const isEncrypted = node.process.encrypted;
+    const isRunning = node.process.process === "running";
+
+    const lockUnlockBtn = isEncrypted
+      ? el(
+          "button",
+          {
+            class: "tree__row-action",
+            type: "button",
+            title: isRunning ? `Lock ${name}` : `Unlock ${name}`,
+            "aria-label": isRunning ? `Lock ${name}` : `Unlock ${name}`,
+          },
+          isRunning ? "🔒" : "🔓",
+        )
+      : null;
+
+    if (lockUnlockBtn) {
+      on(lockUnlockBtn, "click", async (e) => {
+        e.stopPropagation();
+        if (isRunning) {
+          try {
+            await sidecar.lockNode(node.process.node_id);
+            store.toast("info", "Node locked", name);
+            await refreshNodeList();
+          } catch (err) {
+            store.toast("error", "Could not lock node", String(err));
+          }
+        } else {
+          openUnlockModal(node.process);
+        }
+      });
+    }
 
   const row = el(
     "div",
@@ -173,6 +367,8 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
     dot(status),
     el("span", { class: "tree__label", text: name }),
     el("span", { class: "tree__meta", text: meta }),
+    lockUnlockBtn,
+    ledgerBtn,
     deleteBtn,
   );
 
@@ -319,7 +515,7 @@ export interface SidebarHandles {
   element: HTMLElement;
 }
 
-export function createSidebar(onNewNode: () => void): SidebarHandles {
+export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: string) => void): SidebarHandles {
   const tree = el("div", { class: "stack", role: "tree", "aria-label": "Devices and nodes" });
 
   const searchInput = el("input", {
@@ -341,6 +537,24 @@ export function createSidebar(onNewNode: () => void): SidebarHandles {
     searchInput,
   );
 
+  const navRow = el(
+    "div",
+    { class: "sidebar__nav-row", style: "display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: var(--space-xs);" },
+    (() => {
+      const dropBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "justify-content: center;" }, "📥 Dropbox");
+      on(dropBtn, "click", () => store.select({ kind: "dropbox" }));
+      return dropBtn;
+    })(),
+    (() => {
+      const consoleBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "justify-content: center;" }, "⚡ Console");
+      on(consoleBtn, "click", () => {
+        const sel = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+        store.select({ kind: "console", nodeId: sel });
+      });
+      return consoleBtn;
+    })(),
+  );
+
   const element = el(
     "aside",
     { class: "sidebar", "data-open": "false" },
@@ -354,6 +568,7 @@ export function createSidebar(onNewNode: () => void): SidebarHandles {
         return button;
       })(),
     ),
+    navRow,
     searchBox,
     tree,
   );
@@ -363,7 +578,13 @@ export function createSidebar(onNewNode: () => void): SidebarHandles {
     const tip = meshTip();
     const children: (Node | string)[] = [];
 
-    if (groups.length === 0) {
+    // Discovered section: shown whenever unmanaged nodes are found, above
+    // the regular topology groups. Not filtered by the search query -- a
+    // "Discovered" node the user has not yet adopted is not in the mesh and
+    // would never match any search term.
+    children.push(...discoveredSection(onAddAsPeer));
+
+    if (groups.length === 0 && store.state.discoveredCandidates.length === 0) {
       children.push(
         el(
           "div",
@@ -375,6 +596,8 @@ export function createSidebar(onNewNode: () => void): SidebarHandles {
           }),
         ),
       );
+    } else if (groups.length === 0) {
+      // Discovered candidates exist but no managed groups yet: no empty state.
     }
 
     let lastKind: Group["kind"] | null = null;

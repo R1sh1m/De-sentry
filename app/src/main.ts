@@ -17,9 +17,13 @@ import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
 import { createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
+import { createHealthAlerts } from "./views/healthAlerts.js";
 import { createInspector } from "./views/inspector.js";
+import { createLedger } from "./views/ledger.js";
 import { createSidebar } from "./views/sidebar.js";
 import { createWizard } from "./views/wizard.js";
+import { createConsole } from "./views/console.js";
+import { createDropbox } from "./views/dropbox.js";
 
 const THEME_KEY = "desentry.theme";
 
@@ -210,7 +214,7 @@ function openAboutSheet(): void {
       el("dt", { text: "Active Mesh" }),
       el("dd", { text: `${reachable}/${nodes.length} data nodes online` }),
       el("dt", { text: "Shortcuts" }),
-      el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · Ctrl+R" }),
+      el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · 3 (ledger) · Ctrl+R" }),
     ),
   );
 
@@ -235,10 +239,25 @@ function build(): void {
   if (root === null) throw new Error("#app is missing from index.html");
 
   const wizard = createWizard();
-  const sidebar = createSidebar(() => wizard.open());
+
+  // onAddAsPeer: called when the user clicks "Add as peer" on a discovered
+  // LAN node. Pre-opens the wizard so they can create a local node that
+  // bootstraps from the remote peer's node_id. The wizard will surface the
+  // peer in its bootstrap-peers field when supported.
+  const onAddAsPeer = (peerNodeId: string) => {
+    wizard.open({ bootstrapPeer: peerNodeId });
+  };
+
+  const sidebar = createSidebar(() => wizard.open(), onAddAsPeer);
   const canvas = createCanvas(() => wizard.open());
   const explorer = createExplorer();
   const inspector = createInspector();
+  const ledger = createLedger();
+  const consoleView = createConsole();
+  const dropbox = createDropbox();
+  const healthAlerts = createHealthAlerts((nodeId) => {
+    store.select({ kind: "node", nodeId });
+  });
 
   // Header ------------------------------------------------------------------
   const titleRow = el(
@@ -312,12 +331,23 @@ function build(): void {
 
   const busyNote = el("span", { class: "muted" });
 
+  const dropboxButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Universal Mesh Dropbox (5)" }, icon(Icons.drive, 14), "Dropbox");
+  on(dropboxButton, "click", () => store.select({ kind: "dropbox" }));
+
+  const consoleButton = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Interactive Engine Console (4)" }, icon(Icons.inspector, 14), "Console");
+  on(consoleButton, "click", () => {
+    const sel = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+    store.select({ kind: "console", nodeId: sel });
+  });
+
   const header = el(
     "header",
     { class: "header" },
     title,
     el("span", { class: "header__spacer" }),
     viewSegmented,
+    dropboxButton,
+    consoleButton,
     el("span", { class: "header__spacer" }),
     busyNote,
     themeButton,
@@ -329,7 +359,7 @@ function build(): void {
 
   const centre = el("div", {});
   root.removeAttribute("data-loading");
-  replace(root, header, sidebar.element, centre, inspector.element);
+  replace(root, header, sidebar.element, healthAlerts.element, centre, inspector.element);
   document.body.appendChild(wizard.element);
 
   // Toasts ------------------------------------------------------------------
@@ -393,16 +423,26 @@ function build(): void {
 
     sidebar.render();
     inspector.render();
+    healthAlerts.render();
 
     treeModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "tree"));
     meshModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "mesh"));
 
-    // The explorer replaces the canvas when a collection is open: they are two
-    // ways of looking at the same node, and showing both halves the room each
-    // gets.
+    // The explorer replaces the canvas when a collection is open; the ledger
+    // viewer replaces it when a ledger is open; console replaces it for engine
+    // interaction; dropbox replaces it for smart data intake.
     if (state.selection.kind === "collection") {
       explorer.render();
       replace(centre, el("main", { class: "canvas" }, explorer.element));
+    } else if (state.selection.kind === "ledger") {
+      ledger.render();
+      replace(centre, ledger.element);
+    } else if (state.selection.kind === "console") {
+      consoleView.render();
+      replace(centre, consoleView.element);
+    } else if (state.selection.kind === "dropbox") {
+      dropbox.render();
+      replace(centre, dropbox.element);
     } else {
       canvas.render();
       replace(centre, canvas.element);
@@ -426,13 +466,21 @@ function build(): void {
     } else if (event.key === "r" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void refreshNodeList();
-    } else if (event.key === "Escape" && store.state.selection.kind === "collection") {
+    } else if (event.key === "Escape" && store.state.selection.kind !== "none" && store.state.selection.kind !== "node") {
       const nodeId = store.state.selection.nodeId;
       store.select(nodeId === undefined ? { kind: "none" } : { kind: "node", nodeId });
     } else if (event.key === "1") {
       store.setCanvasMode("tree");
     } else if (event.key === "2") {
       store.setCanvasMode("mesh");
+    } else if (event.key === "3") {
+      const node = store.selectedNode();
+      if (node) store.select({ kind: "ledger", nodeId: node.process.node_id });
+    } else if (event.key === "4") {
+      const node = store.selectedNode() ?? store.dataNodes()[0];
+      if (node) store.select({ kind: "console", nodeId: node.process.node_id });
+    } else if (event.key === "5") {
+      store.select({ kind: "dropbox" });
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
       event.preventDefault();
       toggleInspector();

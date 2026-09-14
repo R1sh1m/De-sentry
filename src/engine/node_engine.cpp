@@ -5,6 +5,7 @@
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/ledger/outbox_store.h"
 #include "desentry/security/crypto.h"
 #include "desentry/storage/document_codec.h"
 
@@ -50,6 +51,10 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
                                          engine->identity_->node_id());
   if (!transit_or.ok()) return transit_or.status();
   engine->transit_ = std::move(transit_or.value());
+
+  auto outbox_or = OutboxStore::Open(options.data_dir, engine->identity_->node_id());
+  if (!outbox_or.ok()) return outbox_or.status();
+  engine->outbox_ = std::move(outbox_or.value());
 
   engine->changes_ = std::make_unique<ChangeFeed>(engine->storage_->wal());
   ChangeFeed* feed = engine->changes_.get();
@@ -108,7 +113,7 @@ Status NodeEngine::WriteThrough(const std::string& collection, const std::string
 }
 
 Status NodeEngine::PutDocument(const std::string& collection, const std::string& key,
-                                const JsonValue& new_json, const Requestor& who) {
+                                 const JsonValue& new_json, const Requestor& who) {
   if (collection == kTransitCollection) {
     return Status::InvalidArgument("'" + std::string(kTransitCollection) +
                                     "' is engine-internal and cannot be written directly");
@@ -130,7 +135,40 @@ Status NodeEngine::PutDocument(const std::string& collection, const std::string&
   const HLCTimestamp ts = clock_->Now();
   CrdtValue updated = had_previous ? CrdtValue::ApplyJsonUpdate(previous, new_json, ts)
                                     : CrdtValue::FromJson(new_json, ts);
-  return WriteThrough(collection, key, EncodeDocument(updated), /*notify_hook=*/true);
+  const std::string encoded_doc = EncodeDocument(updated);
+
+  // Always write locally first -- the local node must have the data regardless
+  // of mesh connectivity.
+  Status st = storage_->PutRaw(collection, key, encoded_doc);
+  if (!st.ok()) return st;
+
+  // Determine if we should broadcast now or stage for later.
+  bool isolated = false;
+  if (reachability_provider_) {
+    isolated = !reachability_provider_();
+  }
+
+  if (isolated) {
+    // Stage in outbox for replay on reconnect.
+    OutboxEntry entry;
+    entry.collection = collection;
+    entry.key = key;
+    entry.key_hash = LedgerKeyHash(collection, key);
+    entry.encoded_doc = encoded_doc;
+    entry.hlc = ts;
+    Status outbox_st = outbox_->Put(entry);
+    if (!outbox_st.ok()) {
+      DSN_LOG_WARN("outbox", "failed to stage write in outbox: " << outbox_st.message());
+    }
+    DSN_LOG_INFO("outbox", "staged write for " << collection << "/" << key
+                                               << " (node isolated, " << outbox_->Size()
+                                               << " entries in outbox)");
+  } else {
+    // Normal path: notify the hook so the network layer broadcasts.
+    if (on_local_write_) on_local_write_(collection, key, encoded_doc);
+  }
+
+  return Status::OK();
 }
 
 Status NodeEngine::DeleteDocument(const std::string& collection, const std::string& key,
@@ -404,6 +442,46 @@ StorageEngine::VerifyReport NodeEngine::VerifyEverything() {
   report.backends_ok = backends.ok();
   if (!backends.ok()) report.backend_failure = backends.message();
   return report;
+}
+
+// ---------------------------------------------------------------------------
+// Outbox (stage-anywhere, sync-on-reconnect flow)
+// ---------------------------------------------------------------------------
+
+size_t NodeEngine::FlushOutbox() {
+  if (!outbox_) return 0;
+  auto entries = outbox_->DrainAll();
+  if (entries.empty()) return 0;
+  size_t replayed = 0;
+  for (const auto& entry : entries) {
+    // Apply as a local write: this will go through CRDT merge and notify the
+    // local write hook so it gets broadcast to peers.
+    Status st = PutDocument(entry.collection, entry.key, DecodeDocument(entry.encoded_doc).ToJson(),
+                            Requestor::Local(identity_->node_id()));
+    if (st.ok()) {
+      ++replayed;
+    } else {
+      DSN_LOG_WARN("outbox", "failed to replay outbox entry " << entry.collection << "/"
+                                                             << entry.key << ": " << st.message());
+      // Put it back in the outbox for retry
+      outbox_->Put(entry);
+    }
+  }
+  if (replayed > 0) {
+    DSN_LOG_INFO("outbox", "replayed " << replayed << " out of " << entries.size()
+                                       << " staged write(s) on reconnect");
+  }
+  return replayed;
+}
+
+size_t NodeEngine::OutboxSize() const {
+  if (!outbox_) return 0;
+  return outbox_->Size();
+}
+
+uint64_t NodeEngine::OutboxBytesHeld() const {
+  if (!outbox_) return 0;
+  return outbox_->BytesHeld();
 }
 
 }  // namespace desentry

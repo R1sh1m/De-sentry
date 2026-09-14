@@ -143,6 +143,27 @@ export interface LogLine {
   line: string;
 }
 
+/**
+ * A node directory found by the supervisor scan that this app is not managing.
+ * Mirrors `DiscoveredCandidate` in src-tauri/src/appstate.rs and
+ * `DataDirCandidate` in app/src/api.ts — keep all three in sync.
+ */
+export interface DiscoveredCandidate {
+  path: string;
+  node_id: string;
+  node_name: string;
+  existing_node: boolean;
+  adoptable: boolean;
+  removable: boolean;
+  encrypted: boolean;
+  has_node_config: boolean;
+  has_identity: boolean;
+  has_data_file: boolean;
+  has_manifest: boolean;
+  free_bytes: number;
+  used_bytes: number;
+}
+
 // -- invoke ------------------------------------------------------------------
 
 /** True when running inside the Tauri shell rather than a plain browser tab. */
@@ -259,6 +280,11 @@ export const sidecar = {
     return invoke<SupervisedNode>("unlock_node", { nodeId, password });
   },
 
+  /** Locks an encrypted node: stops process and clears in-memory keys. */
+  lockNode(nodeId: string): Promise<SupervisedNode> {
+    return invoke<SupervisedNode>("lock_node", { nodeId });
+  },
+
   // -- shell / OS ------------------------------------------------------------
 
   pickDirectory(title: string): Promise<string | null> {
@@ -286,6 +312,25 @@ export const sidecar = {
   notify(title: string, body: string): Promise<void> {
     return invoke<void>("notify", { title, body });
   },
+
+  // -- discovery -------------------------------------------------------------
+
+  /**
+   * Returns unmanaged node directories the supervisor has found. Safe to call
+   * at any time; returns [] when the supervisor is not yet running.
+   */
+  scanForNodes(): Promise<DiscoveredCandidate[]> {
+    return invoke<DiscoveredCandidate[]>("scan_for_nodes");
+  },
+
+  /**
+   * Triggers a scan and pushes the result as a `nodes-discovered` sidecar
+   * event. Call on volumes-changed / network-changed so the sidebar updates
+   * immediately without waiting for the 30-second watchdog pass.
+   */
+  triggerDiscoveryScan(): Promise<void> {
+    return invoke<void>("trigger_discovery_scan");
+  },
 };
 
 // -- events ------------------------------------------------------------------
@@ -298,6 +343,7 @@ export const sidecar = {
 export type SidecarEvent =
   | { kind: "node-state"; node: SupervisedNode }
   | { kind: "node-log"; node_id: string; line: LogLine }
+  | { kind: "nodes-discovered"; candidates: DiscoveredCandidate[] }
   | { kind: "volumes-changed" }
   | { kind: "power-changed"; on_battery: boolean }
   | { kind: "network-changed" };

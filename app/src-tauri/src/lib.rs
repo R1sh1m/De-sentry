@@ -317,12 +317,15 @@ pub fn run() {
             commands::pending_recovery_key,
             commands::export_recovery_key,
             commands::unlock_node,
+            commands::lock_node,
             commands::pick_directory,
             commands::pick_save_file,
             commands::reveal_node_files,
             commands::set_autostart,
             commands::set_background_mode,
             commands::notify,
+            commands::scan_for_nodes,
+            commands::trigger_discovery_scan,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

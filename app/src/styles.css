@@ -1171,63 +1171,6 @@ svg.mesh {
 }
 
 /* ---------------------------------------------------------------------------
- * Apple macOS Traffic Lights Window Controls
- * ------------------------------------------------------------------------ */
-.traffic-lights {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.header__traffic-lights {
-  margin-right: var(--space-xs);
-}
-.traffic-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  padding: 0;
-  position: relative;
-  outline: none;
-  font-size: 8px;
-  line-height: 1;
-  font-weight: 800;
-  color: rgba(0, 0, 0, 0.6);
-  transition: transform 0.1s ease, filter 0.12s ease;
-}
-.traffic-dot:hover {
-  filter: brightness(0.92);
-}
-.traffic-dot:active {
-  transform: scale(0.9);
-}
-.traffic-dot--close {
-  background: #ff5f56;
-  border-color: #e0443e;
-}
-.traffic-dot--minimize {
-  background: #ffbd2e;
-  border-color: #dea123;
-}
-.traffic-dot--zoom {
-  background: #27c93f;
-  border-color: #1aab29;
-}
-.traffic-lights:hover .traffic-dot--close::after {
-  content: "✕";
-}
-.traffic-lights:hover .traffic-dot--minimize::after {
-  content: "–";
-}
-.traffic-lights:hover .traffic-dot--zoom::after {
-  content: "⤢";
-}
-
-/* ---------------------------------------------------------------------------
  * Apple macOS Modal & Confirmation Sheet
  * ------------------------------------------------------------------------ */
 .macos-modal {
@@ -1646,3 +1589,161 @@ svg.mesh {
     height: 62mm;
   }
 }
+
+/* ── Discovered nodes ────────────────────────────────────────────────────── */
+
+.discovered-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs) var(--space-sm) var(--space-xxs);
+  border-bottom: 1px solid var(--color-hairline);
+  gap: var(--space-xs);
+}
+
+.discovered-label {
+  /* Inherits .tree__group-label styles from elsewhere; accent the section. */
+  color: var(--color-primary);
+  font: var(--text-fine);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  flex: 1;
+  margin: 0;
+}
+
+.discovered-row {
+  border-left: 2px solid var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
+  gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm);
+  align-items: center;
+  min-height: 32px;
+  cursor: default;
+}
+
+.discovered-row .btn--primary {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  gap: 4px;
+  height: 22px;
+}
+
+.discovered-row .tree__meta {
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  flex-shrink: 0;
+}
+
+/* ── Health alert banners ────────────────────────────────────────────────── */
+
+.health-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Sits between the sidebar and the canvas in the grid; spans full width. */
+  grid-column: 2 / -1;
+}
+
+.health-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-md);
+  font: var(--text-caption);
+  min-height: 30px;
+}
+
+.health-alert[data-kind="offline"] {
+  background: var(--color-status-offline-bg);
+  color: var(--color-status-offline);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-status-offline) 20%, transparent);
+}
+
+.health-alert[data-kind="diverged"] {
+  background: var(--color-status-offline-bg);
+  color: var(--color-status-offline);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-status-offline) 20%, transparent);
+}
+
+.health-alert[data-kind="lagging"] {
+  background: var(--color-status-lagging-bg);
+  color: var(--color-status-lagging);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-status-lagging) 20%, transparent);
+}
+
+.health-alert svg {
+  flex-shrink: 0;
+}
+
+.health-alert__node-link {
+  font: var(--text-caption-strong);
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.health-alert__msg {
+  flex: 1;
+}
+
+.health-alert__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+}
+
+.health-alert__close:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Interactive Engine Console & Dropbox
+ * ------------------------------------------------------------------------ */
+.console-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-canvas);
+}
+
+.dropbox-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: auto;
+  background: var(--color-canvas);
+}
+
+.drop-zone {
+  border: 2px dashed var(--color-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-xl) var(--space-md);
+  text-align: center;
+  background: var(--color-surface-pearl);
+  transition: all var(--motion-fast) ease;
+}
+
+.drop-zone:hover {
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+}
+

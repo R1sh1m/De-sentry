@@ -95,6 +95,7 @@ export function icon(path: string, size = 16): SVGElement {
 
 export const Icons = {
   chevronRight: "M6 3.5 10.5 8 6 12.5",
+  chevronLeft: "M10.5 3.5 6 8 10.5 12.5",
   folder: "M1.75 4.25A1.25 1.25 0 0 1 3 3h3l1.5 1.75h5.5A1.25 1.25 0 0 1 14.25 6v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z",
   drive: "M2.5 9.5h11M3.5 9.5 5 3.5h6l1.5 6v3h-9zM5 11.5h.01",
   node: "M8 1.75 13.75 5v6L8 14.25 2.25 11V5z",
@@ -115,4 +116,6 @@ export const Icons = {
   tree: "M2.5 2.5h3v3h-3zM10.5 2.5h3v3h-3zM10.5 10.5h3v3h-3zM4 5.5v6.5h6.5M4 9.5h6.5",
   check: "M3.5 8.5l3 3 6-7",
   trash: "M2.5 4.5h11M5.5 4.5V2.75a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75V4.5M6 7.5v4M10 7.5v4M3.5 4.5l.8 9a1.25 1.25 0 0 0 1.25 1.15h4.9a1.25 1.25 0 0 0 1.25-1.15l.8-9",
+  warning: "M8 2.5 14.5 13.5H1.5zM8 7v4M8 12.5v.5",
+  plug: "M6 2.5v3M10 2.5v3M5 5.5h6v3A3 3 0 0 1 8 11.5 3 3 0 0 1 5 8.5zm3 6v2",
 };

@@ -16,7 +16,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::ai::{self, NodeSpec};
-use crate::appstate::{self, AppState, SidecarEvent};
+use crate::appstate::{self, AppState, DiscoveredCandidate, SidecarEvent};
 use crate::configgen::{self, NodeConfigSpec, QuotaSplit};
 use crate::keychain;
 use crate::nodes::{LaunchSpec, LogLine, SupervisedNode};
@@ -95,6 +95,17 @@ pub fn stop_node(
     let view = state.stop_node(&node_id).map_err(fail)?;
     appstate::emit(&app, SidecarEvent::NodeState { node: view });
     Ok(())
+}
+
+#[tauri::command]
+pub fn lock_node(
+    app: AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+) -> Reply<SupervisedNode> {
+    let view = state.lock_node(&node_id).map_err(fail)?;
+    appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
+    Ok(view)
 }
 
 #[tauri::command]
@@ -720,6 +731,34 @@ pub fn notify(app: AppHandle, title: String, body: String) -> Reply<()> {
         .body(body)
         .show()
         .map_err(fail)
+}
+
+// -- discovery ---------------------------------------------------------------
+
+/// Returns all node directories the supervisor knows about that this app is
+/// not yet managing. Safe to call at any time; an absent supervisor returns an
+/// empty list rather than an error.
+///
+/// This is the pull-side complement to the watchdog's push: the frontend
+/// calls this on boot and on volumes-changed / network-changed, so discoveries
+/// arrive promptly instead of waiting for the 30-second watchdog pass.
+#[tauri::command]
+pub fn scan_for_nodes(state: State<'_, std::sync::Arc<AppState>>) -> Reply<Vec<DiscoveredCandidate>> {
+    Ok(appstate::scan_for_candidates(&state))
+}
+
+/// Same as `scan_for_nodes`, but also emits a `NodesDiscovered` event to the
+/// window so any open sidebar re-renders without the caller having to handle
+/// the returned list. Used by power-change and volume-change hooks that need
+/// to fire-and-forget.
+#[tauri::command]
+pub fn trigger_discovery_scan(
+    app: AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Reply<()> {
+    let candidates = appstate::scan_for_candidates(&state);
+    appstate::emit(&app, SidecarEvent::NodesDiscovered { candidates });
+    Ok(())
 }
 
 #[cfg(test)]

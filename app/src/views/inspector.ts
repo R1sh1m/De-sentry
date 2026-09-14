@@ -31,6 +31,7 @@ import {
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { statusText } from "./canvas.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
+import { openUnlockModal } from "./unlockModal.js";
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -472,6 +473,32 @@ function processCard(node: NodeView, onBusy: (label: string) => void): HTMLEleme
     });
   });
 
+  const consoleBtn = el(
+    "button",
+    { class: "btn btn--sm btn--ghost", type: "button", title: "Open interactive engine console" },
+    icon(Icons.inspector, 12),
+    " Console",
+  );
+  on(consoleBtn, "click", () => {
+    store.select({ kind: "console", nodeId: node.process.node_id });
+  });
+
+  const lockBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "🔒 Lock" });
+  on(lockBtn, "click", async () => {
+    try {
+      await sidecar.lockNode(node.process.node_id);
+      store.toast("info", "Node locked", "Process stopped and in-memory decryption keys cleared.");
+      await refreshNode(node.process.node_id);
+    } catch (error) {
+      store.toast("error", "Could not lock the node", describeError(error));
+    }
+  });
+
+  const unlockBtn = el("button", { class: "btn btn--sm btn--primary", type: "button", text: "🔓 Unlock…" });
+  on(unlockBtn, "click", () => {
+    openUnlockModal(node.process);
+  });
+
   const deleteBtn = el(
     "button",
     { class: "btn btn--sm btn--danger", type: "button", title: "Delete or remove this node" },
@@ -482,10 +509,14 @@ function processCard(node: NodeView, onBusy: (label: string) => void): HTMLEleme
     promptDeleteSupervisedNode(node);
   });
 
+  const isEncrypted = node.process.encrypted;
+  const isRunning = node.process.process === "running";
+
   return card(
     "Process",
     kv(
       ["State", node.process.process],
+      ["Encrypted", isEncrypted ? (isRunning ? "Yes (unlocked)" : "Yes (locked)") : "No"],
       ["PID", node.process.pid === null ? "—" : String(node.process.pid)],
       ["Started", node.process.started_ms ? timestamp(node.process.started_ms) : "—"],
       [
@@ -496,7 +527,17 @@ function processCard(node: NodeView, onBusy: (label: string) => void): HTMLEleme
       ],
       ...(node.process.last_error ? ([["Last error", node.process.last_error]] as [string, string][]) : []),
     ),
-    el("div", { class: "row", style: "flex-wrap: wrap;" }, restart, stop, reveal, !node.process.supervisor && deleteBtn),
+    el(
+      "div",
+      { class: "row", style: "flex-wrap: wrap; gap: 6px;" },
+      isRunning && restart,
+      isRunning && stop,
+      isEncrypted && isRunning && lockBtn,
+      isEncrypted && !isRunning && unlockBtn,
+      isRunning && !node.process.supervisor && consoleBtn,
+      reveal,
+      !node.process.supervisor && deleteBtn,
+    ),
   );
 }
 

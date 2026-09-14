@@ -32,6 +32,7 @@
 #include "desentry/crdt/document.h"
 #include "desentry/crdt/hlc.h"
 #include "desentry/ledger/change_feed.h"
+#include "desentry/ledger/outbox_store.h"
 #include "desentry/ledger/transit_store.h"
 #include "desentry/net/identity.h"
 #include "desentry/storage/storage_engine.h"
@@ -91,6 +92,7 @@ class NodeEngine {
   const NodeIdentity& identity() const { return *identity_; }
   StorageEngine& storage() { return *storage_; }
   TransitStore& transit() { return *transit_; }
+  OutboxStore& outbox() { return *outbox_; }
   ChangeFeed& changes() { return *changes_; }
   bool is_supervisor() const { return options_.supervisor; }
   uint32_t replication_factor() const { return options_.replication_factor; }
@@ -111,6 +113,13 @@ class NodeEngine {
   // merely present rather than valid.
   void SetPublicKeyResolver(std::function<std::string(const std::string&)> resolver) {
     resolve_public_key_ = std::move(resolver);
+  }
+
+  // Supplied by NetworkManager so the engine can know whether it is currently
+  // isolated (no reachable peers). When isolated, local writes are staged in
+  // the outbox for later replay instead of being broadcast (which would fail).
+  void SetReachabilityProvider(std::function<bool()> provider) {
+    reachability_provider_ = std::move(provider);
   }
 
   // -- local application writes (API layer) --------------------------------
@@ -161,6 +170,18 @@ class NodeEngine {
   // once a quorum-verified checkpoint covers the pair (ledger/checkpoint.h).
   Status RecordRemoteClaim(const std::string& owner_node, const std::string& key_hash);
 
+  // -- outbox (stage-anywhere, sync-on-reconnect flow) -----------------------
+  // Drains all staged writes from the outbox, applying them as local writes
+  // and broadcasting them to peers. Returns the number of entries replayed.
+  // Intended to be called on reconnect or periodically.
+  size_t FlushOutbox();
+
+  // Returns the number of entries currently staged in the outbox.
+  size_t OutboxSize() const;
+
+  // Returns the total bytes staged in the outbox.
+  uint64_t OutboxBytesHeld() const;
+
   // -- ledger ---------------------------------------------------------------
   WriteAheadLog::LedgerTip LedgerTip() const { return storage_->LedgerTip(); }
   WriteAheadLog::VerifyResult VerifyLedger();
@@ -197,9 +218,11 @@ class NodeEngine {
   std::unique_ptr<HybridLogicalClock> clock_;
   std::unique_ptr<NodeIdentity> identity_;
   std::unique_ptr<TransitStore> transit_;
+  std::unique_ptr<OutboxStore> outbox_;
   std::unique_ptr<ChangeFeed> changes_;
   std::function<void(const std::string&, const std::string&, const std::string&)> on_local_write_;
   std::function<std::string(const std::string&)> resolve_public_key_;
+  std::function<bool()> reachability_provider_;
 };
 
 }  // namespace desentry

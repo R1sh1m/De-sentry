@@ -41,6 +41,7 @@ import {
   sidecar,
   NoSidecarError,
   type AppInfo,
+  type DiscoveredCandidate,
   type SidecarEvent,
   type SupervisedNode,
 } from "./bridge.js";
@@ -74,7 +75,7 @@ export interface NodeView {
 }
 
 export interface Selection {
-  kind: "none" | "device" | "mount" | "node" | "collection";
+  kind: "none" | "device" | "mount" | "node" | "collection" | "ledger" | "console" | "dropbox";
   nodeId?: string;
   mountPath?: string;
   collection?: string;
@@ -88,6 +89,18 @@ export interface Toast {
   title: string;
   detail: string;
   ms: number;
+}
+
+export type NodeAlertKind = "offline" | "diverged" | "lagging";
+
+export interface NodeAlert {
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  kind: NodeAlertKind;
+  /** When the alert was first raised (ms since epoch). */
+  since: number;
+  dismissed: boolean;
 }
 
 export interface AppState {
@@ -108,9 +121,22 @@ export interface AppState {
   toasts: Toast[];
   /** Set while a long-running action (verify, checkpoint, scan) is in flight. */
   busy: string;
+  /** Node directories found by the supervisor scan that we are not managing yet. */
+  discoveredCandidates: DiscoveredCandidate[];
+  /** Health alerts for nodes that have gone offline, diverged, or lagged too long. */
+  nodeAlerts: NodeAlert[];
+  /** Whether newly discovered unencrypted nodes/drives are automatically adopted. */
+  autoConnectEnabled: boolean;
 }
 
 function emptyState(): AppState {
+  let autoConnect = true;
+  try {
+    const val = localStorage.getItem("desentry.autoconnect");
+    if (val !== null) autoConnect = val === "true";
+  } catch {
+    // localStorage not accessible
+  }
   return {
     ready: false,
     bootError: "",
@@ -124,6 +150,9 @@ function emptyState(): AppState {
     collectionDetails: new Map(),
     toasts: [],
     busy: "",
+    discoveredCandidates: [],
+    nodeAlerts: [],
+    autoConnectEnabled: autoConnect,
   };
 }
 
@@ -196,9 +225,42 @@ class Store {
   dataNodes(): NodeView[] {
     return [...this.state.nodes.values()].filter((n) => !n.process.supervisor);
   }
+
+  dismissCandidate(path: string): void {
+    dismissedPaths.add(path);
+    this.state.discoveredCandidates = this.state.discoveredCandidates.filter((c) => c.path !== path);
+    this.notify();
+  }
+
+  dismissAlert(id: string): void {
+    const alert = this.state.nodeAlerts.find((a) => a.id === id);
+    if (alert) alert.dismissed = true;
+    this.state.nodeAlerts = this.state.nodeAlerts.filter((a) => !a.dismissed);
+    this.notify();
+  }
+
+  setAutoConnect(enabled: boolean): void {
+    this.state.autoConnectEnabled = enabled;
+    try {
+      localStorage.setItem("desentry.autoconnect", String(enabled));
+    } catch {
+      // ignore
+    }
+    this.notify();
+    if (enabled) void refreshDiscovered();
+  }
 }
 
 export const store = new Store();
+
+// -- session state for discovery dismissals ----------------------------------
+
+/**
+ * Paths the user has dismissed for this session. Re-plugging a USB clears this
+ * via the volumes-changed event, which calls refreshDiscovered() from scratch.
+ */
+const dismissedPaths = new Set<string>();
+const connectingPaths = new Set<string>();
 
 // -- convergence -------------------------------------------------------------
 
@@ -271,6 +333,7 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
   if (view.process.process === "stopped" || view.process.process === "failed") {
     view.reachable = false;
     view.unreachableReason = view.process.last_error || "not running";
+    checkNodeHealth(nodeId, view);
     store.notify();
     return;
   }
@@ -300,6 +363,7 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
     view.reachable = false;
     view.unreachableReason = describeError(error);
   }
+  checkNodeHealth(nodeId, view);
   store.notify();
 }
 
@@ -468,6 +532,128 @@ export function stopAllSubscriptions(): void {
   for (const nodeId of [...subscriptions.keys()]) stopSubscription(nodeId);
 }
 
+// -- health alerts -----------------------------------------------------------
+
+/** When a node went offline (not-reachable), keyed by nodeId. */
+const offlineSince = new Map<string, number>();
+
+/** When a node entered the lagging convergence state, keyed by nodeId. */
+const laggingSince = new Map<string, number>();
+
+/** 60 seconds before we surface an offline alert. */
+const OFFLINE_ALERT_MS = 60_000;
+
+/** 5 minutes of sustained lag before we surface a lagging alert. */
+const LAGGING_ALERT_MS = 5 * 60_000;
+
+function upsertAlert(nodeId: string, kind: NodeAlertKind, name: string): void {
+  const id = `${nodeId}:${kind}`;
+  const existing = store.state.nodeAlerts.find((a) => a.id === id);
+  if (existing === undefined) {
+    store.state.nodeAlerts = [
+      ...store.state.nodeAlerts,
+      { id, nodeId, nodeName: name, kind, since: Date.now(), dismissed: false },
+    ];
+  }
+}
+
+function clearAlert(nodeId: string, kind: NodeAlertKind): void {
+  const id = `${nodeId}:${kind}`;
+  store.state.nodeAlerts = store.state.nodeAlerts.filter((a) => a.id !== id);
+}
+
+/**
+ * Called after every refreshNode. Checks reachability and convergence, raises
+ * or clears health alerts, and updates the offline/lagging timers.
+ *
+ * Supervisors are excluded: they are control-plane nodes and their offline
+ * state is surfaced differently (the whole sidebar stops updating).
+ */
+function checkNodeHealth(nodeId: string, view: NodeView): void {
+  if (view.process.supervisor) return;
+
+  const name = view.process.node_name || nodeId.slice(0, 8);
+  const now = Date.now();
+
+  // -- offline -----------------------------------------------------------------
+  if (!view.reachable) {
+    if (!offlineSince.has(nodeId)) offlineSince.set(nodeId, now);
+    const since = offlineSince.get(nodeId)!;
+    if (now - since >= OFFLINE_ALERT_MS) upsertAlert(nodeId, "offline", name);
+  } else {
+    offlineSince.delete(nodeId);
+    clearAlert(nodeId, "offline");
+  }
+
+  // -- diverged ----------------------------------------------------------------
+  const tip = meshTip();
+  const convergence = view.reachable ? convergenceOf(view, tip) : null;
+  if (convergence === "diverged") {
+    upsertAlert(nodeId, "diverged", name);
+  } else {
+    clearAlert(nodeId, "diverged");
+  }
+
+  // -- lagging ----------------------------------------------------------------
+  if (convergence === "lagging") {
+    if (!laggingSince.has(nodeId)) laggingSince.set(nodeId, now);
+    const since = laggingSince.get(nodeId)!;
+    if (now - since >= LAGGING_ALERT_MS) upsertAlert(nodeId, "lagging", name);
+  } else {
+    laggingSince.delete(nodeId);
+    clearAlert(nodeId, "lagging");
+  }
+}
+
+// -- discovery ---------------------------------------------------------------
+
+function autoAdoptCandidates(candidates: DiscoveredCandidate[]): void {
+  if (!store.state.autoConnectEnabled) return;
+  for (const candidate of candidates) {
+    if (candidate.adoptable && !candidate.encrypted && !connectingPaths.has(candidate.path)) {
+      connectingPaths.add(candidate.path);
+      sidecar
+        .startExistingNode(candidate.path)
+        .then((node) => {
+          store.toast(
+            "success",
+            `Connected node ${node.node_name || node.node_id.slice(0, 8)}`,
+            candidate.path,
+            3000,
+          );
+          void refreshNodeList();
+          void refreshTopology();
+        })
+        .catch(() => {
+          connectingPaths.delete(candidate.path);
+        });
+    }
+  }
+}
+
+/**
+ * Fetches unmanaged node candidates from the sidecar and updates the store.
+ *
+ * Candidates that the user has dismissed this session are filtered out. The
+ * scan is also de-duplicated against already-managed nodes (the sidecar does
+ * this too, but the frontend re-checks in case the sidecar's managed-set is
+ * slightly stale during a race).
+ */
+export async function refreshDiscovered(): Promise<void> {
+  try {
+    const candidates = await sidecar.scanForNodes();
+    const managedIds = new Set([...store.state.nodes.keys()]);
+    const filtered = candidates.filter(
+      (c) => !dismissedPaths.has(c.path) && !managedIds.has(c.node_id),
+    );
+    store.state.discoveredCandidates = filtered;
+    store.notify();
+    autoAdoptCandidates(filtered);
+  } catch {
+    // Scan failure is silent: the supervisor may not be up yet on first boot.
+  }
+}
+
 // -- boot --------------------------------------------------------------------
 
 function handleSidecarEvent(event: SidecarEvent): void {
@@ -492,10 +678,33 @@ function handleSidecarEvent(event: SidecarEvent): void {
       void refreshNode(event.node.node_id);
       break;
     }
+    case "nodes-discovered":
+      // The watchdog pushes a candidate list; apply it directly so the sidebar
+      // updates without a round-trip to the sidecar.
+      {
+        const managedIds = new Set([...store.state.nodes.keys()]);
+        const filtered = event.candidates.filter(
+          (c) => !dismissedPaths.has(c.path) && !managedIds.has(c.node_id),
+        );
+        store.state.discoveredCandidates = filtered;
+        store.notify();
+        autoAdoptCandidates(filtered);
+      }
+      break;
     case "volumes-changed":
-      // A USB node appearing or vanishing changes the sidebar's whole shape.
+      // A USB node appearing or vanishing changes the sidebar's whole shape,
+      // and may surface a new node to adopt. Re-scan immediately.
       void refreshTopology();
       void refreshNodeList();
+      void refreshDiscovered();
+      // Also clear any dismissed paths for removable media: the user unplugged
+      // and re-plugged something, which is a distinct event from a prior dismiss.
+      for (const path of dismissedPaths) {
+        // Only clear paths that look like removable-media mount points.
+        // Non-removable dismissed paths persist for the whole session.
+        const candidate = store.state.discoveredCandidates.find((c) => c.path === path);
+        if (candidate?.removable) dismissedPaths.delete(path);
+      }
       break;
     case "power-changed":
       if (store.state.appInfo !== null) store.state.appInfo.on_battery = event.on_battery;
@@ -503,8 +712,10 @@ function handleSidecarEvent(event: SidecarEvent): void {
       break;
     case "network-changed":
       // Peers found over a previous WiFi network are stale; re-read every node.
+      // A network change can also bring new peers into range, so run discovery.
       for (const nodeId of store.state.nodes.keys()) void refreshNode(nodeId);
       void refreshTopology();
+      void refreshDiscovered();
       break;
     case "node-log":
       // Log lines are pulled on demand by the log pane rather than buffered
@@ -537,6 +748,9 @@ export async function boot(): Promise<void> {
     store.state.engines = await apiFor(port).engines().catch(() => []);
   }
 
+  // Initial discovery scan: surfaces any unmanaged nodes immediately on open.
+  void refreshDiscovered();
+
   // Select something so the app does not open on an empty canvas when there
   // is in fact a node to look at.
   if (store.state.selection.kind === "none") {
@@ -546,4 +760,11 @@ export async function boot(): Promise<void> {
 
   store.state.ready = true;
   store.notify();
+
+  // 30-second auto-poll for newly discovered nodes (covers LAN peers that
+  // appear without a volume or network event, e.g. a node started by hand on
+  // another machine while the app is open).
+  window.setInterval(() => {
+    void refreshDiscovered();
+  }, 30_000);
 }

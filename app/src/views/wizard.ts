@@ -186,7 +186,7 @@ function quotaSplitBars(split: QuotaSplit, quotaMb: number): HTMLElement {
 // -- the wizard --------------------------------------------------------------
 
 export interface WizardHandles {
-  open(): void;
+  open(config?: { bootstrapPeer?: string }): void;
   close(): void;
   element: HTMLElement;
   isOpen(): boolean;
@@ -910,7 +910,9 @@ export function createWizard(): WizardHandles {
   return {
     element,
     isOpen: () => open,
-    open() {
+    open(_config?: { bootstrapPeer?: string }) {
+      // _config is reserved for future use (e.g. pre-seeding a bootstrap peer).
+      // The wizard currently opens fresh every time.
       draft = newDraft();
       draft.engines = store.state.engines;
       open = true;
