@@ -9,7 +9,7 @@
  */
 
 import { apiFor } from "./api.js";
-import { sidecar } from "./bridge.js";
+import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
@@ -19,43 +19,29 @@ import { createMeshGlobe, type GlobeHandle, type GlobeNodePoint } from "./util/m
 import { createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
 import { createHealthAlerts } from "./views/healthAlerts.js";
-import { createInspector } from "./views/inspector.js";
 import { createLedger } from "./views/ledger.js";
 import { createSidebar } from "./views/sidebar.js";
 import { createWizard } from "./views/wizard.js";
 import { createConsole } from "./views/console.js";
 import { createDropbox } from "./views/dropbox.js";
-
-const THEME_KEY = "desentry.theme";
+import { openPalette } from "./views/palette.js";
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 // -- theme -------------------------------------------------------------------
+// Locked to dark mode: the mesh control room ships one palette. The explicit
+// data-theme attribute is set once so every token, canvas and backdrop reads
+// the dark ramp without a prefers-color-scheme branch.
 
-type Theme = "system" | "light" | "dark";
-
-function applyTheme(theme: Theme): void {
-  const root = document.documentElement;
-  if (theme === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
+function lockDarkTheme(): void {
+  document.documentElement.setAttribute("data-theme", "dark");
   try {
-    localStorage.setItem(THEME_KEY, theme);
+    localStorage.removeItem("desentry.theme");
   } catch {
-    // Private windows and locked-down profiles refuse storage. The theme still
-    // applies for this session; only the memory of it is lost.
+    // Private windows refuse storage; the attribute above is what matters.
   }
-}
-
-function storedTheme(): Theme {
-  try {
-    const value = localStorage.getItem(THEME_KEY);
-    if (value === "light" || value === "dark" || value === "system") return value;
-  } catch {
-    // fall through
-  }
-  return "system";
 }
 
 // -- pairing sheet -----------------------------------------------------------
@@ -147,69 +133,43 @@ function openAboutSheet(): void {
   const reachable = nodes.filter((n) => n.reachable).length;
   const port = store.state.supervisorPort;
 
-  const close = el("button", { class: "btn btn--primary", type: "button", text: "Done" });
-  const body = el("div", { class: "wizard about-sheet" });
-  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
-  const dismiss = () => sheet.remove();
-
-  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
-  on(closeButton, "click", dismiss);
-  const titleBar = el(
-    "div",
-    { class: "wizard__titlebar" },
-    el("span", { style: "width: 28px;" }),
-    el("span", { class: "wizard__titlebar-title", text: "About De-Sentry" }),
-    closeButton,
-  );
+  // macOS-style About: one centred card, no titlebar/footer bands. The old
+  // .wizard titlebar + footer painted darker rectangles behind the title and
+  // Done button in dark mode; this layout has neither.
+  const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
+  const body = el("div", { class: "macos-modal about-macos" });
+  const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "About De-Sentry" }, body);
+  const dismiss = () => {
+    if (sheet.open) sheet.close();
+    sheet.remove();
+  };
 
   const content = el(
     "div",
-    { class: "wizard__body" },
-    el("div", { class: "about-sheet__emblem" }, sentryLogoSvg({ size: 72, animated: true })),
-    el("h2", { class: "about-sheet__title", text: "De-Sentry" }),
+    { class: "macos-modal__content about-macos__content" },
+    el("div", { class: "about-macos__emblem" }, sentryLogoSvg({ size: 76, animated: true })),
     el(
-      "p",
-      { class: "about-sheet__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" },
+      "div",
+      { class: "about-macos__names" },
+      el("h2", { class: "macos-modal__heading", text: "De-Sentry" }),
+      el("span", { class: "brand-badge", text: "v2.0" }),
     ),
+    el("p", { class: "about-macos__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" }),
     el(
       "p",
-      {
-        class: "muted",
-        style: "font: var(--text-caption); max-width: 44ch; margin: 0 auto var(--space-md);",
-        text: "A decentralized database mesh with zero fetched runtime dependencies, cryptographic verification, and conflict-free replication.",
-      },
+      { class: "about-macos__blurb", text: "A decentralized database mesh with zero fetched runtime dependencies, cryptographic verification, and conflict-free replication." },
     ),
     el(
       "div",
-      { class: "about-sheet__grid" },
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Cryptographic Aegis" }),
-        el("span", { text: "Ed25519 · X25519 · AES-256-GCM" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Tamper-Evident Ledger" }),
-        el("span", { text: "Hash-chained feed · Quorum GC" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Data Plane" }),
-        el("span", { text: "CRDTs · Hybrid Logical Clocks" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Storage Router" }),
-        el("span", { text: "B+Tree · SQLite · Vector · DuckDB" }),
-      ),
+      { class: "about-macos__grid" },
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Cryptographic Aegis" }), el("span", { text: "Ed25519 · X25519 · AES-256-GCM" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Tamper-Evident Ledger" }), el("span", { text: "Hash-chained feed · Quorum GC" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Data Plane" }), el("span", { text: "CRDTs · Hybrid Logical Clocks" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Storage Router" }), el("span", { text: "B+Tree · SQLite · Vector · DuckDB" })),
     ),
     el(
       "dl",
-      { class: "kv", style: "width: 100%; margin-top: var(--space-md); text-align: left;" },
+      { class: "kv about-macos__kv" },
       el("dt", { text: "Supervisor" }),
       el("dd", { class: "mono", text: port !== null ? `127.0.0.1:${port}` : "offline" }),
       el("dt", { text: "Active Mesh" }),
@@ -217,20 +177,25 @@ function openAboutSheet(): void {
       el("dt", { text: "Shortcuts" }),
       el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · 3 (ledger) · Ctrl+R" }),
     ),
+    done,
   );
+  replace(body, content);
 
-  const footer = el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close);
-  replace(body, titleBar, content, footer);
-
-  on(close, "click", dismiss);
+  on(done, "click", dismiss);
   on(sheet, "click", (event) => {
     if (event.target === sheet) dismiss();
   });
   on(sheet, "keydown", (event) => {
     if (event.key === "Escape") dismiss();
   });
+  on(sheet, "close", () => sheet.remove());
   document.body.appendChild(sheet);
-  sheet.focus();
+  try {
+    sheet.showModal();
+  } catch {
+    sheet.setAttribute("open", "");
+  }
+  done.focus();
 }
 
 // -- shell -------------------------------------------------------------------
@@ -249,10 +214,11 @@ function build(): void {
     wizard.open({ bootstrapPeer: peerNodeId });
   };
 
+  lockDarkTheme();
+
   const sidebar = createSidebar(() => wizard.open(), onAddAsPeer);
   const canvas = createCanvas(() => wizard.open());
   const explorer = createExplorer();
-  const inspector = createInspector();
   const ledger = createLedger();
   const consoleView = createConsole();
   const dropbox = createDropbox();
@@ -288,35 +254,8 @@ function build(): void {
   );
   on(title, "click", openAboutSheet);
 
-  // Tree ⇄ Mesh Segmented View Switcher in Header
-  const treeModeBtn = el("button", { type: "button", "aria-pressed": "true" }, icon(Icons.tree, 13), "Tree");
-  const meshModeBtn = el("button", { type: "button", "aria-pressed": "false" }, icon(Icons.mesh, 13), "Mesh");
-  on(treeModeBtn, "click", () => store.setCanvasMode("tree"));
-  on(meshModeBtn, "click", () => store.setCanvasMode("mesh"));
-  const viewSegmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" }, treeModeBtn, meshModeBtn);
-
-  const themeButton = el("button", {
-    class: "btn btn--sm btn--ghost btn--icon-only",
-    type: "button",
-    title: "Toggle appearance",
-    "aria-label": "Toggle appearance",
-  });
-  const themes: Theme[] = ["system", "light", "dark"];
-  let theme = storedTheme();
-  const paintTheme = () => {
-    replace(
-      themeButton,
-      theme === "light" ? icon(Icons.sun, 14) : theme === "dark" ? icon(Icons.moon, 14) : icon(Icons.refresh, 14),
-    );
-    themeButton.title = `Appearance: ${theme} (click to cycle)`;
-    applyTheme(theme);
-  };
-  on(themeButton, "click", () => {
-    theme = themes[(themes.indexOf(theme) + 1) % themes.length];
-    paintTheme();
-  });
-  paintTheme();
-
+  // Pairing uses a QR glyph now: the sheet shows a scannable code that links
+  // another device. The old shield conflated pairing with security status.
   const pairButton = el(
     "button",
     {
@@ -325,43 +264,65 @@ function build(): void {
       title: "Pair another device (QR code)",
       "aria-label": "Pair another device",
     },
-    icon(Icons.shield, 14),
+    icon(Icons.qr, 15),
   );
   on(pairButton, "click", openPairingSheet);
+
+  const openCommandPalette = () =>
+    openPalette({ onNewNode: () => wizard.open(), onPair: openPairingSheet });
+  const paletteButton = el(
+    "button",
+    {
+      class: "btn btn--sm btn--ghost btn--icon-only",
+      type: "button",
+      title: "Command palette (Ctrl+K)",
+      "aria-label": "Command palette",
+    },
+    icon(Icons.search, 14),
+  );
+  on(paletteButton, "click", openCommandPalette);
 
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
 
-  let inspectorCollapsed = false;
-  const inspectorToggle = el(
-    "button",
-    { class: "btn btn--sm btn--ghost btn--icon-only", type: "button", title: "Toggle Inspector (Ctrl+I)", "aria-label": "Toggle Inspector" },
-    icon(Icons.inspector, 14),
-  );
-  const toggleInspector = () => {
-    inspectorCollapsed = !inspectorCollapsed;
-    if (inspectorCollapsed) root.setAttribute("data-inspector", "collapsed");
-    else root.removeAttribute("data-inspector");
-    inspectorToggle.setAttribute("aria-pressed", String(!inspectorCollapsed));
-  };
-  on(inspectorToggle, "click", toggleInspector);
+  // Custom window chrome. The native titlebar (with its own De-Sentry icon +
+  // title) is disabled in tauri.conf.json, so this header is the only brand
+  // row. Controls render only inside the desktop shell; browsers get no dead
+  // buttons.
+  const winControls = el("div", { class: "win-controls", hidden: true });
+  if (isTauri()) {
+    winControls.hidden = false;
+    const minBtn = el("button", { class: "win-btn", type: "button", title: "Minimize", "aria-label": "Minimize" }, icon(Icons.minus, 12));
+    const maxBtn = el("button", { class: "win-btn", type: "button", title: "Maximize / Restore", "aria-label": "Maximize or restore" }, icon(Icons.square, 11));
+    const closeBtn = el("button", { class: "win-btn win-btn--close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 12));
+    const withWindow = async (fn: (w: { minimize: () => Promise<void>; toggleMaximize: () => Promise<void>; close: () => Promise<void> }) => Promise<void>) => {
+      try {
+        const mod = await import("@tauri-apps/api/window");
+        await fn(mod.getCurrentWindow());
+      } catch {
+        // Browser dev session or old shell: controls stay visible but inert.
+      }
+    };
+    on(minBtn, "click", () => void withWindow((w) => w.minimize()));
+    on(maxBtn, "click", () => void withWindow((w) => w.toggleMaximize()));
+    on(closeBtn, "click", () => void withWindow((w) => w.close()));
+    replace(winControls, minBtn, maxBtn, closeBtn);
+  }
 
   const header = el(
     "header",
     { class: "header" },
     title,
     el("span", { class: "header__spacer" }),
-    viewSegmented,
-    el("span", { class: "header__spacer" }),
-    themeButton,
+    paletteButton,
     pairButton,
-    inspectorToggle,
     newButton,
+    winControls,
   );
 
-  const centre = el("div", {});
+  const centre = el("div", { class: "centre" });
   root.removeAttribute("data-loading");
-  replace(root, backdrop, header, sidebar.element, healthAlerts.element, centre, inspector.element);
+  replace(root, backdrop, header, sidebar.element, healthAlerts.element, centre);
   document.body.appendChild(wizard.element);
 
   // Toasts ------------------------------------------------------------------
@@ -431,11 +392,7 @@ function build(): void {
     if (sub !== null) sub.textContent = subtitle;
 
     sidebar.render();
-    inspector.render();
     healthAlerts.render();
-
-    treeModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "tree"));
-    meshModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "mesh"));
 
     // The explorer replaces the canvas when a collection is open; the ledger
     // viewer replaces it when a ledger is open; console replaces it for engine
@@ -465,11 +422,20 @@ function build(): void {
 
   // Keyboard ---------------------------------------------------------------
   on(document.body, "keydown", (event) => {
+    // The palette manages its own keys once open; the global handler must
+    // not steal them (its input is a typing target, but check explicitly so
+    // a future handler reorder cannot break it).
+    const inPalette =
+      (event.target as HTMLElement | null)?.closest?.(".palette") != null;
+    if (inPalette) return;
     const target = event.target as HTMLElement | null;
     const typing = target !== null && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
     if (typing) return;
 
-    if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommandPalette();
+    } else if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       wizard.open();
     } else if (event.key === "r" && (event.metaKey || event.ctrlKey)) {
@@ -490,9 +456,8 @@ function build(): void {
       if (node) store.select({ kind: "console", nodeId: node.process.node_id });
     } else if (event.key === "5") {
       store.select({ kind: "dropbox" });
-    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
-      event.preventDefault();
-      toggleInspector();
+    } else if (event.key === "Escape" && store.state.selection.kind === "node") {
+      store.select({ kind: "none" });
     }
   });
 

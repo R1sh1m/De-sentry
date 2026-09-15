@@ -1,0 +1,9 @@
+# Shared Pyrefly config (committed). Mirrors pyrightconfig.json: the stdlib-only
+# Python client lives in clients/python, and the integration harness adds that
+# directory to sys.path at runtime (tests/integration/harness.py), so the
+# checkers must resolve `desentry_client` from there. Without this, Pyrefly
+# infers the import root as src/ (the C++ tree) and reports missing-import on
+# `from desentry_client import ...` in the harness.
+#
+# `search-path` is the documented Pyrefly equivalent of Pyright `extraPaths`.
+search-path = ["clients/python"]

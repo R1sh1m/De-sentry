@@ -52,8 +52,8 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-primary-focus);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
   border-radius: var(--radius-xs);
 }
 
@@ -129,53 +129,41 @@ body {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr var(--inspector-width);
-  grid-template-rows: var(--chrome-header-height) 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-rows: var(--chrome-header-height) auto 1fr;
   grid-template-areas:
-    "header header header"
-    "sidebar canvas inspector";
+    "header header"
+    "sidebar alerts"
+    "sidebar canvas";
   height: 100vh;
 }
-.app-shell[data-inspector="collapsed"] {
-  grid-template-columns: var(--sidebar-width) 1fr 0;
-}
 
-/* Below the minimum comfortable width the side panels become overlays rather
- * than squeezing the canvas into uselessness. */
+/* Below the minimum comfortable width the sidebar becomes an overlay rather
+ * than squeezing the canvas into uselessness. There is no inspector column
+ * any more; node details are a popover above the node. */
 @media (max-width: 1023px) {
   .app-shell {
-    grid-template-columns: 0 1fr 0;
+    grid-template-columns: 0 1fr;
   }
-  .sidebar,
-  .inspector {
+  .sidebar {
     position: fixed;
     top: var(--chrome-header-height);
     bottom: 0;
-    z-index: 20;
-    box-shadow: var(--elev-popover);
-  }
-  .sidebar {
     left: 0;
     width: var(--sidebar-width);
+    z-index: 20;
+    box-shadow: var(--elev-popover);
     transform: translateX(-100%);
     transition: transform var(--motion-quick);
   }
   .sidebar[data-open="true"] {
     transform: none;
   }
-  .inspector {
-    right: 0;
-    width: var(--inspector-width);
-    transform: translateX(100%);
-    transition: transform var(--motion-quick);
-  }
-  .inspector[data-open="true"] {
-    transform: none;
-  }
 }
 
 /* ---------------------------------------------------------------------------
- * Chrome: header, sidebar, inspector. The only three frosted planes.
+ * Chrome: header and sidebar. The only two frosted planes (node details are
+ * a floating popover now, not a third column).
  * ------------------------------------------------------------------------ */
 .header {
   grid-area: header;
@@ -187,6 +175,7 @@ body {
   -webkit-backdrop-filter: var(--chrome-blur);
   backdrop-filter: var(--chrome-blur);
   border-bottom: 1px solid var(--color-hairline);
+  box-shadow: var(--glass-edge);
   /* Tauri's decorationless window: this strip is what the user drags. */
   -webkit-app-region: drag;
 }
@@ -285,62 +274,102 @@ body {
   opacity: 0.38;
   transform: scale(1.04);
 }
-
-/* About De-Sentry Dialog */
-.about-sheet {
-  max-width: 500px;
-  padding: var(--space-lg);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-  align-items: center;
-  text-align: center;
+.empty__watermark--glow {
+  filter: drop-shadow(0 0 28px var(--glow-brand));
 }
-.about-sheet__emblem {
-  width: 80px;
-  height: 80px;
+
+/* Disciplined view washes: faint top glow per view over the grid dots.
+ * background-image layers wash ABOVE the dot grid; sizes pair per layer. */
+.dropbox-view {
+  background-image:
+    radial-gradient(70% 42% at 50% 0%, var(--wash-dropbox), transparent 70%),
+    radial-gradient(var(--canvas-grid-dot) 1.25px, transparent 1.25px);
+  background-size: auto, 24px 24px;
+}
+.console-view {
+  background-image:
+    radial-gradient(70% 42% at 50% 0%, var(--wash-console), transparent 70%),
+    radial-gradient(var(--canvas-grid-dot) 1.25px, transparent 1.25px);
+  background-size: auto, 24px 24px;
+}
+.ledger-view {
+  background-image:
+    radial-gradient(70% 42% at 50% 0%, var(--wash-ledger), transparent 70%),
+    radial-gradient(var(--canvas-grid-dot) 1.25px, transparent 1.25px);
+  background-size: auto, 24px 24px;
+}
+
+/* macOS-style About: single centred card, no titlebar/footer bands. */
+.sheet--about {
+  background: color-mix(in srgb, var(--color-ink) 36%, transparent);
+}
+.about-macos {
+  width: min(430px, 94vw);
+}
+.about-macos__content {
+  padding: var(--space-xl) var(--space-lg) var(--space-lg);
+  gap: var(--space-xs);
+}
+.about-macos__emblem {
   display: flex;
   align-items: center;
   justify-content: center;
   filter: drop-shadow(0 6px 20px rgba(0, 102, 204, 0.4));
   animation: sentry-float 4s ease-in-out infinite;
+  margin-bottom: var(--space-xs);
 }
 @keyframes sentry-float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-4px); }
 }
-.about-sheet__title {
-  margin: 0;
-  font: var(--text-tagline);
-  letter-spacing: var(--tracking-display);
+.about-macos__names {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
 }
-.about-sheet__tagline {
+.about-macos__tagline {
   margin: 0;
-  font: var(--text-body);
+  font: var(--text-caption);
   color: var(--color-ink-muted-48);
 }
-.about-sheet__grid {
+.about-macos__blurb {
+  margin: 0 0 var(--space-xs);
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  max-width: 44ch;
+}
+.about-macos__grid {
   width: 100%;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-xs);
   text-align: left;
-  margin-top: var(--space-xs);
+  margin: var(--space-xs) 0;
 }
-.about-sheet__card {
-  background: var(--color-surface);
+.about-macos__card {
+  background: var(--color-surface-sunken);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
   padding: var(--space-xs) var(--space-sm);
 }
-.about-sheet__card strong {
+.about-macos__card strong {
   display: block;
   font: var(--text-caption-strong);
   margin-bottom: 2px;
 }
-.about-sheet__card span {
+.about-macos__card span {
   font: var(--text-fine);
   color: var(--color-ink-muted-48);
+}
+.about-macos__kv {
+  width: 100%;
+  text-align: left;
+  margin-bottom: var(--space-md);
+}
+.about-macos__done {
+  min-width: 120px;
+  align-self: center;
 }
 
 .sidebar {
@@ -349,27 +378,183 @@ body {
   -webkit-backdrop-filter: var(--chrome-blur);
   backdrop-filter: var(--chrome-blur);
   border-right: 1px solid var(--color-hairline);
+  box-shadow: var(--glass-edge);
   padding: var(--space-sm);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.inspector {
-  grid-area: inspector;
-  width: var(--inspector-width);
+.centre {
+  grid-area: canvas;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.centre > .canvas,
+.centre > main {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Custom window controls for the borderless shell (decorations: false). */
+.win-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-xs);
+}
+.win-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink-muted-80);
+  cursor: default;
+}
+.win-btn:hover {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  color: var(--color-ink);
+}
+.win-btn--close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* Tree ⇄ Mesh switch docked to the canvas edge (moved out of the header). */
+.canvas-view-switch {
+  position: absolute;
+  left: var(--space-sm);
+  top: 56px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-md);
   background: var(--chrome-fill);
   -webkit-backdrop-filter: var(--chrome-blur);
   backdrop-filter: var(--chrome-blur);
-  border-left: 1px solid var(--color-hairline);
-  padding: var(--space-md);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  border: 1px solid var(--color-hairline);
+  box-shadow: var(--elev-card);
+}
+.canvas-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-muted-80);
+  cursor: default;
+}
+.canvas-view-switch button:hover {
+  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  color: var(--color-ink);
+}
+.canvas-view-switch button[aria-pressed="true"] {
+  background: var(--tree-row-selected-bg);
+  color: var(--color-primary);
+  box-shadow: var(--elev-hairline);
+}
+
+/* Floating node popover: the inspector replacement, anchored above the node. */
+.node-popover {
+  position: absolute;
+  z-index: 30;
+  width: 280px;
+  max-width: calc(100% - 24px);
+  transform: translate(-50%, -100%);
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-popover);
+  padding: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
+  animation: node-popover-in var(--motion-quick) ease-out both;
 }
-.app-shell[data-inspector="collapsed"] .inspector {
-  display: none;
+@keyframes node-popover-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 6px)) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .node-popover { animation: none; }
+}
+.node-popover::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  transform: translateX(-50%) rotate(45deg);
+  background: inherit;
+  border-right: 1px solid var(--color-hairline);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.node-popover__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.node-popover__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-body-strong);
+}
+.node-popover__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  flex: none;
+}
+.node-popover__close:hover {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  color: var(--color-ink);
+}
+.node-popover__kv {
+  margin: 0;
+}
+.node-popover__actions {
+  display: flex;
+  gap: var(--space-xs);
+  justify-content: flex-end;
+}
+
+/* Dropbox hero icon: branded disc instead of a bare drive glyph. */
+.drop-zone__icon-wrap {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto var(--space-xs);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  box-shadow: 0 6px 20px rgba(0, 102, 204, 0.25);
 }
 
 .canvas {
@@ -868,13 +1053,26 @@ svg.mesh {
   opacity: 0.4;
 }
 .btn--primary {
-  background: var(--color-primary);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 88%, #ffffff 12%), var(--color-primary));
   color: var(--color-on-primary);
   box-shadow: none;
 }
+/* Uniform system: default (.btn) / primary / secondary / outline / ghost /
+ * destructive (.btn--danger). The old text-style .btn--danger duplicate is
+ * gone: destructive is solid red everywhere it is used (delete flows). */
 .btn--danger {
-  background: transparent;
-  color: var(--color-status-offline);
+  background: #ff3b30;
+  color: #ffffff;
+  border: 1px solid #e02d23;
+  box-shadow: none;
+}
+.btn--danger:hover {
+  filter: brightness(1.08);
+}
+.btn--secondary {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-primary);
+  box-shadow: var(--elev-hairline);
 }
 .btn--ghost {
   background: transparent;
@@ -1181,8 +1379,29 @@ svg.mesh {
   animation: modal-fade var(--motion-instant);
 }
 @keyframes modal-fade { from { opacity: 0; } }
+
+/* Native <dialog> host: transparent chrome, visuals stay on the inner
+ * .modal-box / .macos-modal. Centering comes from the UA stylesheet's
+ * `margin: auto`; the top layer removes every z-index conflict by design. */
+.modal-dialog {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  max-width: calc(100vw - var(--space-lg));
+  max-height: calc(100vh - var(--space-lg));
+  color: var(--color-ink);
+}
+.modal-dialog::backdrop {
+  background: color-mix(in srgb, var(--color-ink) 36%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: modal-fade var(--motion-instant);
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-dialog::backdrop { animation: none; }
+}
 .modal-box {
-  background: var(--color-surface);
+  background: var(--color-surface-popover);
   border-radius: var(--radius-md);
   padding: var(--space-lg);
   box-shadow: var(--elev-popover);
@@ -1537,10 +1756,87 @@ svg.mesh {
 }
 
 /* ---------------------------------------------------------------------------
+ * Command palette (Ctrl/⌘+K): small frosted overlay, top-docked dialog.
+ * ------------------------------------------------------------------------ */
+.palette-dialog {
+  margin-block-start: 12vh;
+  width: min(560px, 92vw);
+}
+.palette {
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-popover);
+  overflow: hidden;
+  animation: palette-in var(--motion-quick) ease-out both;
+}
+@keyframes palette-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .palette { animation: none; }
+}
+.palette__input {
+  width: 100%;
+  font: var(--text-body);
+  color: var(--color-ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-hairline);
+  padding: var(--space-sm) var(--space-md);
+  outline: none;
+  user-select: text;
+}
+.palette__input::placeholder {
+  color: var(--color-ink-muted-48);
+}
+.palette__list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-xxs);
+}
+.palette__group {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm) var(--space-xxs);
+}
+.palette__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 7px var(--space-sm);
+  border-radius: var(--radius-sm);
+  font: var(--text-body);
+  cursor: default;
+}
+.palette__option[aria-selected="true"] {
+  background: var(--tree-row-selected-bg);
+  color: var(--tree-row-selected-color);
+}
+.palette__hint {
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+}
+.palette__empty {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+  text-align: center;
+  padding: var(--space-md);
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Apple macOS Modal & Confirmation Sheet
  * ------------------------------------------------------------------------ */
 .macos-modal {
-  background: var(--color-surface);
+  background: var(--color-surface-popover);
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -1608,23 +1904,6 @@ svg.mesh {
   width: 100%;
   margin-top: var(--space-sm);
   flex-wrap: wrap;
-}
-.btn--danger {
-  background: #ff3b30;
-  color: #ffffff;
-  border: 1px solid #e02d23;
-  border-radius: var(--radius-sm);
-  padding: var(--space-xs) var(--space-md);
-  font: var(--text-caption);
-  font-weight: 600;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xxs);
-  transition: filter 0.12s ease;
-}
-.btn--danger:hover {
-  filter: brightness(1.1);
 }
 .btn--outline {
   background: transparent;
@@ -1842,6 +2121,7 @@ svg.mesh {
 .toast {
   background: color-mix(in srgb, var(--color-ink) 92%, transparent);
   color: var(--color-surface);
+  border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
   padding: 10px var(--space-md);
   font: var(--text-caption);
@@ -1903,11 +2183,12 @@ svg.mesh {
 @media print {
   .header,
   .sidebar,
-  .inspector,
+  .centre,
   .canvas,
   .toasts,
   .wizard__footer,
-  .btn {
+  .btn,
+  dialog {
     display: none !important;
   }
 
@@ -2008,8 +2289,7 @@ svg.mesh {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  /* Sits between the sidebar and the canvas in the grid; spans full width. */
-  grid-column: 2 / -1;
+  grid-area: alerts;
 }
 
 .health-alert {
@@ -2152,6 +2432,9 @@ svg.mesh {
  * ------------------------------------------------------------------------ */
 .ctx-menu {
   position: fixed;
+  /* Native popovers ship UA `inset: 0; margin: auto`; explicit placement wins. */
+  inset: auto;
+  margin: 0;
   z-index: 100;
   min-width: 160px;
   background: var(--chrome-fill);

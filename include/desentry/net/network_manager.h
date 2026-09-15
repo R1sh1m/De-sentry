@@ -103,7 +103,16 @@ class NetworkManager {
   };
   ProbeStats probe_stats() const;
 
+  // Sets the message_id to be used for the NEXT local write broadcast.
+  // Used by the API layer to ensure the broadcast and the durability wait
+  // share the same message_id. Must be called immediately before the write.
+  void SetNextBroadcastMessageId(std::string message_id) {
+    next_broadcast_message_id_ = std::move(message_id);
+  }
+
  private:
+  // ... existing private members ...
+  std::optional<std::string> next_broadcast_message_id_;
   WireMessage HandleRequest(const std::string& peer_node_id, const WireMessage& request);
   WireMessage HandleDigest(const std::string& peer_node_id, const DigestPayload& digest);
   WireMessage HandleOpBroadcast(const std::string& peer_node_id, const OpBroadcastPayload& broadcast);
@@ -158,7 +167,8 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   // receipts from peers for a given message_id. Zero residual state -- the
   // waiter is the HTTP request handler, and the map entry is erased on
   // completion or timeout.
-  std::unique_ptr<ReceiptTracker> receipt_tracker_;
+  // Owned by NodeEngine; we hold a non-owning pointer.
+  ReceiptTracker* receipt_tracker_ = nullptr;
   std::unique_ptr<TokenBucketLimiter> limiter_;
   std::unique_ptr<MessageDedup> dedup_;
 

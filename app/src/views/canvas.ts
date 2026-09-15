@@ -7,13 +7,15 @@
  * `/_peers`.
  *
  * Features pan & zoom navigation, edge telemetry hover tooltips (latency,
- * fitness, packet loss), and live node card indicators.
+ * fitness, packet loss), and live node card indicators. Node details appear
+ * in a small popover anchored just above the selected node -- there is no
+ * longer a right-hand inspector column.
  */
 
 import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
 import { count, engineLabel, percent, shortHash, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
-import { sentryWatermarkSvg } from "../util/logo.js";
+import { emptyState } from "../util/empty.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 
 const STATUS_VAR: Record<Convergence, string> = {
@@ -65,6 +67,10 @@ interface EdgeData {
 let panX = 0;
 let panY = 0;
 let zoomScale = 1.0;
+
+/** Popover anchor (px, relative to the canvas wrapper) for the selected node. */
+let popoverAnchor: { x: number; y: number } | null = null;
+let popoverFor: string | null = null;
 
 function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   const tip = meshTip();
@@ -129,7 +135,92 @@ function edgesOf(placed: Placed[]): EdgeData[] {
 const CARD_W = 156;
 const CARD_H = 58;
 
-function meshView(nodes: NodeView[], width: number, height: number, container: HTMLElement): HTMLElement {
+// -- node popover ------------------------------------------------------------
+// Compact replacement for the old right-hand inspector: identity, ledger tip,
+// collections and peers, plus jumps to Ledger / Console. Anchored just above
+// the selected node card; dismissed via its close button or Escape.
+
+function buildNodePopover(node: NodeView, status: Convergence): HTMLElement {
+  const tip = meshTip();
+  const tipId = node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 0;
+  const behind = tip !== null ? tip.entry_id - tipId : 0;
+  const collections = node.brain?.collections ?? [];
+  const docs = collections.reduce((sum, c) => sum + c.document_count, 0);
+  const name = node.process.node_name || shortNode(node.process.node_id, 8);
+
+  const closeBtn = el("button", { class: "node-popover__close", type: "button", title: "Close", "aria-label": "Close node details" }, icon(Icons.close, 12));
+  on(closeBtn, "click", (e) => {
+    e.stopPropagation();
+    popoverAnchor = null;
+    popoverFor = null;
+    store.select({ kind: "none" });
+  });
+
+  const ledgerBtn = el("button", { class: "btn btn--sm", type: "button" }, "Ledger");
+  on(ledgerBtn, "click", (e) => {
+    e.stopPropagation();
+    store.select({ kind: "ledger", nodeId: node.process.node_id });
+  });
+  const consoleBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, "Console");
+  on(consoleBtn, "click", (e) => {
+    e.stopPropagation();
+    store.select({ kind: "console", nodeId: node.process.node_id });
+  });
+
+  return el(
+    "div",
+    { class: "node-popover", role: "dialog", "aria-label": `Details for ${name}` },
+    el(
+      "div",
+      { class: "node-popover__head" },
+      el("span", { class: "dot", "data-status": status }),
+      el("strong", { class: "node-popover__name", text: name }),
+      el("span", { class: "badge", "data-tone": status, text: STATUS_TEXT[status] }),
+      closeBtn,
+    ),
+    el(
+      "dl",
+      { class: "kv node-popover__kv" },
+      el("dt", { text: "Ledger" }),
+      el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
+      el("dt", { text: "Tip" }),
+      el("dd", { class: "mono", text: shortHash(node.tip?.entry_hash, 8, 0) }),
+      el("dt", { text: "Collections" }),
+      el("dd", { text: `${collections.length} · ${count(docs)} docs` }),
+      el("dt", { text: "Peers" }),
+      el("dd", { text: String(node.peers.length) }),
+    ),
+    el("div", { class: "node-popover__actions" }, ledgerBtn, consoleBtn),
+  );
+}
+
+function anchorPopover(host: HTMLElement, nodeId: string, status: Convergence): void {
+  const node = store.state.nodes.get(nodeId);
+  if (!node || !popoverAnchor) return;
+  const pop = buildNodePopover(node, status);
+  // Clamp horizontally so the 280px card never leaves the canvas.
+  const x = Math.max(150, Math.min(popoverAnchor.x, host.clientWidth - 150 || popoverAnchor.x));
+  pop.style.left = `${x}px`;
+  pop.style.top = `${Math.max(8, popoverAnchor.y - 8)}px`;
+  host.appendChild(pop);
+}
+
+function captureAnchor(host: HTMLElement, target: Element, nodeId: string): void {
+  try {
+    const hostRect = host.getBoundingClientRect();
+    const r = target.getBoundingClientRect();
+    popoverAnchor = {
+      x: r.left - hostRect.left + r.width / 2,
+      y: r.top - hostRect.top,
+    };
+    popoverFor = nodeId;
+  } catch {
+    popoverAnchor = { x: 200, y: 120 };
+    popoverFor = nodeId;
+  }
+}
+
+function meshView(nodes: NodeView[], width: number, height: number, _container: HTMLElement): HTMLElement {
   const placed = layout(nodes, width, height);
   const edges = edgesOf(placed);
   const selectedId = store.state.selection.nodeId;
@@ -211,7 +302,7 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
     });
 
     edgeLine.addEventListener("mouseenter", (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
+      const rect = wrapper.getBoundingClientRect();
       tooltip.style.left = `${e.clientX - rect.left}px`;
       tooltip.style.top = `${e.clientY - rect.top}px`;
       tooltip.textContent = `${edge.latencyMs.toFixed(1)}ms · ${percent(edge.successRate)} success · fitness ${edge.fitness.toFixed(2)}`;
@@ -273,13 +364,23 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
       ),
     );
 
-    const select = () => store.select({ kind: "node", nodeId: p.node.process.node_id });
-    group.addEventListener("click", select);
+    const select = (anchorFrom: Element | null) => {
+      if (anchorFrom) captureAnchor(wrapper, anchorFrom, p.node.process.node_id);
+      else {
+        popoverAnchor = { x: p.x, y: Math.max(8, p.y - 60) };
+        popoverFor = p.node.process.node_id;
+      }
+      store.select({ kind: "node", nodeId: p.node.process.node_id });
+    };
+    group.addEventListener("click", (e) => {
+      e.stopPropagation();
+      select(group);
+    });
     group.addEventListener("keydown", (event) => {
       const key = (event as KeyboardEvent).key;
       if (key === "Enter" || key === " ") {
         event.preventDefault();
-        select();
+        select(group);
       }
     });
     nodesLayer.appendChild(group);
@@ -311,16 +412,25 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
   const controls = el("div", { class: "canvas__controls" }, zoomInBtn, zoomOutBtn, resetBtn);
   wrapper.appendChild(controls);
 
+  // Selected-node popover just above the card.
+  if (selectedId && popoverFor === selectedId && popoverAnchor) {
+    const sel = placed.find((p) => p.node.process.node_id === selectedId);
+    if (sel) anchorPopover(wrapper, selectedId, sel.status);
+  }
+
   return wrapper;
 }
 
 function treeView(nodes: NodeView[]): HTMLElement {
   const tip = meshTip();
+  const selectedId = store.state.selection.nodeId;
+  const wrapper = el("div", { style: "position: relative;" });
   const container = el("div", { class: "tree-canvas" });
+  wrapper.appendChild(container);
 
   for (const node of nodes) {
     const status = convergenceOf(node, tip);
-    const selected = store.state.selection.nodeId === node.process.node_id;
+    const selected = selectedId === node.process.node_id;
     const tipId = node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 0;
     const behind = tip !== null ? tip.entry_id - tipId : 0;
 
@@ -385,8 +495,16 @@ function treeView(nodes: NodeView[]): HTMLElement {
         ),
     );
 
-    const select = () => store.select({ kind: "node", nodeId: node.process.node_id });
-    on(card, "click", select);
+    const select = () => {
+      captureAnchor(wrapper, card, node.process.node_id);
+      // Nudge above the card rather than overlapping it.
+      if (popoverAnchor) popoverAnchor.y = Math.max(8, popoverAnchor.y - 8);
+      store.select({ kind: "node", nodeId: node.process.node_id });
+    };
+    on(card, "click", (e) => {
+      e.stopPropagation();
+      select();
+    });
     on(card, "keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -395,23 +513,22 @@ function treeView(nodes: NodeView[]): HTMLElement {
     });
     container.appendChild(card);
   }
-  return container;
+
+  if (selectedId && popoverFor === selectedId && popoverAnchor) {
+    const node = store.state.nodes.get(selectedId);
+    if (node) anchorPopover(wrapper, selectedId, convergenceOf(node, tip));
+  }
+  return wrapper;
 }
 
 function emptyCanvas(onNewNode: () => void): HTMLElement {
   const button = el("button", { class: "btn btn--primary", type: "button", text: "Create a node" });
   on(button, "click", onNewNode);
-  return el(
-    "div",
-    { class: "empty" },
-    el("div", { class: "empty__watermark" }, sentryWatermarkSvg(110)),
-    el("p", { class: "empty__title", text: "Nothing to chart yet" }),
-    el("p", {
-      class: "empty__body",
-      text: "A node is a place to keep data — a folder on this machine, or a drive you can carry. Create one and it will appear here, along with every peer it finds.",
-    }),
-    button,
-  );
+  return emptyState({
+    title: "Nothing to chart yet",
+    body: "A node is a place to keep data — a folder on this machine, or a drive you can carry. Create one and it will appear here, along with every peer it finds.",
+    actions: [button],
+  });
 }
 
 export interface CanvasHandles {
@@ -423,11 +540,32 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
   const body = el("div", { style: "width: 100%; height: 100%; position: relative; z-index: 1;" });
   const summary = el("span", { class: "muted", style: "font: var(--text-fine);" });
   const toolbar = el("div", { class: "canvas__toolbar", style: "position: relative; z-index: 2;" }, summary);
-  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, toolbar, body);
+
+  // Tree ⇄ Mesh toggle lives on the canvas edge now, not in the header.
+  const treeBtn = el("button", { type: "button", title: "Tree inventory (1)", "aria-label": "Tree view", "aria-pressed": "true" }, icon(Icons.tree, 14));
+  const meshBtn = el("button", { type: "button", title: "Mesh topology (2)", "aria-label": "Mesh view", "aria-pressed": "false" }, icon(Icons.mesh, 14));
+  on(treeBtn, "click", () => store.setCanvasMode("tree"));
+  on(meshBtn, "click", () => store.setCanvasMode("mesh"));
+  const viewSwitch = el("div", { class: "canvas-view-switch", role: "group", "aria-label": "Canvas view" }, treeBtn, meshBtn);
+
+  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, toolbar, body, viewSwitch);
 
   function render(): void {
     const nodes = store.dataNodes();
     const mode = store.state.canvasMode;
+
+    // A cleared selection dismisses the popover; a changed node keeps its
+    // anchor until the next click re-anchors it above the new card.
+    if (store.state.selection.kind !== "node") {
+      popoverAnchor = null;
+      popoverFor = null;
+    } else if (popoverFor !== null && popoverFor !== store.state.selection.nodeId) {
+      popoverAnchor = null;
+      popoverFor = null;
+    }
+
+    treeBtn.setAttribute("aria-pressed", String(mode === "tree"));
+    meshBtn.setAttribute("aria-pressed", String(mode === "mesh"));
 
     const reachable = nodes.filter((n) => n.reachable).length;
     const held = nodes.reduce((sum, n) => sum + (n.brain?.transit_documents_held ?? 0), 0);

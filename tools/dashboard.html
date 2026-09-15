@@ -59,6 +59,31 @@
   .live { font-size: 11px; color: var(--muted); }
   .live b { color: var(--ok); font-weight: 600; }
   .live.stalled b { color: var(--bad); }
+  /* Living styleguide: static fixtures only, never live mesh data, so no
+     escaping is needed here. If a sample ever becomes data-driven, it must
+     go through esc() like everything above. */
+  .styleguide { padding: 0 20px 28px; }
+  .styleguide > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 0 4px; }
+  .styleguide > p { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .sg-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .sg-btn { border: 1px solid transparent; padding: 7px 16px; border-radius: 999px; font-weight: 500; font-size: 13px; cursor: default; background: #2a3040; color: var(--text); }
+  .sg-btn.primary { background: linear-gradient(180deg, #3f8cff, #0066cc); color: #fff; }
+  .sg-btn.secondary { background: rgba(91,157,255,.14); color: var(--accent); border-color: rgba(91,157,255,.35); }
+  .sg-btn.outline { background: transparent; color: var(--text); border-color: var(--border); }
+  .sg-btn.ghost { background: transparent; color: var(--accent); }
+  .sg-btn.danger { background: #ff3b30; border-color: #e02d23; color: #fff; }
+  .sg-btn.sm { padding: 4px 10px; font-size: 12px; }
+  .sg-dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+  .sg-input { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; width: 100%; }
+  .sg-input:focus { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+  .sg-kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+  .sg-kpi small { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .sg-kpi b { font-size: 15px; }
+  .sg-toast { background: rgba(230,233,240,.92); color: #12161f; border-radius: 11px; padding: 10px 16px; font-size: 13px; max-width: 380px; }
+  .sg-dialog { background: #323236; border: 1px solid rgba(255,255,255,.14); border-radius: 20px; padding: 24px; text-align: center; max-width: 380px; }
+  .sg-dialog h3 { margin: 0 0 8px; font-size: 21px; }
+  .sg-dialog p { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
 </style>
 </head>
 <body>
@@ -126,6 +151,70 @@
     </table>
   </div>
 </main>
+
+<section class="styleguide" aria-label="Component styleguide">
+  <h2>Component styleguide</h2>
+  <p>Static fixtures mirroring the desktop app's button system, badges, dots, inputs, meters, toasts and dialog shape. Not live data — nothing here touches the REST API.</p>
+  <div class="sg-grid">
+    <div class="card">
+      <h2>Buttons</h2>
+      <div class="sg-row">
+        <span class="sg-btn">Default</span>
+        <span class="sg-btn primary">Primary</span>
+        <span class="sg-btn secondary">Secondary</span>
+      </div>
+      <div class="sg-row">
+        <span class="sg-btn outline">Outline</span>
+        <span class="sg-btn ghost">Ghost</span>
+        <span class="sg-btn danger">Destructive</span>
+      </div>
+      <div class="sg-row">
+        <span class="sg-btn primary sm">Primary sm</span>
+        <span class="sg-btn secondary sm">Secondary sm</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Status pills &amp; dots</h2>
+      <div class="sg-row">
+        <span class="pill ok">In sync</span>
+        <span class="pill warn">Catching up</span>
+        <span class="pill bad">Offline</span>
+        <span class="pill dim">Supervisor</span>
+      </div>
+      <div class="sg-row">
+        <span class="sg-dot" style="background: var(--ok)"></span>
+        <span class="sg-dot" style="background: var(--warn)"></span>
+        <span class="sg-dot" style="background: var(--bad)"></span>
+        <span class="sg-dot" style="background: var(--muted)"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Inputs &amp; meters</h2>
+      <div class="sg-row"><input class="sg-input" value="node name (focus ring on :focus)" readonly></div>
+      <div class="bar"><span style="width: 42%"></span></div>
+      <div class="bar warn"><span style="width: 88%"></span></div>
+      <div class="bar full"><span style="width: 100%"></span></div>
+      <div class="sg-row">
+        <div class="sg-kpi"><small>Ledger height</small><b>#128</b></div>
+        <div class="sg-kpi"><small>Storage budget</small><b>42%</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Toast &amp; dialog shape</h2>
+      <div class="sg-row"><div class="sg-toast"><b>Ledger verified</b> — 128 entries, chain intact.</div></div>
+      <div class="sg-row">
+        <div class="sg-dialog">
+          <h3>Delete “photos”?</h3>
+          <p>Shape reference for the confirmation modal. Static copy.</p>
+          <div class="sg-row" style="justify-content: flex-end; margin: 0;">
+            <span class="sg-btn outline sm">Cancel</span>
+            <span class="sg-btn danger sm">Delete Node &amp; Data</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <script>
 (function () {

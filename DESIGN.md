@@ -346,6 +346,33 @@ Everything else — the palette, the radius ladder, the pill grammar, the
 frosted chrome, the negative display tracking, the refusal of gradients — is
 inherited unchanged.
 
+### 2.1 Amendment (2026-09): dark-only, disciplined color, native interactions
+
+- **Dark-only.** The theme override is gone; the app ships one palette
+  (`tokens.css` `:root`). The light ramp and `prefers-color-scheme` branches
+  in §"Color and dark mode" below are historical.
+- **Disciplined color.** The four status hues keep their monopoly on carrying
+  meaning. Added alongside them is a *meaning-free* wash system
+  (`--wash-dropbox/console/ledger`, `--glow-brand`): faint background tints
+  per view that never touch text and never encode state.
+- **Elevation ladder.** Canvas < card/sidebar < `--color-surface-popover`.
+  Dialogs and large modals sit on the popover tier; small floating surfaces
+  (menus, node popover, palette) stay frosted chrome.
+- **Focus.** One `--focus-ring` token (surface gap + accent ring) on every
+  `:focus-visible`, replacing the plain outline.
+- **Buttons.** Default / primary / secondary / outline / ghost / destructive
+  (`.btn--danger`). The primary carries a subtle vertical sheen; destructive
+  is solid red in every delete flow.
+- **Glass.** Frosted chrome stays a chrome-and-overlay language (header,
+  sidebar, dialogs, menus, palette) with a 1px top edge-light
+  (`--glass-edge`). Data surfaces (canvas/tree cards, tables) stay solid for
+  readability and GPU budget.
+- **Interactions are native.** Modals are `<dialog>` (top-layer backdrop,
+  focus trap, Esc, focus restore), menus/popovers use `popover="auto"`
+  light-dismiss, and the sidebar tree follows the APG treeview pattern
+  (roving tabindex, arrows/Home/End, expand/collapse). No component library
+  was added; the patterns are hand-rolled in vanilla TS.
+
 ---
 
 ## 3. Foundations

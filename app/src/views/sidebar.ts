@@ -12,6 +12,7 @@ import type { MountPoint, TopologyPeer } from "../api.js";
 import { convergenceOf, meshTip, refreshDiscovered, refreshNodeList, store, type Convergence, type NodeView } from "../state.js";
 import { bytes, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
@@ -24,6 +25,14 @@ const expandedNodes = new Set<string>();
 let filterQuery = "";
 /** Previous status per node id - used to detect changes for dot pulse. */
 const prevStatus = new Map<string, Convergence>();
+/**
+ * Roving tabindex state (APG treeview pattern): exactly one tree row carries
+ * tabindex 0; the rest are -1 and reachable via ArrowUp/Down/Home/End.
+ * Survives re-renders as a stable focus id; null means "first visible row".
+ */
+let rovingId: string | null = null;
+/** Set before a notify-triggered re-render so render() can restore focus. */
+let pendingFocusId: string | null = null;
 
 interface Group {
   id: string;
@@ -111,8 +120,16 @@ let activeCtxMenu: HTMLElement | null = null;
 
 function closeCtxMenu(): void {
   if (activeCtxMenu) {
-    activeCtxMenu.remove();
+    const menu = activeCtxMenu;
     activeCtxMenu = null;
+    // hidePopover is a no-op when the menu never entered the top layer
+    // (unsupported webview fallback) or is already hidden.
+    try {
+      menu.hidePopover();
+    } catch {
+      // Fallback path never showed a popover; removal below suffices.
+    }
+    menu.remove();
   }
 }
 
@@ -123,7 +140,10 @@ type CtxMenuItem =
 function showCtxMenu(anchor: HTMLElement, items: CtxMenuItem[]): void {
   closeCtxMenu();
 
-  const menu = el("div", { class: "ctx-menu", role: "menu" });
+  // Native popover="auto": light-dismiss (outside click / Esc) and top-layer
+  // stacking come from the browser. Unsupported webviews fall back to the
+  // manual capture listeners below.
+  const menu = el("div", { class: "ctx-menu", role: "menu", popover: "auto" });
   for (const item of items) {
     if (item === "separator") {
       menu.appendChild(el("div", { class: "ctx-menu__sep", role: "separator" }));
@@ -154,6 +174,17 @@ function showCtxMenu(anchor: HTMLElement, items: CtxMenuItem[]): void {
   const left = Math.min(rect.left, window.innerWidth - mRect.width - 8);
   menu.style.top = `${top}px`;
   menu.style.left = `${left}px`;
+
+  // A natively dismissed popover fires `toggle` with newState "closed" while
+  // staying in the DOM; mirror that into removal so state never leaks.
+  on(menu, "toggle", (e) => {
+    if ((e as ToggleEvent).newState === "closed") closeCtxMenu();
+  });
+
+  if (typeof menu.showPopover === "function") {
+    menu.showPopover();
+    return;
+  }
 
   const dismiss = (e: MouseEvent | KeyboardEvent) => {
     if (e instanceof KeyboardEvent && e.key !== "Escape") return;
@@ -242,6 +273,8 @@ function discoveredCandidateRow(
       class: "tree__row discovered-row",
       "data-depth": "1",
       role: "treeitem",
+      "data-focus-id": `d:${candidate.path}`,
+      tabindex: "-1",
       "aria-selected": "false",
       title: candidate.path || candidate.node_id,
     },
@@ -434,7 +467,8 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       class: "tree__row",
       "data-depth": "2",
       role: "treeitem",
-      tabindex: "0",
+      "data-focus-id": `n:${node.process.node_id}`,
+      tabindex: "-1",
       "aria-selected": String(isNodeSelected),
       title: `${name} — ${node.process.data_dir}`,
     },
@@ -452,6 +486,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
 
   const toggleOrSelect = (e: MouseEvent | KeyboardEvent) => {
     const target = e.target as HTMLElement;
+    pendingFocusId = `n:${node.process.node_id}`;
     if (target.closest(".tree__chevron") && collections.length > 0) {
       e.stopPropagation();
       if (expandedNodes.has(node.process.node_id)) expandedNodes.delete(node.process.node_id);
@@ -532,7 +567,8 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
           class: "tree__row",
           "data-depth": "3",
           role: "treeitem",
-          tabindex: "0",
+          "data-focus-id": `c:${node.process.node_id}::${c.name}`,
+          tabindex: "-1",
           "aria-selected": String(isColSelected),
           title: `${c.name} (${engineLabel(c.engine)}) — ${c.document_count} documents`,
         },
@@ -546,6 +582,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       );
 
       const openCol = () => {
+        pendingFocusId = `c:${node.process.node_id}::${c.name}`;
         store.select({ kind: "collection", nodeId: node.process.node_id, collection: c.name });
       };
       on(colRow, "click", openCol);
@@ -612,7 +649,8 @@ function groupRow(group: Group): HTMLElement {
       class: "tree__row",
       "data-depth": "1",
       role: "treeitem",
-      tabindex: "0",
+      "data-focus-id": `g:${group.id}`,
+      tabindex: "-1",
       "aria-expanded": String(!isCollapsed),
       title: group.sublabel,
     },
@@ -623,6 +661,7 @@ function groupRow(group: Group): HTMLElement {
   );
 
   const toggle = () => {
+    pendingFocusId = `g:${group.id}`;
     if (collapsed.has(group.id)) collapsed.delete(group.id);
     else collapsed.add(group.id);
     if (group.kind === "mount" && group.mount) {
@@ -674,6 +713,83 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     class: "stack sidebar__tree-scroll",
     role: "tree",
     "aria-label": "Devices and nodes",
+  });
+
+  // -- roving tabindex (APG treeview): one tab stop for the whole tree ------
+  const focusableRows = (): HTMLElement[] =>
+    [...tree.querySelectorAll<HTMLElement>("[data-focus-id]")];
+
+  function applyRoving(): void {
+    const rows = focusableRows();
+    if (rows.length === 0) return;
+    let target = rows.find((r) => r.dataset.focusId === rovingId) ?? rows[0];
+    if (pendingFocusId !== null) {
+      const wanted = rows.find((r) => r.dataset.focusId === pendingFocusId);
+      pendingFocusId = null;
+      if (wanted) {
+        target = wanted;
+        // Focus was inside the tree before the re-render; put it back so
+        // keyboard users are not dropped to <body> on every refresh.
+        target.focus();
+      }
+    }
+    rovingId = target.dataset.focusId ?? null;
+    for (const r of rows) r.tabIndex = r === target ? 0 : -1;
+  }
+
+  on(tree, "focusin", (e) => {
+    const row = (e.target as HTMLElement).closest?.("[data-focus-id]") as HTMLElement | null;
+    if (row === null || !tree.contains(row)) return;
+    rovingId = row.dataset.focusId ?? rovingId;
+    for (const r of focusableRows()) r.tabIndex = r === row ? 0 : -1;
+  });
+
+  on(tree, "keydown", (e) => {
+    const row = (e.target as HTMLElement).closest?.("[data-focus-id]") as HTMLElement | null;
+    // Inner action buttons keep their own keys; arrows still move between rows.
+    if (row === null || !tree.contains(row)) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End" && e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const rows = focusableRows();
+    const i = rows.indexOf(row);
+    if (i < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const focusRow = (j: number): void => {
+      rows[j]?.focus();
+    };
+    switch (e.key) {
+      case "ArrowDown": focusRow(Math.min(rows.length - 1, i + 1)); break;
+      case "ArrowUp": focusRow(Math.max(0, i - 1)); break;
+      case "Home": focusRow(0); break;
+      case "End": focusRow(rows.length - 1); break;
+      case "ArrowRight":
+      case "ArrowLeft": {
+        // Expandable rows (groups, nodes with collections) toggle exactly
+        // once; leaves and already-correct rows step to the adjacent row.
+        const wantExpand = e.key === "ArrowRight";
+        const chevron = row.querySelector(".tree__chevron");
+        const expandedAttr =
+          chevron?.getAttribute("data-expanded") ?? row.getAttribute("aria-expanded");
+        if (expandedAttr === null) {
+          focusRow(wantExpand ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1));
+          break;
+        }
+        if ((expandedAttr === "true") === wantExpand) {
+          focusRow(wantExpand ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1));
+          break;
+        }
+        // Node rows toggle only via their chevron; group rows toggle on any
+        // click, so click the row directly (a chevron dispatch would bubble
+        // and toggle twice). dispatchEvent — not .click() — because the
+        // chevron is an SVG element and .click() is HTMLElement-only.
+        if (chevron !== null && !row.hasAttribute("aria-expanded")) {
+          chevron.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        } else {
+          row.click();
+        }
+        break;
+      }
+    }
   });
 
   const searchInput = el("input", {
@@ -796,15 +912,11 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
     if (groups.length === 0 && store.state.discoveredCandidates.length === 0) {
       children.push(
-        el(
-          "div",
-          { class: "empty" },
-          el("p", { class: "empty__title", text: "No storage yet" }),
-          el("p", {
-            class: "empty__body",
-            text: "Create a node to give this device somewhere to keep data, or plug in a drive to provision a portable one.",
-          }),
-        ),
+        emptyState({
+          title: "No storage yet",
+          body: "Create a node to give this device somewhere to keep data, or plug in a drive to provision a portable one.",
+          watermarkSize: 72,
+        }),
       );
     }
 
@@ -853,6 +965,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     }
 
     replace(tree, ...children);
+    applyRoving();
   }
 
   return { render, element, collapseBtn };

@@ -147,7 +147,7 @@ export interface LedgerHandles {
 
 export function createLedger(): LedgerHandles {
   const body = el("div", { class: "stack" });
-  const element = el("main", { class: "canvas" }, body);
+  const element = el("main", { class: "canvas ledger-view" }, body);
 
   let currentFrom = 0;
   let currentTip: number | null = null;

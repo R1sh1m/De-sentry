@@ -12,8 +12,14 @@ function describeError(error: unknown): string {
 }
 
 export function openUnlockModal(node: { node_id: string; node_name?: string; data_dir?: string }): void {
-  const scrim = el("div", { class: "modal-scrim", role: "dialog", "aria-modal": "true" });
-  const dismiss = () => scrim.remove();
+  // Native <dialog>: top-layer backdrop, focus trap, Esc dismissal and focus
+  // restore come from the browser instead of hand-rolled listeners. Falls back
+  // to a plain open dialog on webviews without showModal support.
+  const dialog = el("dialog", { class: "modal-dialog", "aria-label": `Unlock ${node.node_name || "node"}` });
+  const dismiss = () => {
+    if (dialog.open) dialog.close();
+    dialog.remove();
+  };
 
   const title = el("h3", { class: "modal-box__title", text: `Unlock ${node.node_name || node.node_id.slice(0, 8)}` });
   const lead = el("p", {
@@ -87,11 +93,17 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
   on(unlockBtn, "click", submit);
   on(input, "keydown", (e) => {
     if (e.key === "Enter") void submit();
-    else if (e.key === "Escape") dismiss();
   });
-  on(scrim, "click", (e) => {
-    if (e.target === scrim) dismiss();
+  // Backdrop click dismisses: on a native modal the backdrop targets the
+  // dialog element itself. The explicit Escape handler stays as a fallback
+  // for non-modal display; dismiss() is idempotent so double-dismiss is safe.
+  on(dialog, "click", (e) => {
+    if (e.target === dialog) dismiss();
   });
+  on(dialog, "keydown", (e) => {
+    if (e.key === "Escape") dismiss();
+  });
+  on(dialog, "close", () => dialog.remove());
 
   const box = el(
     "div",
@@ -103,7 +115,12 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     el("div", { class: "modal-box__footer" }, cancelBtn, unlockBtn),
   );
 
-  scrim.appendChild(box);
-  document.body.appendChild(scrim);
+  dialog.appendChild(box);
+  document.body.appendChild(dialog);
+  try {
+    dialog.showModal();
+  } catch {
+    dialog.setAttribute("open", "");
+  }
   input.focus();
 }

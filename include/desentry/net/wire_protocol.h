@@ -263,6 +263,7 @@ struct HeartbeatPayload {
   // serving normally, kDegraded when over quota). Informational for the mesh
   // view; lifecycle transitions stay supervisor-driven, never inferred here.
   uint8_t lifecycle_state = 3;
+  bool is_supervisor = false;
   std::string Encode() const;
   static HeartbeatPayload Decode(const std::string& bytes);
 };

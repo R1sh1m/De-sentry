@@ -213,7 +213,7 @@ export function createDropbox(): DropboxHandles {
         class: "card drop-zone",
         style: "border: 2px dashed var(--color-hairline); border-radius: var(--radius-md); padding: 40px 20px; text-align: center; cursor: pointer; transition: all 0.2s ease; background: var(--color-surface-pearl);",
       },
-      icon(Icons.drive, 36),
+      el("div", { class: "drop-zone__icon-wrap" }, icon(Icons.inbox, 30)),
       el("h3", { style: "margin: 12px 0 4px; font-size: var(--text-base);", text: "Drag & drop data files here" }),
       el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "Supports JSON, CSV, Vectors, Logs, or Plain Text" }),
       (() => {

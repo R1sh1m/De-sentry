@@ -21,9 +21,12 @@ export function openDeleteNodeModal(opts: DeleteNodeOptions): void {
   // Exact confirmation question as requested:
   const confirmationText = `The selected node ${nodeName} has ${amountOfData} in it related to ${dataDescription}, are you sure you want to delete this?`;
 
-  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" });
+  const sheet = el("dialog", { class: "modal-dialog sheet-dialog", "aria-label": "Delete Node Confirmation" });
 
-  const dismiss = () => sheet.remove();
+  const dismiss = () => {
+    if (sheet.open) sheet.close();
+    sheet.remove();
+  };
 
   const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
   on(closeButton, "click", dismiss);
@@ -100,14 +103,24 @@ export function openDeleteNodeModal(opts: DeleteNodeOptions): void {
 
   sheet.appendChild(dialogBox);
 
+  // The destructive action must not be Esc-dismissable mid-flight: native
+  // `cancel` is vetoable, unlike a keydown listener racing the browser.
+  on(sheet, "cancel", (event) => {
+    if (busy) event.preventDefault();
+  });
   on(sheet, "click", (event) => {
     if (event.target === sheet && !busy) dismiss();
   });
-
   on(sheet, "keydown", (event) => {
     if (event.key === "Escape" && !busy) dismiss();
   });
+  on(sheet, "close", () => sheet.remove());
 
   document.body.appendChild(sheet);
+  try {
+    sheet.showModal();
+  } catch {
+    sheet.setAttribute("open", "");
+  }
   sheet.focus();
 }

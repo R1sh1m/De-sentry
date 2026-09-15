@@ -54,39 +54,18 @@ function cssVar(name: string, fallback: string): string {
   }
 }
 
-function isDarkTheme(): boolean {
-  const theme = document.documentElement.getAttribute("data-theme");
-  if (theme === "dark") return true;
-  if (theme === "light") return false;
-  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-}
-
 function readPalette(): Palette {
-  const dark = isDarkTheme();
-  if (dark) {
-    return {
-      pointColor: cssVar("--color-primary", "#2997ff"),
-      lineColor: "rgba(64, 169, 255, 0.22)",
-      glowColor: "rgba(41, 151, 255, 0.12)",
-      status: {
-        converged: cssVar("--color-status-converged", "#30d158"),
-        lagging: cssVar("--color-status-lagging", "#ffd60a"),
-        diverged: cssVar("--color-status-offline", "#ff453a"),
-        offline: cssVar("--color-status-offline", "#ff453a"),
-        supervisor: cssVar("--color-status-supervisor", "#bf5af2"),
-      },
-    };
-  }
+  // Dark-only UI: a single ramp, no prefers-color-scheme branch.
   return {
-    pointColor: cssVar("--color-primary", "#0066cc"),
-    lineColor: "rgba(0, 102, 204, 0.18)",
-    glowColor: "rgba(0, 113, 227, 0.08)",
+    pointColor: cssVar("--color-primary", "#2997ff"),
+    lineColor: "rgba(64, 169, 255, 0.26)",
+    glowColor: "rgba(41, 151, 255, 0.12)",
     status: {
-      converged: cssVar("--color-status-converged", "#1d7f4e"),
-      lagging: cssVar("--color-status-lagging", "#8a6100"),
-      diverged: cssVar("--color-status-offline", "#a1252b"),
-      offline: cssVar("--color-status-offline", "#a1252b"),
-      supervisor: cssVar("--color-status-supervisor", "#5a4bb8"),
+      converged: cssVar("--color-status-converged", "#30d158"),
+      lagging: cssVar("--color-status-lagging", "#ffd60a"),
+      diverged: cssVar("--color-status-offline", "#ff453a"),
+      offline: cssVar("--color-status-offline", "#ff453a"),
+      supervisor: cssVar("--color-status-supervisor", "#bf5af2"),
     },
   };
 }
@@ -120,22 +99,24 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   let palette = readPalette();
 
-  const CONNECT_DIST = 145;
+  const CONNECT_DIST = 172;
   const CONNECT_DIST_SQ = CONNECT_DIST * CONNECT_DIST;
 
   let particles: Particle[] = [];
 
   const initParticles = (w: number, h: number) => {
     particles = [];
-    const count = Math.max(75, Math.min(135, Math.floor((w * h) / 14000)));
+    // Dense enough to read fullscreen: ~250 dots at 1360x880, clamped so
+    // small windows and 4K desktops both stay smooth.
+    const count = Math.max(150, Math.min(300, Math.floor((w * h) / 4800)));
     for (let i = 0; i < count; i++) {
       particles.push({
         x: Math.random() * w,
         y: Math.random() * h,
-        z: 0.25 + Math.random() * 0.75,
-        vx: (Math.random() - 0.5) * 0.40,
-        vy: (Math.random() - 0.5) * 0.40,
-        radius: 1.6 + Math.random() * 2.2,
+        z: 0.3 + Math.random() * 0.7,
+        vx: (Math.random() - 0.5) * 0.46,
+        vy: (Math.random() - 0.5) * 0.46,
+        radius: 1.7 + Math.random() * 2.4,
         phase: Math.random() * Math.PI * 2,
       });
     }
@@ -247,7 +228,7 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
         const dy = p1.y - p2.y;
         const distSq = dx * dx + dy * dy;
         if (distSq < CONNECT_DIST_SQ) {
-          const alpha = (1 - distSq / CONNECT_DIST_SQ) * 0.32 * Math.min(p1.z, p2.z);
+          const alpha = (1 - distSq / CONNECT_DIST_SQ) * 0.44 * Math.min(p1.z, p2.z);
           ctx.strokeStyle = palette.lineColor;
           ctx.globalAlpha = alpha;
           ctx.beginPath();

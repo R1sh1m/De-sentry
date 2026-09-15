@@ -1,7 +1,6 @@
 #include "desentry/net/network_manager.h"
 
 #include <algorithm>
-#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -55,8 +54,8 @@ Status NetworkManager::Start() {
   // starve eager broadcast. Four threads is plenty -- probes are short
   // request/response exchanges, and the pool only bounds concurrency, not
   // the peer count (overflow drops with a counter, counted in ProbeStats).
-probe_pool_ = std::make_unique<WorkerPool>(4, 64);
-  receipt_tracker_ = std::make_unique<ReceiptTracker>();
+  probe_pool_ = std::make_unique<WorkerPool>(4, 64);
+  receipt_tracker_ = &engine_->receipt_tracker();
 
   PlacementOptions placement_opts;
   placement_opts.replication_factor = config_.replication_factor;
@@ -451,6 +450,7 @@ HeartbeatPayload NetworkManager::OwnHeartbeat() const {
   // fail. Lifecycle transitions stay supervisor-driven.
   hb.lifecycle_state = static_cast<uint8_t>(
       quota.over_limit ? NodeLifecycleState::kDegraded : NodeLifecycleState::kRunning);
+  hb.is_supervisor = config_.supervisor;
   return hb;
 }
 
@@ -461,6 +461,14 @@ WireMessage NetworkManager::HandleHeartbeat(const std::string& peer_node_id,
   peer_table_.RecordReport(peer_node_id, request.ledger_tip_entry_id, request.free_quota_mb,
                            request.quota_limited, request.transit_bytes_held,
                            request.transit_budget_bytes);
+  if (request.is_supervisor) {
+    PeerInfo info;
+    if (peer_table_.Get(peer_node_id, &info) && !info.is_supervisor) {
+      info.is_supervisor = true;
+      peer_table_.Upsert(info);
+      if (placement_) placement_->Rebuild(peer_table_);
+    }
+  }
   return WireMessage{MessageType::kHeartbeat, OwnHeartbeat().Encode()};
 }
 
@@ -508,6 +516,9 @@ void NetworkManager::ProbePeer(PeerInfo peer) {
       peer_table_.RecordReport(peer.node_id, hb.ledger_tip_entry_id, hb.free_quota_mb,
                                hb.quota_limited, hb.transit_bytes_held, hb.transit_budget_bytes);
       proven_id = hb.node_id;
+      if (hb.is_supervisor) {
+        peer.is_supervisor = true;
+      }
     } catch (const std::exception&) {
       // Reachable but garbled: liveness counts (last_seen_ms below), the
       // figures don't. A peer whose heartbeats never decode keeps its old
@@ -528,11 +539,13 @@ void NetworkManager::ProbePeer(PeerInfo peer) {
   if (!peer_table_.Get(key, &seen)) seen = peer;
   seen.node_id = key;
   seen.last_seen_ms = NowMs();
+  if (peer.is_supervisor) seen.is_supervisor = true;
   // Fast recovery, slow condemn: one answered probe clears a degraded
   // marking (the peer proved it is back); condemning takes sustained
   // failure via the suspicion tiers above.
   if (seen.state == NodeLifecycleState::kDegraded) seen.state = NodeLifecycleState::kRunning;
   peer_table_.Upsert(seen);
+  if (seen.is_supervisor && placement_) placement_->Rebuild(peer_table_);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +635,7 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
     }
   }
 
+  RebuildPlacement();
   const PlacementPlan plan = placement_->Place(collection, key, shard_value);
   const int64_t stale_ms = StaleThresholdMs(config_);
   const int64_t now = NowMs();
@@ -671,6 +685,12 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
     const bool unreachable = info.last_seen_ms == 0 || (now - info.last_seen_ms) > stale_ms ||
                              info.state == NodeLifecycleState::kDegraded;
     if (!unreachable) continue;
+    // An offline owner cannot hold bytes for itself.
+    std::vector<std::string> active_candidates;
+    active_candidates.reserve(holder_candidates.size());
+    for (const auto& h : holder_candidates) {
+      if (h != replica) active_candidates.push_back(h);
+    }
     // This replica should hold these bytes but cannot be reached. Hold the
     // chunks this node is assigned by deterministic rank -- at most
     // max_holders copies mesh-wide instead of one per online replica -- and
@@ -680,7 +700,7 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
     std::vector<uint32_t> my_chunks;
     for (uint32_t c = 0; c < chunk_total; ++c) {
       const std::vector<std::string> holders = SelectTransitHolders(
-          replica, doc_key_hash, holder_candidates, max_holders, c);
+          replica, doc_key_hash, active_candidates, max_holders, c);
       if (std::find(holders.begin(), holders.end(), self) != holders.end()) {
         my_chunks.push_back(c);
       }

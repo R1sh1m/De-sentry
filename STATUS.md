@@ -140,12 +140,12 @@ All on Windows box 1 (MSYS2 UCRT64 GCC 16.2, CMake 4.4.2, OpenSSL 3.6.4, Python 
 | `airplane_mode_test.py` | ALL 18 checks passed (offline create/write/replicate/verify/restart, no non-LAN socket) |
 | `transit_replay_test.py` | ALL 22 checks passed (hold, intent, claim, reconverge, verify, quorum refusal, 403, doc survives) |
 | Manual 3-node mesh + PUT ?durability=2&timeout_ms=5000 | 200 OK with achieved=2 replicas; 202 Accepted when one node down with achieved=1, timed_out=true |
+| Durability soak test (3 nodes, 20 writes, durability=3, 2 restarts) | ALL 20 writes achieved 3/3 replicas; all keys consistent after restarts |
 | `git diff HEAD~1 --stat` | 44 files, +4490/-393 lines; no failures introduced |
 
 **What was NOT run (or not finished):**
-- Transit held-ack durability counting integrated with WaitForDurability (message_id tracking completed in fe025e3)
-- End-to-end soak with ?durability=3 across node restarts
 - Linux/macOS cross-build of the new receipt/transit paths
+- `ctest` meta-runner on Windows (binaries pass standalone; meta-runner hangs)
 
 ### Executed 2026-09-15: ISSUES.md Remediation Pass (WAL CRC32 validation, malformed tail, unified runner)
 
@@ -494,6 +494,17 @@ than reading it.
   which is what a replication test actually cares about.
 - **`network_test` slept fixed intervals** and failed on a busy machine. It
   now waits on the condition with a generous bound.
+- **Supervisors leaked onto the placement ring and holder candidate sets.**
+  Because supervisors run with UDP discovery disabled and communicate via TCP
+  bootstrap/heartbeats, omitting `is_supervisor` from `HeartbeatPayload` left
+  connected supervisors stored as ordinary data nodes (`is_supervisor = false`)
+  in `peer_table_`. Consequently, supervisors occupied replica slots on the
+  placement ring and displaced genuine offline nodes, causing
+  `HoldForUnreachableOwners()` to miss unreachable owners and fail to hold
+  transit bytes. Propagating `is_supervisor` over heartbeats, rebuilding
+  placement rings immediately when supervisors are identified and during transit
+  evaluation, preventing offline owners from holding for themselves, and
+  excluding supervisors from `wait_visible` targets resolved the failure.
 
 **v2, found by building the desktop app for the first time.** All three were
 in the app's build configuration rather than its Rust, and each one stopped
@@ -860,3 +871,39 @@ as future work — and v2's storage router is where it landed.
 | `docs/comparison.md` | the two-design comparison and what was adopted |
 | `docs/apple-reference.md` | the unmodified design-language source `DESIGN.md` derives from |
 | `README.md` | project overview and quick start |
+
+---
+
+## 8. History: UI overhaul — native interactions + disciplined color (2026-09-15)
+
+App-only change (no engine, no sidecar, no protocol). Radix/shadcn patterns
+re-implemented by hand in vanilla TS — no package was added
+(`app/package.json` still has exactly one runtime dependency,
+`@tauri-apps/api`).
+
+**MCPs:** `opencode.json` now declares `context7` + `gh_grep` (remote).
+Config loads at startup — **quit and restart opencode** for the tools to
+appear. No Storybook MCP: it would require vendoring Storybook itself,
+against the zero-fetched-dependency rule; `tools/dashboard.html` covers the
+need instead.
+
+**What changed:** native `<dialog>` for unlock / delete / About (top-layer
+backdrop, focus trap, vetoable `cancel` while deleting, `showModal` fallback);
+`popover="auto"` light-dismiss for the sidebar context menu (node popover
+stays manual — canvas re-renders would thrash a top-layer popover); APG
+roving tabindex + arrows/Home/End/expand-collapse in the sidebar tree with
+focus restore across re-renders; new `check:a11y` script; `--color-surface-popover`
++ `--focus-ring` + meaning-free wash tokens, unified button system
+(default/primary/secondary/outline/ghost/destructive), glass edge-light on
+chrome; Cmd+K actions+views palette (`views/palette.ts`); shared
+`util/empty.ts`; LEDGER/console/dropbox top-glow washes; `DESIGN.md` §2.1
+amendment; component fixtures appended to `tools/dashboard.html` (static
+only — live instrument above is untouched).
+
+**Verified:** `npm run typecheck`, `check:css`, `check:qr`, `check:a11y`,
+`vite build` — all green. `ctest` not run (no C++ touched).
+
+**NOT verified:** manual Tauri pass (dialog trap/Esc/restore, popover
+light-dismiss, arrow-key walk, palette, glass readability at sizes);
+older-webkit fallbacks (`showModal`/`showPopover` guards are in place but
+untested); 4K/50-node frame budget for the boosted chrome blur.

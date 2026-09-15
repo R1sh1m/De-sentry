@@ -125,4 +125,9 @@ export const Icons = {
   lock: "M5 7.5V5.5a3 3 0 0 1 6 0v2M3.5 7.5h9a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zM8 10v2",
   /** Open padlock — node is encrypted and unlocked/running */
   lockOpen: "M5 7.5V5.5a3 3 0 0 1 6 0M3.5 7.5h9a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zM8 10v2",
+  /** Pairing: QR code — scan to link another device. Replaces the generic shield. */
+  qr: "M2.75 2.75h4.5v4.5h-4.5zM8.75 2.75h4.5v4.5h-4.5zM2.75 8.75h4.5v4.5h-4.5zM8.75 8.75h1.75v1.75H8.75zM11.5 11.5h1.75v1.75H11.5zM8.75 12.25H10.5V14H8.75zM12.25 8.75h1v1.75h-1z",
+  /** Window chrome (custom titlebar when decorations are off) */
+  minus: "M3.5 8h9",
+  square: "M3.5 3.5h9v9h-9z",
 };

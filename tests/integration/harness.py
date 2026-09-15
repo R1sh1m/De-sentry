@@ -321,7 +321,7 @@ class Cluster:
 
     def wait_visible(self, collection: str, key: str, timeout_s: float = 45.0,
                      nodes: Optional[List[Node]] = None) -> None:
-        targets = nodes if nodes is not None else self.running_nodes()
+        targets = nodes if nodes is not None else [n for n in self.running_nodes() if not n.supervisor]
 
         def visible() -> bool:
             for node in targets:
