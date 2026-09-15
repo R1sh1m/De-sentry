@@ -1,0 +1,7 @@
+{
+  "//": "Adaptive advisor facets, values, exemplars, question templates and the engine capability matrix (architecture-v3 section 3). Populated by the advisor workstream; this placeholder only keeps the bundle path valid.",
+  "version": 1,
+  "target_confidence": 0.8,
+  "facets": [],
+  "engines": []
+}

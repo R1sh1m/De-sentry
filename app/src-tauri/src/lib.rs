@@ -19,14 +19,19 @@
 //! request -- which is what lets the airplane-mode acceptance test cover the
 //! app as well as the engine.
 
+pub mod advisor;
 pub mod ai;
+pub mod applog;
 pub mod appstate;
+pub mod assistant;
 pub mod commands;
 pub mod configgen;
 pub mod http;
 pub mod keychain;
 pub mod nodes;
 pub mod notify;
+pub mod pairing;
+pub mod password;
 pub mod ports;
 pub mod power;
 pub mod recovery;
@@ -326,6 +331,26 @@ pub fn run() {
             commands::notify,
             commands::scan_for_nodes,
             commands::trigger_discovery_scan,
+            // architecture-v3: adaptive advisor
+            advisor::advisor_start,
+            advisor::advisor_answer,
+            advisor::advisor_refine,
+            advisor::advisor_set_engines,
+            // architecture-v3: assistant
+            assistant::assistant_send,
+            assistant::assistant_confirm,
+            assistant::assistant_status,
+            assistant::assistant_reset,
+            // architecture-v3: unified logs
+            applog::app_logs,
+            applog::log_sources,
+            applog::export_logs,
+            // architecture-v3: per-node passwords
+            password::node_security,
+            password::set_node_password,
+            // architecture-v3: pairing and joining a mesh
+            pairing::pairing_code,
+            pairing::join_mesh,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

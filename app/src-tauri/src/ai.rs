@@ -352,6 +352,31 @@ impl Sizer {
         !self.embeddings.is_empty()
     }
 
+    /// Why the model is not in use, when it is not. Empty when it is.
+    pub fn fallback_reason(&self) -> &str {
+        &self.fallback_reason
+    }
+
+    /// Embeds arbitrary texts with the loaded model: L2-normalised 384-dim
+    /// vectors, so a dot product is the cosine. Shared by the advisor (facet
+    /// evidence) and the assistant (intent recognition), so there is one model
+    /// instance in the process rather than one per feature.
+    ///
+    /// Err when the model is not loaded -- callers fall back to keywords.
+    pub fn embed_texts(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        #[cfg(feature = "onnx")]
+        {
+            let guard = self.model.lock().map_err(|_| "the model is unavailable".to_owned())?;
+            let model = guard.as_ref().ok_or_else(|| "the model is not loaded".to_owned())?;
+            model.embed_all(texts).map_err(|error| error.to_string())
+        }
+        #[cfg(not(feature = "onnx"))]
+        {
+            let _ = texts;
+            Err("this build has no embedding model".to_owned())
+        }
+    }
+
     /// The main entry point: description and budget in, a full NodeSpec out.
     pub fn size(&self, description: &str, quota_mb: u64, available_engines: &[String]) -> NodeSpec {
         let trimmed = description.trim();

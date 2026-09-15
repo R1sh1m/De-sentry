@@ -57,6 +57,8 @@
     "externalBin": ["binaries/desentryd"],
     "resources": {
       "../resources/prototypes.json": "resources/prototypes.json",
+      "../resources/facets.json": "resources/facets.json",
+      "../resources/knowledge/": "resources/knowledge/",
       "../resources/model/": "resources/model/"
     },
     "windows": {

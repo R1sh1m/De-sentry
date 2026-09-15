@@ -132,6 +132,21 @@ async function download(url, destination, label) {
   process.stdout.write(`    -> ${destination} (${human(info.size)})\n`);
 }
 
+/**
+ * The archive extractor.
+ *
+ * bsdtar handles .zip and .tgz alike and ships with Windows 10+, macOS and
+ * every Linux this app targets. On Windows, though, the `tar` found first on
+ * PATH is very often GNU tar from Git for Windows or MSYS2 -- and GNU tar reads
+ * an absolute path like `C:\Users\...\x.zip` as `host:path`, failing with
+ * "Cannot connect to C: resolve failed". So Windows uses the bsdtar in
+ * System32 by absolute path instead of whatever PATH happens to prefer.
+ */
+function tarCommand() {
+  if (process.platform !== "win32") return "tar";
+  return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+}
+
 function run(command, args, cwd) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, { cwd, stdio: "inherit" });
@@ -156,6 +171,9 @@ async function findFile(root, name) {
   }
   return null;
 }
+
+/** Set when the runtime could not be installed, so the script does not claim success. */
+let runtimeMissing = false;
 
 async function fetchRuntime() {
   const key = `${process.platform}-${process.arch}`;
@@ -182,10 +200,7 @@ async function fetchRuntime() {
 
   try {
     await download(ortUrl(build.archive), archive, `ONNX Runtime ${ORT_VERSION} for ${key}`);
-    // bsdtar handles both .zip and .tgz and ships with Windows 10+, macOS and
-    // every Linux this app targets -- one command instead of an archive
-    // library this script would otherwise have to depend on.
-    await run("tar", ["-xf", archive], scratch);
+    await run(tarCommand(), ["-xf", archive], scratch);
 
     const extracted = await findFile(scratch, build.library);
     if (extracted === null) {
@@ -195,6 +210,7 @@ async function fetchRuntime() {
     const info = await stat(target);
     process.stdout.write(`    -> ${target} (${human(info.size)})\n`);
   } catch (error) {
+    runtimeMissing = true;
     process.stdout.write(
       `\n  Could not install the ONNX Runtime: ${error.message}\n` +
         `  Download ${ortUrl(build.archive)} by hand and copy\n` +
@@ -222,6 +238,19 @@ async function main() {
   }
 
   await fetchRuntime();
+
+  if (runtimeMissing) {
+    // Exit non-zero. Printing "Done" and exiting 0 here is how an installer
+    // ends up shipping without the model runtime: every file but one is in
+    // place, nothing fails, and the app quietly sizes workloads by keyword.
+    process.stdout.write(
+      "\nINCOMPLETE. The model files are in place but the ONNX Runtime is not, so\n" +
+        "the app would size workloads with the keyword fallback. Fix the error above\n" +
+        "and re-run before building an installer.\n",
+    );
+    process.exitCode = 2;
+    return;
+  }
 
   process.stdout.write(
     "\nDone. These files are bundled into the installer by tauri.conf.json and are\n" +

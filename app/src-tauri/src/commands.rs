@@ -287,6 +287,12 @@ pub struct CreateNodeRequest {
     pub bootstrap_peers: Vec<String>,
     #[serde(default)]
     pub description: String,
+    /// Optional per-node password (architecture-v3 section 6). None = unprotected.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Store the password in this machine's keychain so the node auto-starts here.
+    #[serde(default)]
+    pub remember_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -522,7 +528,7 @@ pub fn available_engines(state: State<'_, std::sync::Arc<AppState>>) -> Reply<Ve
 /// The binary is the authority, not a list compiled into the app: a build with
 /// SQLite vendored in and one without are the same app with different engines,
 /// and only the binary knows which it is.
-fn engine_names(state: &AppState) -> Vec<String> {
+pub(crate) fn engine_names(state: &AppState) -> Vec<String> {
     let port = state
         .supervisor_id
         .lock()
@@ -591,10 +597,14 @@ pub fn unlock_node(
     app: AppHandle,
     state: State<'_, std::sync::Arc<AppState>>,
     node_id: String,
-    password: String,
+    secret: String,
+    remember: Option<bool>,
 ) -> Reply<SupervisedNode> {
-    // Parsed before anything is restarted, so a mistyped key produces "that is
-    // not a valid recovery key" rather than a node that fails to start.
+    // TODO(platform): accept a password OR a recovery key, verified against the
+    // node's security.json (architecture-v3 section 6); honour `remember`. Today
+    // this still rejects anything that is not a recovery key -- the reported bug.
+    let _ = remember;
+    let password = secret;
     recovery::decode(&password).map_err(fail)?;
 
     let mut handle_spec = {
