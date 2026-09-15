@@ -129,7 +129,7 @@
   --tree-row-selected-color: var(--color-primary);
 
   /* -- ambient mesh-globe backdrop ---------------------------------------- */
-  --backdrop-dust: rgba(102, 194, 255, 0.46);
+  --backdrop-dust: rgba(102, 194, 255, 0.28);
   --backdrop-dust-line: rgba(102, 194, 255, 0.24);
   --backdrop-node: rgba(102, 194, 255, 0.9);
   --backdrop-rim: rgba(41, 151, 255, 0.20);

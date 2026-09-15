@@ -17,8 +17,28 @@ import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
 
-/** Collapsed groups, remembered for the session only. */
-const collapsed = new Set<string>();
+const STORAGE_KEY = "desentry.sidebar.collapsed";
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {
+    // private window or quota exceeded
+  }
+  return new Set<string>();
+}
+
+function saveCollapsed(set: Set<string>): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...set]));
+  } catch {
+    // ignore
+  }
+}
+
+/** Collapsed groups, persisted to localStorage. */
+const collapsed = loadCollapsed();
 /** Expanded nodes showing their collections. */
 const expandedNodes = new Set<string>();
 /** Current search query for filtering sidebar items. */
@@ -664,6 +684,7 @@ function groupRow(group: Group): HTMLElement {
     pendingFocusId = `g:${group.id}`;
     if (collapsed.has(group.id)) collapsed.delete(group.id);
     else collapsed.add(group.id);
+    saveCollapsed(collapsed);
     if (group.kind === "mount" && group.mount) {
       store.select({ kind: "mount", mountPath: group.mount.path });
     } else {
@@ -795,8 +816,8 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
   const searchInput = el("input", {
     class: "sidebar__search-input",
     type: "search",
-    placeholder: "Search\u2026",
-    "aria-label": "Filter storage",
+    placeholder: "Filter nodes\u2026",
+    "aria-label": "Filter nodes and collections",
   }) as HTMLInputElement;
 
   on(searchInput, "input", () => {

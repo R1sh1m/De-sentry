@@ -166,6 +166,27 @@ function buildNodePopover(node: NodeView, status: Convergence): HTMLElement {
     e.stopPropagation();
     store.select({ kind: "console", nodeId: node.process.node_id });
   });
+  const deleteBtn = el("button", { class: "btn btn--sm btn--ghost text-danger", type: "button", title: `Delete ${name}` }, "Delete…");
+  on(deleteBtn, "click", (e) => {
+    e.stopPropagation();
+    promptDeleteSupervisedNode(node);
+  });
+
+  const details = el(
+    "details",
+    { class: "disclosure" },
+    el("summary", { class: "disclosure__summary", text: "Details" }),
+    el(
+      "dl",
+      { class: "kv node-popover__kv" },
+      el("dt", { text: "Node ID" }),
+      el("dd", { class: "mono", text: shortNode(node.process.node_id, 16), title: node.process.node_id }),
+      el("dt", { text: "Tip hash" }),
+      el("dd", { class: "mono", text: node.tip?.entry_hash ?? "—", title: node.tip?.entry_hash ?? "" }),
+      el("dt", { text: "Data dir" }),
+      el("dd", { class: "mono", text: node.process.data_dir, title: node.process.data_dir }),
+    ),
+  );
 
   return el(
     "div",
@@ -184,13 +205,14 @@ function buildNodePopover(node: NodeView, status: Convergence): HTMLElement {
       el("dt", { text: "Ledger" }),
       el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
       el("dt", { text: "Tip" }),
-      el("dd", { class: "mono", text: shortHash(node.tip?.entry_hash, 8, 0) }),
+      el("dd", { class: "mono", text: shortHash(node.tip?.entry_hash, 8, 0), title: node.tip?.entry_hash ?? "" }),
       el("dt", { text: "Collections" }),
       el("dd", { text: `${collections.length} · ${count(docs)} docs` }),
       el("dt", { text: "Peers" }),
       el("dd", { text: String(node.peers.length) }),
     ),
-    el("div", { class: "node-popover__actions" }, ledgerBtn, consoleBtn),
+    details,
+    el("div", { class: "node-popover__actions" }, ledgerBtn, consoleBtn, deleteBtn),
   );
 }
 
@@ -198,10 +220,20 @@ function anchorPopover(host: HTMLElement, nodeId: string, status: Convergence): 
   const node = store.state.nodes.get(nodeId);
   if (!node || !popoverAnchor) return;
   const pop = buildNodePopover(node, status);
-  // Clamp horizontally so the 280px card never leaves the canvas.
-  const x = Math.max(150, Math.min(popoverAnchor.x, host.clientWidth - 150 || popoverAnchor.x));
-  pop.style.left = `${x}px`;
-  pop.style.top = `${Math.max(8, popoverAnchor.y - 8)}px`;
+  // 280px wide popover, centered on anchor.x; clamp to 16px gutter.
+  const popoverWidth = 280;
+  const gutter = 16;
+  const hostWidth = host.clientWidth;
+  const hostHeight = host.clientHeight;
+  const x = Math.max(gutter + popoverWidth / 2, Math.min(popoverAnchor.x, hostWidth - gutter - popoverWidth / 2));
+  const popoverHeight = 320; // estimated max height; actual measured after append if needed.
+  // If anchor is in top 20% of canvas, flip popover to BELOW the node.
+  const inTopZone = popoverAnchor.y < hostHeight * 0.2;
+  const y = inTopZone
+    ? popoverAnchor.y + 8 // below the node
+    : Math.max(gutter, popoverAnchor.y - 8 - popoverHeight); // above the node
+  pop.style.left = `${x - popoverWidth / 2}px`;
+  pop.style.top = `${y}px`;
   host.appendChild(pop);
 }
 
@@ -435,15 +467,8 @@ function treeView(nodes: NodeView[]): HTMLElement {
     const behind = tip !== null ? tip.entry_id - tipId : 0;
 
     const collections = node.brain?.collections ?? [];
-    const deleteBtn = el(
-      "button",
-      { class: "btn btn--xs btn--ghost text-danger", type: "button", title: `Delete ${node.process.node_name || "node"}` },
-      icon(Icons.trash, 12),
-    );
-    on(deleteBtn, "click", (e) => {
-      e.stopPropagation();
-      promptDeleteSupervisedNode(node);
-    });
+    const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
+    const storageSummary = node.brain ? `${count(totalDocs)} docs · ${node.brain.free_quota_mb} MiB free` : `${count(totalDocs)} docs`;
 
     const card = el(
       "article",
@@ -461,7 +486,6 @@ function treeView(nodes: NodeView[]): HTMLElement {
           "div",
           { class: "row" },
           el("span", { class: "badge", "data-tone": status, text: STATUS_TEXT[status] }),
-          deleteBtn,
         ),
       ),
       el(
@@ -469,21 +493,15 @@ function treeView(nodes: NodeView[]): HTMLElement {
         { class: "kv" },
         el("dt", { text: "Ledger" }),
         el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
-        el("dt", { text: "Collections" }),
-        el("dd", { text: String(collections.length) }),
-        el("dt", { text: "Documents" }),
-        el("dd", { text: count(collections.reduce((sum, c) => sum + c.document_count, 0)) }),
-        el("dt", { text: "Free quota" }),
-        el("dd", { text: node.brain ? `${node.brain.free_quota_mb} MiB` : "—" }),
-        el("dt", { text: "Data directory" }),
-        el("dd", { class: "mono", text: node.process.data_dir }),
+        el("dt", { text: "Storage" }),
+        el("dd", { text: storageSummary }),
       ),
       collections.length > 0 &&
         el(
           "div",
           { class: "row", style: "margin-top: var(--space-xs); flex-wrap: wrap;" },
           ...collections
-            .slice(0, 6)
+            .slice(0, 3)
             .map((c) =>
               el("span", {
                 class: "chip",
@@ -491,7 +509,7 @@ function treeView(nodes: NodeView[]): HTMLElement {
                 text: `${c.name} · ${engineLabel(c.engine)}`,
               }),
             ),
-          collections.length > 6 && el("span", { class: "muted", text: `+${collections.length - 6} more` }),
+          collections.length > 3 && el("span", { class: "muted", text: `+${collections.length - 3} more` }),
         ),
     );
 
@@ -572,7 +590,7 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
     summary.textContent =
       nodes.length === 0
         ? ""
-        : `${reachable}/${nodes.length} answering${held > 0 ? ` · ${count(held)} documents held in transit` : ""}`;
+        : `${reachable}/${nodes.length} online${held > 0 ? ` · ${count(held)} pending delivery` : ""}`;
 
     if (nodes.length === 0) {
       replace(body, emptyCanvas(onNewNode));

@@ -80,6 +80,8 @@ interface Draft {
   created: SupervisedNode | null;
   recoveryKey: string | null;
   recoveryExported: boolean;
+  recoveryConfirmed: boolean;
+  recoveryPrintPending: boolean;
   createError: string;
 }
 
@@ -105,6 +107,8 @@ function newDraft(): Draft {
     created: null,
     recoveryKey: null,
     recoveryExported: false,
+    recoveryConfirmed: false,
+    recoveryPrintPending: false,
     createError: "",
   };
 }
@@ -216,21 +220,63 @@ export function createWizard(): WizardHandles {
     // them once and letting them out is the honest trade. The node is created
     // either way -- what they lose is the ability to recover it.
     if (draft.recoveryKey !== null && !draft.recoveryExported) {
-      const leave = window.confirm(
-        "The recovery key for this node has not been saved. There is no copy anywhere else — close anyway?",
-      );
-      if (!leave) return;
-      store.toast(
-        "warning",
-        "Recovery key not exported",
-        "This node cannot be recovered if its keychain entry is lost.",
-        0,
-      );
+      openRecoveryKeyWarningModal(() => {
+        store.toast(
+          "warning",
+          "Recovery key not exported",
+          "This node cannot be recovered if its keychain entry is lost.",
+          0,
+        );
+        doClose();
+      });
+      return;
     }
+    doClose();
+  }
+
+  function doClose(): void {
     open = false;
     element.hidden = true;
     draft = newDraft();
     store.notify();
+  }
+
+  function openRecoveryKeyWarningModal(onConfirm: () => void): void {
+    const dialog = el("dialog", { class: "modal-dialog modal-dialog--warning", "aria-label": "Recovery key not exported" });
+    const dismiss = () => {
+      if (dialog.open) dialog.close();
+      dialog.remove();
+    };
+    const stayBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Stay" });
+    on(stayBtn, "click", dismiss);
+    const closeAnywayBtn = el("button", { class: "btn btn--sm btn--danger", type: "button", text: "Close anyway" });
+    on(closeAnywayBtn, "click", () => { dismiss(); onConfirm(); });
+    const content = el(
+      "div",
+      { class: "modal-box" },
+      el(
+        "div",
+        { class: "modal-box__icon-wrap modal-box__icon-wrap--danger" },
+        icon(Icons.warning, 28),
+      ),
+      el("h3", { class: "modal-box__heading", text: "Recovery key not exported" }),
+      el("p", { class: "modal-box__prompt-text", text: "The recovery key for this node has not been saved. There is no copy anywhere else — close anyway?" }),
+      el("p", { class: "modal-box__warning-note", text: "If this device's keychain is lost and you do not have the key, the data on this node cannot be read by anyone, including us." }),
+      el(
+        "div",
+        { class: "modal-box__footer" },
+        stayBtn,
+        closeAnywayBtn,
+      ),
+    );
+    replace(dialog, content);
+    document.body.appendChild(dialog);
+    try {
+      dialog.showModal();
+    } catch {
+      dialog.setAttribute("open", "");
+    }
+    (dialog.querySelector("button.btn--ghost") as HTMLElement | null)?.focus();
   }
 
   function go(step: number): void {
@@ -568,7 +614,8 @@ export function createWizard(): WizardHandles {
       );
     }
 
-    // Confidence Section
+    // Confidence Section — human-readable verdict stays visible; raw scores
+    // move into Technical details below.
     const confidenceSection = section(
       "Confidence",
       confidenceMeter(decision.confidence),
@@ -583,9 +630,16 @@ export function createWizard(): WizardHandles {
           class: "error-note",
           text: `The embedding model did not load (${decision.fallback_reason || "reason not reported"}), so this came from the keyword fallback. It is deterministic but much blunter.`,
         }),
+    );
+    container.appendChild(confidenceSection);
+
+    // Technical details — scores + reasoning, collapsed so Step 3 reads as a
+    // proposal first and an explanation on demand.
+    const technical = el("details", { class: "disclosure" }, el("summary", { class: "disclosure__summary", text: "Technical details" }));
+    technical.appendChild(
       el(
         "div",
-        { class: "row" },
+        { class: "row", style: "margin-top: var(--space-xs);" },
         ...decision.scores
           .slice()
           .sort((a, b) => b.score - a.score)
@@ -598,7 +652,6 @@ export function createWizard(): WizardHandles {
           ),
       ),
     );
-    container.appendChild(confidenceSection);
 
     // Interactive Clarification Box (when low confidence or ambiguous)
     if (lowConfidence && questions.length > 0) {
@@ -642,10 +695,11 @@ export function createWizard(): WizardHandles {
       container.appendChild(section("Clarifying Questions", clarifyBox));
     }
 
-    // AI Reasoning & Architecture Breakdown (when reasoning is available)
+    // AI Reasoning & Architecture Breakdown (when reasoning is available).
+    // Lives inside Technical details; clarifying questions above stay visible
+    // because they are actionable.
     if (reasoning) {
-      const reasoningSection = section("AI Reasoning & Architecture");
-      const reasoningCard = el("div", { class: "ai-reasoning-card" });
+      const reasoningCard = el("div", { class: "ai-reasoning-card", style: "margin-top: var(--space-xs);" });
       reasoningCard.appendChild(el("p", { class: "ai-reasoning-card__summary", text: reasoning.summary }));
 
       if (reasoning.key_matched_signals.length > 0) {
@@ -728,9 +782,9 @@ export function createWizard(): WizardHandles {
         reasoningCard.appendChild(tuneBlock);
       }
 
-      reasoningSection.appendChild(reasoningCard);
-      container.appendChild(reasoningSection);
+      technical.appendChild(reasoningCard);
     }
+    container.appendChild(technical);
 
     // Engines section
     container.appendChild(
@@ -960,21 +1014,69 @@ export function createWizard(): WizardHandles {
     const printButton = el("button", { class: "btn", type: "button", text: "Print" });
     on(printButton, "click", () => {
       window.print();
-      // Printing cannot be confirmed from here -- the browser reports nothing
-      // about what came out of the printer -- so this asks rather than assumes.
-      if (window.confirm("Did the recovery key print correctly?")) {
-        draft.recoveryExported = true;
-        const port = store.state.supervisorPort;
-        if (port !== null) void apiFor(port).recordRecoveryKeyExport(node.node_id).catch(() => undefined);
-        render();
-      }
+      // Printing cannot be confirmed from here — the browser reports nothing
+      // about what came out of the printer — so ask inline rather than assume.
+      draft.recoveryPrintPending = true;
+      render();
     });
 
     const copyButton = el("button", { class: "btn btn--ghost", type: "button", text: "Copy" });
     on(copyButton, "click", async () => {
-      await navigator.clipboard.writeText(key);
+      try {
+        await navigator.clipboard.writeText(key);
+      } catch {
+        // Clipboard may be unavailable (permissions, insecure context); the
+        // checkbox below is still the attestation that matters.
+      }
+      // Copy counts as an export: the Done gate is the checkbox below, and the
+      // supervisor records only *that* an export happened, never the key.
+      if (!draft.recoveryExported) {
+        draft.recoveryExported = true;
+        const port = store.state.supervisorPort;
+        if (port !== null) void apiFor(port).recordRecoveryKeyExport(node.node_id).catch(() => undefined);
+      }
       store.toast("info", "Copied to the clipboard", "Paste it somewhere durable — the clipboard is not storage.");
+      render();
     });
+
+    const confirmRow = (() => {
+      const box = el("input", { type: "checkbox" }) as HTMLInputElement;
+      box.checked = draft.recoveryConfirmed;
+      on(box, "change", () => {
+        draft.recoveryConfirmed = box.checked;
+        render();
+      });
+      return el(
+        "label",
+        { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+        box,
+        el("span", { text: "I have safely stored this recovery key" }),
+      );
+    })();
+
+    const printConfirm = draft.recoveryPrintPending
+      ? el(
+          "div",
+          { class: "row", style: "gap: var(--space-xs); align-items: center; flex-wrap: wrap;" },
+          el("span", { class: "muted", text: "Did the key print correctly?" }),
+          (() => {
+            const yes = el("button", { class: "btn btn--sm", type: "button", text: "Yes, it printed" });
+            on(yes, "click", () => {
+              draft.recoveryExported = true;
+              draft.recoveryPrintPending = false;
+              const port = store.state.supervisorPort;
+              if (port !== null) void apiFor(port).recordRecoveryKeyExport(node.node_id).catch(() => undefined);
+              render();
+            });
+            const notYet = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Not yet" });
+            on(notYet, "click", () => {
+              draft.recoveryPrintPending = false;
+              render();
+            });
+            return el("span", { class: "row", style: "gap: var(--space-xs);" }, yes, notYet);
+          })(),
+        )
+      : null;
 
     return el(
       "div",
@@ -988,9 +1090,13 @@ export function createWizard(): WizardHandles {
       el("div", { class: "qr" }, qrSvg(key, { scale: 4, title: "Recovery key" })),
       el("p", { class: "mono", style: "user-select: text; word-break: break-all", text: key }),
       el("div", { class: "row" }, saveButton, printButton, copyButton),
-      draft.recoveryExported
+      printConfirm,
+      confirmRow,
+      draft.recoveryExported && draft.recoveryConfirmed
         ? el("p", { class: "muted", text: "Saved. The supervisor has recorded that the export happened — never the key itself." })
-        : el("p", { class: "error-note", text: "Save, print or copy the key to finish." }),
+        : draft.recoveryExported
+          ? el("p", { class: "error-note", text: "Check the box above to finish — Done stays disabled until you confirm storage." })
+          : el("p", { class: "error-note", text: "Save, print or copy the key, then check the box to finish." }),
     );
   }
 
@@ -1002,7 +1108,10 @@ export function createWizard(): WizardHandles {
       case 2: return true;
       case 3: return true;
       case 4: return !draft.creating;
-      case 5: return draft.recoveryExported;
+      case 5:
+        // Unencrypted nodes have no key; creation already marked them exported.
+        if (draft.recoveryKey === null) return draft.recoveryExported;
+        return draft.recoveryExported && draft.recoveryConfirmed;
       default: return false;
     }
   }

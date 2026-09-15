@@ -314,7 +314,7 @@ function blankView(process: SupervisedNode): NodeView {
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof UnreachableError) return "not answering";
+  if (error instanceof UnreachableError) return "not reachable";
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return String(error);

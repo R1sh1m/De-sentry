@@ -38,11 +38,19 @@ export interface DropboxHandles {
 export function createDropbox(): DropboxHandles {
   const element = el("div", { class: "canvas dropbox-view", style: "display: flex; flex-direction: column; overflow: auto; padding: 24px;" });
 
-  let stagedPayload: AnalyzedPayload | null = null;
-  let targetNodeId: string = "";
-  let targetCollection: string = "";
-  let isIngesting = false;
-  let ingestionLogs: string[] = [];
+  interface StagedItem {
+    id: number;
+    /** Filename, or "Pasted text" for paste intakes. */
+    sourceName: string;
+    payload: AnalyzedPayload;
+    targetNodeId: string;
+    targetCollection: string;
+    isIngesting: boolean;
+    logs: string[];
+  }
+
+  let staged: StagedItem[] = [];
+  let nextStagedId = 1;
 
   function analyzeText(text: string, filename = ""): AnalyzedPayload {
     const trimmed = text.trim();
@@ -217,21 +225,16 @@ export function createDropbox(): DropboxHandles {
       el("h3", { style: "margin: 12px 0 4px; font-size: var(--text-base);", text: "Drag & drop data files here" }),
       el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "Supports JSON, CSV, Vectors, Logs, or Plain Text" }),
       (() => {
-        const fileInput = el("input", { type: "file", style: "display: none;" }) as HTMLInputElement;
+        const fileInput = el("input", { type: "file", multiple: true, style: "display: none;" }) as HTMLInputElement;
         on(fileInput, "change", () => {
-          if (fileInput.files && fileInput.files[0]) {
-            const file = fileInput.files[0];
-            const reader = new FileReader();
-            reader.onload = () => {
-              if (typeof reader.result === "string") {
-                stageData(analyzeText(reader.result, file.name));
-              }
-            };
-            reader.readAsText(file);
+          if (fileInput.files && fileInput.files.length > 0) {
+            for (const file of Array.from(fileInput.files)) readFile(file);
+            // Reset so picking the same files again still fires a change.
+            fileInput.value = "";
           }
         });
 
-        const browseBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Browse File…");
+        const browseBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Browse Files…");
         on(browseBtn, "click", (e) => {
           e.stopPropagation();
           fileInput.click();
@@ -254,15 +257,8 @@ export function createDropbox(): DropboxHandles {
       dropZone.style.borderColor = "var(--color-hairline)";
       dropZone.style.background = "var(--color-surface-pearl)";
       const files = (e as DragEvent).dataTransfer?.files;
-      if (files && files[0]) {
-        const file = files[0];
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === "string") {
-            stageData(analyzeText(reader.result, file.name));
-          }
-        };
-        reader.readAsText(file);
+      if (files && files.length > 0) {
+        for (const file of Array.from(files)) readFile(file);
       }
     });
 
@@ -276,152 +272,229 @@ export function createDropbox(): DropboxHandles {
     const analyzePasteBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "align-self: flex-start; margin-top: 6px;" }, "Analyze Pasted Text");
     on(analyzePasteBtn, "click", () => {
       if (pasteArea.value.trim()) {
-        stageData(analyzeText(pasteArea.value.trim()));
+        stageData(analyzeText(pasteArea.value.trim()), "Pasted text");
+        pasteArea.value = "";
       }
     });
 
     const intakeSection = el("div", { class: "stack" }, dropZone, pasteArea, analyzePasteBtn);
 
-    // Staged preview card (if data has been dropped/pasted)
-    let stagedSection: HTMLElement | null = null;
-    if (stagedPayload) {
-      const payload = stagedPayload;
+    // Staged files — one card per dropped/pasted payload so different files
+    // keep their own engine suggestion, destination, collection and log.
+    const stagedCards: HTMLElement[] = staged.map((item) => stagedCard(item, nodes));
 
-      const nodeSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
-      for (const n of nodes) {
-        const opt = el("option", {
-          value: n.process.node_id,
-          text: `${n.process.node_name || shortNode(n.process.node_id)} (port ${n.process.api_port})`,
-        }) as HTMLOptionElement;
-        if (n.process.node_id === targetNodeId) opt.selected = true;
-        nodeSelect.appendChild(opt);
-      }
-      on(nodeSelect, "change", () => { targetNodeId = nodeSelect.value; });
+    const stagedHeader = staged.length > 1
+      ? el("div", { class: "row row--between", style: "margin-top: 24px; align-items: center;" },
+          el("strong", { text: `${staged.length} files staged`, style: "font-size: var(--text-sm);" }),
+          (() => {
+            const anyBusy = staged.some((s) => s.isIngesting);
+            const all = el("button", {
+              class: "btn btn--sm btn--primary",
+              type: "button",
+              disabled: anyBusy ? "true" : undefined,
+              title: anyBusy ? "Wait for the running ingestion to finish" : undefined,
+            }, `Ingest all ${staged.length} files`);
+            on(all, "click", () => void ingestAll());
+            return all;
+          })(),
+        )
+      : null;
 
-      const colInput = el("input", {
-        type: "text",
-        class: "input",
-        value: targetCollection,
-        placeholder: "collection_name",
-        style: "padding: 6px 10px; font-size: var(--text-sm); font-family: var(--font-mono); width: 160px;",
-      }) as HTMLInputElement;
-      on(colInput, "input", () => { targetCollection = colInput.value.trim(); });
-
-      const commitBtn = el(
-        "button",
-        {
-          class: "btn btn--primary",
-          type: "button",
-          style: "gap: 6px;",
-          disabled: isIngesting ? "true" : undefined,
-        },
-        icon(Icons.plug, 14),
-        isIngesting ? "Ingesting…" : "Organize & Ingest",
-      );
-
-      const cancelBtn = el("button", { class: "btn btn--ghost", type: "button" }, "Discard");
-      on(cancelBtn, "click", () => {
-        stagedPayload = null;
-        ingestionLogs = [];
-        render();
-      });
-
-      on(commitBtn, "click", () => void commitIngestion());
-
-      const previewRows = payload.records.slice(0, 5).map((r) =>
-        el(
-          "div",
-          { class: "row row--between", style: "padding: 6px 0; border-bottom: 1px solid var(--color-hairline); font-size: var(--text-xs);" },
-          el("span", { class: "mono", text: r.key, style: "font-weight: 600;" }),
-          el("span", { class: "mono muted", text: truncate(json(r.doc), 60) }),
-        ),
-      );
-
-      stagedSection = el(
-        "div",
-        { class: "card", style: "margin-top: 24px; padding: 20px; border: 1px solid var(--color-primary);" },
-        el("div", { class: "row row--between", style: "align-items: center; margin-bottom: 12px;" },
-          el("div", {},
-            el("span", { class: "badge", text: payload.workload.toUpperCase(), style: "margin-right: 8px;" }),
-            el("strong", { text: payload.title }),
-          ),
-          el("span", { class: "muted", style: "font-size: var(--text-xs);" }, `Engine: ${engineLabel(payload.suggestedEngine)}`),
-        ),
-        el("p", { style: "font-size: var(--text-sm); margin-bottom: 16px;", text: payload.summary }),
-        el("div", { class: "row", style: "gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap;" },
-          el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Destination Node:"),
-          nodeSelect,
-          el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Collection:"),
-          colInput,
-        ),
-        el("div", { class: "stack", style: "background: var(--color-surface-pearl); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 16px;" },
-          el("strong", { text: `Preview (${payload.records.length} total records):`, style: "font-size: var(--text-xs); margin-bottom: 4px;" }),
-          ...previewRows,
-        ),
-        el("div", { class: "row", style: "gap: 10px;" }, commitBtn, cancelBtn),
-        ingestionLogs.length > 0
-          ? el("div", { class: "stack", style: "margin-top: 16px; padding: 12px; background: var(--color-surface-pearl); border-radius: var(--radius-sm); font-size: var(--text-xs);" },
-              el("strong", { text: "Ingestion Log:" }),
-              ...ingestionLogs.map((l) => el("div", { class: "mono", text: l })),
-            )
-          : null,
-      );
-    }
-
-    replace(element, titleCluster, intakeSection, stagedSection);
+    replace(element, titleCluster, intakeSection, stagedHeader, ...stagedCards);
   }
 
-  function stageData(payload: AnalyzedPayload): void {
-    stagedPayload = payload;
-    targetCollection = payload.suggestedCollection;
+  function stagedCard(item: StagedItem, nodes: NodeView[]): HTMLElement {
+    const payload = item.payload;
+
+    const nodeSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);", "aria-label": `Destination node for ${item.sourceName || payload.title}` }) as HTMLSelectElement;
+    for (const n of nodes) {
+      const quota = n.status?.quota;
+      const freeMiB = n.brain?.free_quota_mb
+        ?? (quota ? Math.max(0, Math.round((quota.limit_bytes - quota.used_bytes) / (1024 * 1024))) : null)
+        ?? null;
+      const opt = el("option", {
+        value: n.process.node_id,
+        text: `${n.process.node_name || shortNode(n.process.node_id)}${freeMiB !== null ? ` (${freeMiB} MiB free)` : ""}`,
+      }) as HTMLOptionElement;
+      if (n.process.node_id === item.targetNodeId) opt.selected = true;
+      nodeSelect.appendChild(opt);
+    }
+    on(nodeSelect, "change", () => { item.targetNodeId = nodeSelect.value; });
+
+    const colInput = el("input", {
+      type: "text",
+      class: "input",
+      value: item.targetCollection,
+      placeholder: "collection_name",
+      "aria-label": `Collection for ${item.sourceName || payload.title}`,
+      style: "padding: 6px 10px; font-size: var(--text-sm); font-family: var(--font-mono); width: 160px;",
+    }) as HTMLInputElement;
+    on(colInput, "input", () => { item.targetCollection = colInput.value.trim(); });
+
+    const commitBtn = el(
+      "button",
+      {
+        class: "btn btn--primary",
+        type: "button",
+        style: "gap: 6px;",
+        disabled: item.isIngesting || nodes.length === 0 ? "true" : undefined,
+        title: nodes.length === 0 ? "No online nodes to ingest into" : undefined,
+      },
+      icon(Icons.plug, 14),
+      item.isIngesting ? "Ingesting…" : `Ingest ${payload.records.length} records`,
+    );
+
+    const cancelBtn = el("button", { class: "btn btn--ghost", type: "button" }, "Discard");
+    on(cancelBtn, "click", () => {
+      staged = staged.filter((s) => s.id !== item.id);
+      render();
+    });
+
+    on(commitBtn, "click", () => void commitIngestion(item));
+
+    const previewRows = payload.records.slice(0, 3).map((r) =>
+      el(
+        "div",
+        { class: "row row--between", style: "padding: 6px 0; border-bottom: 1px solid var(--color-hairline); font-size: var(--text-xs);" },
+        el("span", { class: "mono", text: r.key, style: "font-weight: 600;" }),
+        el("span", { class: "mono muted", text: truncate(json(r.doc), 60) }),
+      ),
+    );
+
+    const failures = item.logs.filter((l) => l.startsWith("✗")).length;
+
+    return el(
+      "div",
+      { class: "card", style: "margin-top: 16px; padding: 20px; border: 1px solid var(--color-primary);" },
+      el("div", { class: "row row--between", style: "align-items: center; margin-bottom: 12px;" },
+        el("div", {},
+          el("span", { class: "badge", text: payload.workload.toUpperCase(), style: "margin-right: 8px;" }),
+          el("strong", { text: payload.title }),
+          item.sourceName ? el("span", { class: "muted", style: "font-size: var(--text-xs); margin-left: 8px;", text: item.sourceName }) : null,
+        ),
+        el("span", { class: "muted", style: "font-size: var(--text-xs);" }, `Engine: ${engineLabel(payload.suggestedEngine)}`),
+      ),
+      el("p", { style: "font-size: var(--text-sm); margin-bottom: 16px;", text: payload.summary }),
+      el("div", { class: "row", style: "gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap;" },
+        el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Destination Node:"),
+        nodeSelect,
+        el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Collection:"),
+        colInput,
+      ),
+      el("div", { class: "stack", style: "background: var(--color-surface-pearl); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 16px;" },
+        el("strong", { text: payload.records.length > 3 ? `Preview (first 3 of ${payload.records.length} records):` : `Preview (${payload.records.length} ${payload.records.length === 1 ? "record" : "records"}):`, style: "font-size: var(--text-xs); margin-bottom: 4px;" }),
+        ...previewRows,
+      ),
+      el("div", { class: "row", style: "gap: 10px;" }, commitBtn, cancelBtn),
+      failures > 0 && !item.isIngesting
+        ? el("p", { class: "error-note", text: `${failures} record${failures === 1 ? "" : "s"} failed — see the log below.` })
+        : null,
+      item.logs.length > 0
+        ? el("div", { class: "stack", style: "margin-top: 16px; padding: 12px; background: var(--color-surface-pearl); border-radius: var(--radius-sm); font-size: var(--text-xs);" },
+            el("strong", { text: "Ingestion Log:" }),
+            ...item.logs.map((l) => el("div", { class: "mono", text: l })),
+          )
+        : null,
+    );
+  }
+
+  function readFile(file: File): void {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        stageData(analyzeText(reader.result, file.name), file.name);
+      } else {
+        store.toast("error", `Could not read '${file.name}'`, "The file could not be decoded as text.");
+      }
+    };
+    reader.onerror = () => {
+      store.toast("error", `Could not read '${file.name}'`, reader.error ? reader.error.message : "Read failed.");
+    };
+    reader.onabort = () => {
+      store.toast("warning", `Skipped '${file.name}'`, "The read was aborted.");
+    };
+    try {
+      reader.readAsText(file);
+    } catch (error) {
+      store.toast("error", `Could not read '${file.name}'`, describeError(error));
+    }
+  }
+
+  function stageData(payload: AnalyzedPayload, sourceName = ""): void {
     const best = pickBestNode(payload.workload, payload.suggestedEngine);
-    targetNodeId = best ? best.process.node_id : (store.dataNodes()[0]?.process.node_id ?? "");
-    ingestionLogs = [];
+    staged = [...staged, {
+      id: nextStagedId++,
+      sourceName,
+      payload,
+      targetCollection: payload.suggestedCollection,
+      targetNodeId: best ? best.process.node_id : (store.dataNodes()[0]?.process.node_id ?? ""),
+      isIngesting: false,
+      logs: [],
+    }];
     render();
   }
 
-  async function commitIngestion(): Promise<void> {
-    if (!stagedPayload || !targetNodeId || !targetCollection) return;
-    const node = store.state.nodes.get(targetNodeId);
+  async function ingestAll(): Promise<void> {
+    for (const item of staged) {
+      if (item.isIngesting) continue;
+      if (!item.targetNodeId || !item.targetCollection) continue;
+      await commitIngestion(item);
+    }
+  }
+
+  async function commitIngestion(item: StagedItem): Promise<void> {
+    if (!item.targetNodeId || !item.targetCollection) return;
+    const node = store.state.nodes.get(item.targetNodeId);
     if (!node) {
-      store.toast("error", "Node unavailable", "Selected target node is offline.");
+      store.toast("error", "Node unavailable", `The destination node for '${item.sourceName || item.payload.title}' is offline.`);
       return;
     }
 
-    isIngesting = true;
+    item.isIngesting = true;
     render();
-    ingestionLogs = [`Starting ingestion into node ${node.process.node_name || targetNodeId} / ${targetCollection}...`];
+    item.logs = [`Starting ingestion into node ${node.process.node_name || item.targetNodeId} / ${item.targetCollection}...`];
 
     const api = apiFor(node.process.api_port);
     let successCount = 0;
+    let failCount = 0;
 
     try {
-      // Ingest each record into the target node
-      for (const r of stagedPayload.records) {
+      // Ingest each record into the target node; failures are per-record so
+      // one bad document never aborts the rest of the file.
+      for (const r of item.payload.records) {
         try {
-          const res = await api.putDocument(targetCollection, r.key, r.doc);
+          const res = await api.putDocument(item.targetCollection, r.key, r.doc);
           successCount++;
-          if (successCount <= 5 || successCount === stagedPayload.records.length) {
-            ingestionLogs.push(`✓ Ingested "${r.key}" -> entry #${res.entry_id}`);
+          if (successCount <= 5 || successCount + failCount === item.payload.records.length) {
+            item.logs.push(`✓ Ingested "${r.key}" -> entry #${res.entry_id}`);
           }
         } catch (err) {
-          ingestionLogs.push(`✗ Failed "${r.key}": ${describeError(err)}`);
+          failCount++;
+          item.logs.push(`✗ Failed "${r.key}": ${describeError(err)}`);
         }
       }
 
-      store.toast(
-        "success",
-        "Ingestion Complete",
-        `Ingested ${successCount}/${stagedPayload.records.length} records into ${targetCollection}.`,
-        4000,
-      );
+      const total = item.payload.records.length;
+      const label = item.sourceName || item.targetCollection;
+      if (failCount === 0) {
+        store.toast(
+          "success",
+          "Ingestion complete",
+          `Ingested ${successCount}/${total} records from '${label}' into ${item.targetCollection}.`,
+          4000,
+        );
+      } else if (successCount === 0) {
+        store.toast("error", `Ingestion failed for '${label}'`, `${failCount}/${total} records failed. See the log on its card.`, 6000);
+      } else {
+        store.toast("warning", `Ingestion partially failed for '${label}'`, `Ingested ${successCount}/${total}; ${failCount} failed. See the log on its card.`, 6000);
+      }
 
-      await refreshNode(targetNodeId);
-      await refreshCollection(targetNodeId, targetCollection);
+      await refreshNode(item.targetNodeId);
+      await refreshCollection(item.targetNodeId, item.targetCollection);
     } catch (err) {
-      store.toast("error", "Ingestion failed", describeError(err));
+      store.toast("error", `Ingestion failed for '${item.sourceName || item.targetCollection}'`, describeError(err));
     } finally {
-      isIngesting = false;
+      item.isIngesting = false;
       render();
     }
   }

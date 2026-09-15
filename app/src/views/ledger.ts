@@ -9,11 +9,13 @@
 
 import { apiFor, type LedgerEntry, type LedgerEntriesPage } from "../api.js";
 import {
+  ago,
   count,
   shortHash,
   shortNode,
 } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 import { store, type NodeView } from "../state.js";
 
 const MAX_ENTRIES_PER_CALL = 5000;
@@ -77,6 +79,13 @@ function formatHLC(hlc: string): string {
   })} · logical ${logical} · ${shortNode(nodeId)}`;
 }
 
+/** Relative timestamp for the table cell; full detail stays in `title`. */
+function formatHLCRelative(hlc: string): { text: string; title: string } {
+  const { date } = parseHLC(hlc);
+  if (!date) return { text: hlc || "—", title: hlc || "" };
+  return { text: ago(date.getTime()), title: formatHLC(hlc) };
+}
+
 function isTransitOp(op: string): boolean {
   return op === "TRANSIT_INTENT" || op === "TRANSIT_CLAIMED";
 }
@@ -99,12 +108,13 @@ function renderEntryRow(
     ? `held for ${shortNode(entry.collection)}`
     : entry.collection;
 
+  const hlc = formatHLCRelative(entry.hlc);
   const cells: HTMLElement[] = [
     el("td", { class: "mono", text: `#${entry.entry_id}` }),
     el("td", {}, el("span", { class: "badge", "data-tone": opTone, text: opLabel })),
     el("td", { class: "mono", text: collectionDisplay }),
     el("td", { class: "mono", text: entry.key || "—" }),
-    el("td", { class: "mono", text: formatHLC(entry.hlc) }),
+    el("td", { class: "mono", text: hlc.text, title: hlc.title }),
     el("td", { class: "mono", text: originNodeName, title: entry.origin_node_id }),
     el("td", { class: "mono", text: count(entry.document_bytes) }),
   ];
@@ -119,15 +129,6 @@ function renderEntryRow(
   }
 
   return el("tr", { tabindex: "0" }, ...cells);
-}
-
-function emptyState(message: string, sub?: string): HTMLElement {
-  return el(
-    "div",
-    { class: "empty" },
-    el("p", { class: "empty__title", text: message }),
-    sub ? el("p", { class: "empty__body", text: sub }) : null,
-  );
 }
 
 function skeletonRow(colCount: number): HTMLElement {
@@ -154,6 +155,26 @@ export function createLedger(): LedgerHandles {
   let loading = false;
   let filter: FilterState = { operation: "", collection: "", key: "", originNode: "" };
   let showHiddenCols = false;
+  // Debounce text filters so typing does not reset pagination + refetch per keystroke.
+  let filterTimer = 0;
+
+  function scheduleFilterApply(apply: () => void): void {
+    window.clearTimeout(filterTimer);
+    filterTimer = window.setTimeout(apply, 200);
+  }
+
+  /** Re-rendering rebuilds the filter bar; put the caret back where typing was. */
+  function restoreFilterFocus(field: string): void {
+    try {
+      const input = body.querySelector<HTMLInputElement>(`input[data-filter-field="${field}"]`);
+      if (input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    } catch {
+      // Focus restore is a nicety; a missing field must never break render.
+    }
+  }
 
   async function loadEntries(node: NodeView, from: number, to?: number): Promise<LedgerEntriesPage> {
     return apiFor(node.process.api_port).ledgerEntries(from, to);
@@ -171,20 +192,38 @@ export function createLedger(): LedgerHandles {
     const collectionInput = el("input", {
       type: "text",
       class: "field",
-      placeholder: "Collection (or owner node for transit)",
+      placeholder: "Filter loaded entries — collection",
       value: filter.collection,
       style: "flex: 1;",
+      "data-filter-field": "collection",
     });
-    on(collectionInput, "input", () => { filter.collection = collectionInput.value; currentFrom = 0; render(); });
+    on(collectionInput, "input", () => {
+      const value = collectionInput.value;
+      const field = "collection";
+      scheduleFilterApply(() => {
+        filter.collection = value;
+        currentFrom = 0;
+        void render().then(() => restoreFilterFocus(field));
+      });
+    });
 
     const keyInput = el("input", {
       type: "text",
       class: "field",
-      placeholder: "Key",
+      placeholder: "Filter loaded entries — key",
       value: filter.key,
       style: "flex: 1;",
+      "data-filter-field": "key",
     });
-    on(keyInput, "input", () => { filter.key = keyInput.value; currentFrom = 0; render(); });
+    on(keyInput, "input", () => {
+      const value = keyInput.value;
+      const field = "key";
+      scheduleFilterApply(() => {
+        filter.key = value;
+        currentFrom = 0;
+        void render().then(() => restoreFilterFocus(field));
+      });
+    });
 
     const originSelect = el("select", { class: "field", style: "flex: 1;" },
       ...originOptions.map((id) => el("option", { value: id, selected: filter.originNode === id }, id || "All origin nodes")),
@@ -228,7 +267,7 @@ export function createLedger(): LedgerHandles {
 
     if (filtered.length === 0) {
       return el("div", { class: "empty" },
-        el("p", { class: "empty__title", text: "No entries match the filters" }),
+        el("p", { class: "empty__title", text: "No entries match on this page" }),
         el("p", { class: "empty__body", text: "Adjust the filters or load an earlier page." }),
       );
     }
@@ -265,7 +304,7 @@ export function createLedger(): LedgerHandles {
     const hasPrev = !isFirstPage;
     const hasNext = tip !== null && to < tip;
 
-    const prevBtn = el("button", { class: "btn btn--sm", type: "button", disabled: !hasPrev }, icon(Icons.chevronRight, 13), " Earlier");
+    const prevBtn = el("button", { class: "btn btn--sm", type: "button", disabled: !hasPrev }, icon(Icons.chevronLeft, 13), " Earlier");
     on(prevBtn, "click", () => {
       const newFrom = Math.max(0, from - MAX_ENTRIES_PER_CALL);
       currentFrom = newFrom;
@@ -302,18 +341,19 @@ export function createLedger(): LedgerHandles {
   async function render(): Promise<void> {
     const selection = store.state.selection;
     if (selection.kind !== "ledger" || !selection.nodeId) {
-      replace(body, emptyState("No ledger selected", "Select a node from the sidebar or canvas to view its ledger."));
+      replace(body, emptyState({ title: "No ledger selected", body: "Select a node from the sidebar or canvas to view its ledger." }));
       return;
     }
 
     const node = store.state.nodes.get(selection.nodeId);
     if (!node) {
-      replace(body, emptyState("Node not found", "The selected node is no longer available."));
+      replace(body, emptyState({ title: "Node not found", body: "The selected node is no longer available." }));
       return;
     }
 
     if (loading) {
-      const visibleCols = showHiddenCols ? 12 : 8;
+      // Must match buildTable: 7 base columns, 11 with hashes shown.
+      const visibleCols = showHiddenCols ? 11 : 7;
       replace(body, buildFilterBar(node), card("Ledger", el("table", { class: "table" },
         el("thead", {}, el("tr", {}, ...Array.from({ length: visibleCols }, () => el("th", { text: "…" })))),
         el("tbody", {}, ...Array.from({ length: 5 }, () => skeletonRow(visibleCols))),

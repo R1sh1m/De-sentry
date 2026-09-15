@@ -9,6 +9,7 @@ import { apiFor, ApiError } from "../api.js";
 import { store, type NodeView } from "../state.js";
 import { engineLabel, json, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -56,15 +57,7 @@ export function createConsole(): ConsoleHandles {
     const node = store.selectedNode() ?? store.dataNodes()[0];
 
     if (!node) {
-      replace(
-        element,
-        el(
-          "div",
-          { class: "empty", style: "margin: auto;" },
-          el("p", { class: "empty__title", text: "No Node Selected" }),
-          el("p", { class: "empty__body", text: "Select or start a data node to open its interactive engine console." }),
-        ),
-      );
+      replace(element, emptyState({ title: "No Node Selected", body: "Select or start a data node to open its interactive engine console." }));
       return;
     }
 
@@ -77,7 +70,7 @@ export function createConsole(): ConsoleHandles {
     // -- Header bar -----------------------------------------------------------
     const backBtn = el(
       "button",
-      { class: "btn btn--sm btn--ghost", type: "button", title: "Back to mesh" },
+      { class: "btn btn--sm btn--ghost", type: "button", title: "Back to canvas" },
       icon(Icons.chevronLeft, 14),
       " Canvas",
     );
@@ -114,7 +107,7 @@ export function createConsole(): ConsoleHandles {
         style: "padding: 12px 16px; border-bottom: 1px solid var(--color-hairline); background: var(--color-surface); flex-shrink: 0;",
       },
       el("div", { class: "row", style: "gap: 12px; align-items: center;" }, backBtn, nodeSelector, enginesBadges),
-      el("span", { class: "mono muted", style: "font-size: var(--text-xs);" }, `Height #${node.tip?.entry_id ?? 0}`),
+      el("span", { class: "mono muted", style: "font-size: var(--text-xs);" }, `Ledger #${node.tip?.entry_id ?? 0}`),
     );
 
     // -- Tab switcher ---------------------------------------------------------

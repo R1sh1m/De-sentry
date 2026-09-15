@@ -44,6 +44,70 @@ function lockDarkTheme(): void {
   }
 }
 
+// -- shortcuts cheatsheet ------------------------------------------------------
+
+function openShortcutsCheatsheet(): void {
+  const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
+  const body = el("div", { class: "macos-modal about-macos" });
+  const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "Keyboard Shortcuts" }, body);
+  const dismiss = () => {
+    if (sheet.open) sheet.close();
+    sheet.remove();
+  };
+
+  const shortcuts: [string, string][] = [
+    ["N", "New node"],
+    ["1", "Tree view"],
+    ["2", "Mesh view"],
+    ["3", "Open ledger for selected node"],
+    ["4", "Open console for selected node"],
+    ["5", "Open Dropbox"],
+    ["Esc", "Close panel / deselect node"],
+    ["Ctrl/Cmd + K", "Command palette"],
+    ["Ctrl/Cmd + R", "Refresh node list"],
+    ["?", "Show this cheatsheet"],
+  ];
+
+  const content = el(
+    "div",
+    { class: "macos-modal__content about-macos__content" },
+    el("div", { class: "about-macos__emblem" }, sentryLogoSvg({ size: 64, animated: false })),
+    el(
+      "div",
+      { class: "about-macos__names" },
+      el("h2", { class: "macos-modal__heading", text: "Keyboard Shortcuts" }),
+    ),
+    el(
+      "div",
+      { class: "shortcuts-grid", style: "display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin-top: 16px; max-width: 400px;" },
+      ...shortcuts.map(([key, desc]) =>
+        el("div", { class: "shortcut-row" },
+          el("kbd", { class: "shortcut-key", style: "background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-xs); padding: 2px 8px; font: var(--text-mono); font-size: 11px; white-space: nowrap;", text: key }),
+          el("span", { class: "shortcut-desc", style: "font: var(--text-caption); color: var(--color-ink-muted-80);", text: desc }),
+        ),
+      ),
+    ),
+    done,
+  );
+  replace(body, content);
+
+  on(done, "click", dismiss);
+  on(sheet, "click", (event) => {
+    if (event.target === sheet) dismiss();
+  });
+  on(sheet, "keydown", (event) => {
+    if (event.key === "Escape") dismiss();
+  });
+  on(sheet, "close", () => sheet.remove());
+  document.body.appendChild(sheet);
+  try {
+    sheet.showModal();
+  } catch {
+    sheet.setAttribute("open", "");
+  }
+  done.focus();
+}
+
 // -- pairing sheet -----------------------------------------------------------
 
 /**
@@ -382,7 +446,7 @@ function build(): void {
 
     const subtitle = [
       state.busy !== "" ? state.busy : state.supervisorPort === null ? "supervisor starting…" : "supervisor active",
-      `${reachable}/${nodes.length} answering`,
+      `${reachable}/${nodes.length} online`,
       info?.on_battery ? "on battery" : null,
       info?.background_mode ? "background sync" : null,
     ]
@@ -432,7 +496,10 @@ function build(): void {
     const typing = target !== null && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
     if (typing) return;
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (event.key === "?" && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      openShortcutsCheatsheet();
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       openCommandPalette();
     } else if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
