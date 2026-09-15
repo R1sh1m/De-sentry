@@ -429,15 +429,29 @@ svg.mesh {
 }
 
 /* ---------------------------------------------------------------------------
- * Sidebar tree & Pinned navigation
+ * Sidebar: chrome, nav items, tree, search
  * ------------------------------------------------------------------------ */
+
+/* Sidebar collapse transition (H2) */
+.sidebar[data-collapsed="true"] {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-right-width: 0;
+  transition: width var(--motion-settle), padding var(--motion-settle), border-right-width var(--motion-settle);
+}
+.sidebar {
+  transition: width var(--motion-settle), padding var(--motion-settle);
+}
+
+/* Pinned navigation — decoupled from .tree__row (M4) */
 .sidebar__pinned-nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin-bottom: var(--space-xs);
 }
-.sidebar__pinned-item {
+.nav-item {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -453,15 +467,29 @@ svg.mesh {
   cursor: pointer;
   transition: background var(--motion-instant);
 }
-.sidebar__pinned-item:hover {
+.nav-item__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-item:hover {
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
 }
-.sidebar__pinned-item[aria-selected="true"] {
+.nav-item[aria-selected="true"] {
   background: var(--tree-row-selected-bg);
   color: var(--tree-row-selected-color);
   font-weight: 600;
   box-shadow: inset 3px 0 0 0 var(--color-primary);
 }
+/* Search-match highlight for pinned nav items (H1) */
+.nav-item--highlighted {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}
+
+/* Search box */
 .sidebar__search {
   margin-bottom: var(--space-xs);
   position: relative;
@@ -491,6 +519,38 @@ svg.mesh {
   pointer-events: none;
   display: flex;
 }
+
+/* Scroll-edge fade mask — content dissolves into the frosted glass (4.5) */
+.sidebar__tree-scroll {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    black 12px,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    black 12px,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+/* Section group label + actions row (Discovered header, M2) */
+.tree__group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: var(--space-xs);
+}
+.tree__group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: none;
+}
 .tree__group-label {
   font: var(--text-fine);
   font-weight: 600;
@@ -498,7 +558,10 @@ svg.mesh {
   text-transform: uppercase;
   color: var(--color-ink-muted-48);
   padding: var(--space-sm) var(--space-xs) var(--space-xxs);
+  margin: 0;
 }
+
+/* Tree rows */
 .tree__row {
   display: flex;
   align-items: center;
@@ -552,6 +615,14 @@ svg.mesh {
   color: var(--color-ink-muted-48);
   flex: none;
 }
+/* Semantic meta variants (M1, M3) */
+.tree__meta--error {
+  color: var(--color-status-offline);
+}
+.tree__meta--soft {
+  opacity: 0.5;
+  font-style: italic;
+}
 .tree__row[data-depth="1"] {
   padding-left: calc(var(--space-xs) + 16px);
 }
@@ -560,6 +631,54 @@ svg.mesh {
 }
 .tree__row[data-depth="3"] {
   padding-left: calc(var(--space-xs) + 48px);
+}
+
+/* Toggle (checkbox) component — replaces the raw <input> in Discovered (H4) */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle__input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+.toggle__track {
+  width: 26px;
+  height: 15px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  box-shadow: var(--elev-hairline);
+  position: relative;
+  flex: none;
+  transition: background var(--motion-quick);
+}
+.toggle__track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-ink-muted-48);
+  transition: transform var(--motion-quick), background var(--motion-quick);
+}
+.toggle__input:checked + .toggle__track {
+  background: var(--color-primary);
+}
+.toggle__input:checked + .toggle__track::after {
+  transform: translateX(11px);
+  background: #fff;
+}
+.toggle__label {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
 }
 
 /* ---------------------------------------------------------------------------
@@ -596,6 +715,18 @@ svg.mesh {
   background: var(--color-status-offline);
   box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3.5px var(--color-status-offline);
 }
+/* Pulse animation — fires once when status changes (4.3) */
+@keyframes dot-pulse {
+  0%   { transform: scale(1);   opacity: 1; }
+  40%  { transform: scale(1.7); opacity: 0.8; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+.dot--pulse {
+  animation: dot-pulse 220ms var(--motion-settle) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot--pulse { animation: none; }
+}
 
 .badge {
   display: inline-flex;
@@ -603,7 +734,7 @@ svg.mesh {
   gap: var(--space-xxs);
   font: var(--text-fine);
   border-radius: var(--radius-pill);
-  padding: 2px 8px;
+  padding: 2px 6px;
   background: var(--color-surface-sunken);
   color: var(--color-ink-muted-80);
   white-space: nowrap;
@@ -628,6 +759,13 @@ svg.mesh {
   background: var(--color-status-offline-bg);
   color: var(--color-status-offline);
   box-shadow: inset 0 0 0 1px var(--color-status-offline);
+}
+/* Warning badge — under-replicated / over-quota (4.6) */
+.badge--warning {
+  background: var(--color-status-lagging-bg);
+  color: var(--color-status-lagging);
+  padding: 1px 4px;
+  font-size: 10px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1975,3 +2113,93 @@ svg.mesh {
   background: var(--color-surface);
 }
 
+/* ---------------------------------------------------------------------------
+ * Tree row: hover-revealed action buttons (lock, ledger, delete)
+ * ------------------------------------------------------------------------ */
+.tree__row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--motion-instant), background var(--motion-instant), color var(--motion-instant);
+}
+.tree__row:hover .tree__row-action,
+.tree__row[aria-selected="true"] .tree__row-action {
+  opacity: 1;
+}
+.tree__row-action:hover {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  color: var(--color-ink);
+}
+.text-danger {
+  color: var(--color-status-offline);
+}
+.tree__row-action.text-danger:hover {
+  background: color-mix(in srgb, var(--color-status-offline) 12%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Context menu (H3) — right-click popover on node/collection rows
+ * ------------------------------------------------------------------------ */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 160px;
+  background: var(--chrome-fill);
+  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-popover);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: ctx-menu-in var(--motion-quick) ease-out both;
+  transform-origin: top left;
+}
+@keyframes ctx-menu-in {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ctx-menu { animation: none; }
+}
+.ctx-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: var(--text-body);
+  color: var(--color-ink);
+  text-align: left;
+  cursor: default;
+  transition: background var(--motion-instant);
+}
+.ctx-menu__item:hover {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+.ctx-menu__item--danger {
+  color: var(--color-status-offline);
+}
+.ctx-menu__item--danger:hover {
+  background: color-mix(in srgb, var(--color-status-offline) 8%, transparent);
+}
+.ctx-menu__sep {
+  height: 1px;
+  background: var(--color-hairline);
+  margin: 3px 6px;
+}

@@ -272,7 +272,7 @@ WireMessage NetworkManager::HandleDigest(const std::string& peer_node_id,
 }
 
 WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
-                                               const OpBroadcastPayload& broadcast) {
+                                                const OpBroadcastPayload& broadcast) {
   if (dedup_ && !dedup_->NoteAndCheckNew(broadcast.message_id)) {
     duplicates_suppressed_.fetch_add(1);
     return WireMessage{MessageType::kPong, ""};
@@ -283,8 +283,8 @@ WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
     Status st = engine_->MergeRemote(broadcast.collection, doc.key, doc.encoded_doc, who);
     if (!st.ok()) {
       DSN_LOG_WARN("network", "merge from " << peer_node_id << " rejected for "
-                                             << broadcast.collection << "/" << doc.key << ": "
-                                             << st.message());
+                                              << broadcast.collection << "/" << doc.key << ": "
+                                              << st.message());
     }
   }
 
@@ -297,6 +297,24 @@ WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
     relayed.ttl = static_cast<uint8_t>(broadcast.ttl - 1);
     FanOut(relayed, peer_node_id);
   }
+
+  // Only the original eager broadcast (ttl == 1) expects a signed merge receipt.
+  // Relays (ttl == 0) and gossip fulfilments (ttl == 0) do not send receipts.
+  if (broadcast.ttl == 1 && !broadcast.docs.empty()) {
+    DSN_LOG_DEBUG("network", "HandleOpBroadcast: sending receipt for message_id=" << broadcast.message_id
+        << " collection=" << broadcast.collection << " key=" << broadcast.docs[0].key);
+    MergeReceipt receipt;
+    receipt.message_id = broadcast.message_id;
+    receipt.key_hash = LedgerKeyHash(broadcast.collection, broadcast.docs[0].key);
+    receipt.applier_node = engine_->identity().node_id();
+    receipt.applied_lsn = engine_->LedgerTip().entry_id;
+    // Sign: Ed25519 over (message_id || key_hash || applied_lsn)
+    const std::string message = receipt.message_id + receipt.key_hash + std::to_string(receipt.applied_lsn);
+    receipt.signature = engine_->identity().Sign(message);
+    DSN_LOG_DEBUG("network", "HandleOpBroadcast: receipt encoded, size=" << receipt.Encode().size());
+    return WireMessage{MessageType::kPong, receipt.Encode()};
+  }
+  DSN_LOG_DEBUG("network", "HandleOpBroadcast: no receipt (ttl=" << static_cast<int>(broadcast.ttl) << ")");
   return WireMessage{MessageType::kPong, ""};
 }
 
@@ -523,6 +541,9 @@ void NetworkManager::ProbePeer(PeerInfo peer) {
 
 void NetworkManager::FanOut(const OpBroadcastPayload& payload, const std::string& exclude_node_id) {
   WireMessage msg{MessageType::kOpBroadcast, payload.Encode()};
+  DSN_LOG_DEBUG("network", "FanOut called: message_id=" << payload.message_id 
+      << " collection=" << payload.collection << " ttl=" << static_cast<int>(payload.ttl)
+      << " docs=" << payload.docs.size() << " peers=" << peer_table_.Ranked().size());
   // Ranked order matters under a bounded pool: if the queue fills, the peers
   // that get dropped should be the least reliable ones, not whichever the
   // hash map happened to iterate last.

@@ -8,6 +8,7 @@
 // builds and tests fully offline (see CMakeLists.txt).
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <thread>
 
 #include "desentry/common/platform.h"
 #include "desentry/crdt/document.h"
@@ -359,6 +361,153 @@ static void TestFailedWriteLeavesNoLedgerGap() {
             << std::endl;
 }
 
+static void TestWalMalformedTailAndPruneCases() {
+  const std::string wal_path = std::string(kTestDir) + "/malformed_cases.wal";
+
+  // Case 1: Truncated final frame (short read: crash mid-append)
+  // A clean EOF or short read at the tail is a benign crash: earlier records
+  // must verify and remain readable.
+  RmRf(wal_path);
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    assert(wal->Append(WalRecordType::kPut, "col", "k0", "val0").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k1", "val1").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k2", "val2").ok());
+  }
+  {
+    // Append a torn frame at the tail (length says 100 bytes, only 10 bytes written)
+    std::ofstream f(wal_path, std::ios::binary | std::ios::app);
+    uint32_t fake_len = 100;
+    f.write(reinterpret_cast<const char*>(&fake_len), 4);
+    char partial[10] = {0};
+    f.write(partial, 10);
+    f.close();
+  }
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    auto records = wal->ReadAll().ValueOrDie();
+    assert(records.size() == 3);
+    auto verify = wal->VerifyChain();
+    assert(verify.ok);
+    assert(verify.entries_checked == 3);
+  }
+
+  // Case 2: Complete frame with a bad CRC at the tail.
+  // Full length was written, but CRC verification fails -> flagged as corrupt.
+  RmRf(wal_path);
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    assert(wal->Append(WalRecordType::kPut, "col", "k0", "val0").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k1", "val1").ok());
+  }
+  {
+    // Corrupt the CRC of the last record (last 2 bytes of file)
+    std::fstream f(wal_path, std::ios::in | std::ios::out | std::ios::binary);
+    f.seekp(-2, std::ios::end);
+    char flip = '\xFF';
+    f.write(&flip, 1);
+    f.close();
+  }
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    auto records = wal->ReadAll().ValueOrDie();
+    // Stops before the corrupt record
+    assert(records.size() == 1);
+    auto verify = wal->VerifyChain();
+    assert(!verify.ok);
+  }
+
+  // Case 3: Malformed frame with valid bytes after it (middle-of-file corruption)
+  RmRf(wal_path);
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    assert(wal->Append(WalRecordType::kPut, "col", "k0", "val0").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k1", "val1-middle").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k2", "val2-after").ok());
+    assert(wal->Append(WalRecordType::kPut, "col", "k3", "val3-after").ok());
+  }
+  {
+    // Corrupt record 1's payload bytes in the middle of the file
+    std::fstream f(wal_path, std::ios::in | std::ios::out | std::ios::binary);
+    f.seekg(0, std::ios::beg);
+    uint32_t len0 = 0;
+    f.read(reinterpret_cast<char*>(&len0), 4);
+    // Inside record 1: skip len0 + 4, plus record 1's len (4), magic (4), lsn (8), type (1)
+    f.seekp(4 + len0 + 4 + 4 + 8 + 1, std::ios::beg);
+    char bad = 'Z';
+    f.write(&bad, 1);
+    f.close();
+  }
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    auto records = wal->ReadAll().ValueOrDie();
+    assert(records.size() == 1);  // stops at record 1
+    auto verify = wal->VerifyChain();
+    assert(!verify.ok);
+  }
+
+  // Case 4: Sparse original LSNs across prune + append + restart
+  RmRf(wal_path);
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    WriteAheadLog::AppendOptions opt;
+    opt.transit_owner = "peerA";
+    assert(wal->Append(WalRecordType::kPut, "col", "p0", "put0").ok());                           // lsn 0
+    assert(wal->Append(WalRecordType::kTransitIntent, "col", "t1", "transit1", opt).ok());        // lsn 1
+    assert(wal->Append(WalRecordType::kTransitClaimed, "col", "t1", "transit1", opt).ok());       // lsn 2
+    assert(wal->Append(WalRecordType::kPut, "col", "p1", "put1").ok());                           // lsn 3
+    assert(wal->Append(WalRecordType::kCheckpoint, "col", "", "").ok());                          // lsn 4
+
+    auto prune_res = wal->Prune(4);
+    assert(prune_res.ok());
+    assert(prune_res.value().dropped == 2);
+
+    // After prune, append a new PUT and CHECKPOINT
+    auto next_lsn1 = wal->Append(WalRecordType::kPut, "col", "p2", "put2");
+    assert(next_lsn1.ok() && next_lsn1.value() == 5);
+    auto next_lsn2 = wal->Append(WalRecordType::kCheckpoint, "col", "", "");
+    assert(next_lsn2.ok() && next_lsn2.value() == 6);
+    assert(wal->LastCheckpointLsn() == 6);
+    assert(wal->VerifyChain().ok);
+  }
+  {
+    // Reopen and check sparse LSN preservation
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    auto records = wal->ReadAll().ValueOrDie();
+    assert(records.size() == 5);  // lsn 0, 3, 4, 5, 6
+    assert(records[0].lsn == 0);
+    assert(records[1].lsn == 3);
+    assert(records[2].lsn == 4);
+    assert(records[3].lsn == 5);
+    assert(records[4].lsn == 6);
+    assert(wal->Tip().entry_id == 6);
+    assert(wal->LastCheckpointLsn() == 6);
+    assert(wal->VerifyChain().ok);
+  }
+
+  // Case 5: Concurrent reads while verification runs
+  {
+    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
+    std::vector<std::thread> threads;
+    std::atomic<bool> ok_flag{true};
+    for (int t = 0; t < 4; ++t) {
+      threads.emplace_back([&]() {
+        for (int iter = 0; iter < 50; ++iter) {
+          auto recs = wal->ReadAll();
+          if (!recs.ok() || recs.value().size() != 5) ok_flag = false;
+          auto v = wal->VerifyChain();
+          if (!v.ok || v.entries_checked != 5) ok_flag = false;
+        }
+      });
+    }
+    for (auto& th : threads) th.join();
+    assert(ok_flag.load());
+  }
+
+  std::cout << "[storage_test] WAL malformed-tail, CRC verification, and pruning LSN behavior: PASS"
+            << std::endl;
+}
+
 int main() {
   TestBufferPoolAndWal();
   TestBPlusTreeStress();
@@ -366,6 +515,7 @@ int main() {
   TestStorageEngineCrashRecovery();
   TestBufferPoolSizingIsHonored();
   TestFailedWriteLeavesNoLedgerGap();
+  TestWalMalformedTailAndPruneCases();
   std::cout << "[storage_test] ALL STORAGE TESTS PASSED" << std::endl;
   return 0;
 }

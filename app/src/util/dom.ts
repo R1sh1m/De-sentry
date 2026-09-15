@@ -121,4 +121,8 @@ export const Icons = {
   terminal: "M2.5 4.5l4 3.5-4 3.5M7.5 11.5h6",
   inbox: "M2.5 9.5 4 3.5h8l1.5 6v3a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1zm0 0h3.5a1.5 1.5 0 0 0 3 0H13.5",
   ledger: "M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zm2 3.5h5m-5 3h5m-5 3h3",
+  /** Closed padlock — node is encrypted and locked */
+  lock: "M5 7.5V5.5a3 3 0 0 1 6 0v2M3.5 7.5h9a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zM8 10v2",
+  /** Open padlock — node is encrypted and unlocked/running */
+  lockOpen: "M5 7.5V5.5a3 3 0 0 1 6 0M3.5 7.5h9a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zM8 10v2",
 };

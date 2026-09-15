@@ -939,7 +939,6 @@ impl Sizer {
     /// disambiguate close neighbors such as media blobs and image search.
     /// This also makes the proposal explainable when the user's wording is
     /// more specific than the short prototype sentences.
-    #[cfg(feature = "onnx")]
     fn combine_semantic_and_keywords(&self, description: &str, semantic: &[f32]) -> Vec<f32> {
         let lexical = self.keyword_scores(description);
         let explicit_media = explicit_media_intent(description);

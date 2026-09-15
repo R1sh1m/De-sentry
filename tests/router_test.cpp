@@ -532,12 +532,12 @@ void TestVectorSearch() {
   for (int i = 0; i < kCount; ++i) {
     std::vector<float> v(kDim, 0.0f);
     v[i % kDim] = 1.0f;
-    // A per-vector nudge keeps every corpus vector distinct: without it the
-    // (i % kDim, 7i % kDim) pairs repeat every kDim vectors, so a query has
-    // two equidistant nearest neighbours and "itself" is undefined. The
-    // query is still an exact corpus member, so it must remain uniquely
-    // nearest to itself.
-    v[(i * 7) % kDim] += 0.5f + static_cast<float>(i) * 0.01f;
+    // A per-vector nudge in an adjacent dimension keeps every corpus vector
+    // distinct: with (i % kDim) and ((i + 1) % kDim) guaranteed to differ,
+    // the two dimensions never collide and the monotonic scale ensures no two
+    // vectors have identical normalized directions. A query thus remains
+    // uniquely nearest to itself.
+    v[(i + 1) % kDim] += 0.5f + static_cast<float>(i) * 0.01f;
     vectors.push_back(v);
 
     JsonValue::Array components;

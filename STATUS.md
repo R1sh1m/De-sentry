@@ -143,10 +143,25 @@ All on Windows box 1 (MSYS2 UCRT64 GCC 16.2, CMake 4.4.2, OpenSSL 3.6.4, Python 
 | `git diff HEAD~1 --stat` | 44 files, +4490/-393 lines; no failures introduced |
 
 **What was NOT run (or not finished):**
-- Transit held-ack durability counting integrated with WaitForDurability (message_id tracking TODO in HoldForOfflineOwners)
+- Transit held-ack durability counting integrated with WaitForDurability (message_id tracking completed in fe025e3)
 - End-to-end soak with ?durability=3 across node restarts
 - Linux/macOS cross-build of the new receipt/transit paths
-- `ctest` meta-runner on Windows (same as before: binaries pass standalone, meta-runner hangs)
+
+### Executed 2026-09-15: ISSUES.md Remediation Pass (WAL CRC32 validation, malformed tail, unified runner)
+
+All on Windows box 1 (MSYS2 UCRT64 GCC 16.2, CMake 4.4.2, OpenSSL 3.6.4, Python 3.13, Rust 1.98.1 MSVC).
+
+| Check | Result |
+| --- | --- |
+| `src/storage/wal.cpp` CRC32 validation | Added CRC32 check on every record payload in `ReadAllLocked`, stops replay & flags corrupt |
+| `tests/storage_test.cpp` malformed tail & prune | PASS: `TestWalMalformedTailAndPruneCases` (5 cases: torn tail vs bad CRC vs mid-file corruption, sparse LSNs, concurrency) |
+| All 11 C++ test binaries | **11 / 11 passed** (`acl_test`, `crdt_test`, `crypto_test`, `ledger_v2_test`, `liveness_test`, `network_test`, `placement_test`, `quota_test`, `router_test`, `storage_test`, `transit_test`) |
+| `scripts/run_integration_tests.py` | Added unified runner; `--smoke` and `--full-soak` supported |
+| `airplane_mode_test.py` | ALL 18 checks passed |
+| `usb_node_test.py` | ALL 18 checks passed |
+| `cargo test --no-default-features` in `app/src-tauri` | **34 / 34 passed** |
+| `npm run typecheck`, `check:qr`, `check:css`, `build` | ALL clean (dist/ assets generated) |
+| `CMakeLists.txt` configure test discovery | Configure logs: `tests : ON (acl_test;...;transit_test)` |
 
 Not run on box 1, and why:
 

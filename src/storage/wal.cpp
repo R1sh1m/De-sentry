@@ -350,6 +350,14 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       break;  // short read: the file really ends here (crash mid-append)
     }
     const std::string payload = body.substr(0, body_len - 4);
+    uint32_t stored_crc = GetU32(body.data() + body_len - 4);
+    uint32_t computed_crc = Crc32(payload.data(), payload.size());
+    if (stored_crc != computed_crc) {
+      DSN_LOG_WARN("wal", "stopping replay: CRC mismatch on record (stored="
+                               << stored_crc << ", computed=" << computed_crc << ")");
+      corrupt = true;
+      break;
+    }
 
     WalRecord rec;
     // Format detection is by magic, not by guessing from lengths: a v2 body

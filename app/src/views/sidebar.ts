@@ -22,6 +22,8 @@ const collapsed = new Set<string>();
 const expandedNodes = new Set<string>();
 /** Current search query for filtering sidebar items. */
 let filterQuery = "";
+/** Previous status per node id - used to detect changes for dot pulse. */
+const prevStatus = new Map<string, Convergence>();
 
 interface Group {
   id: string;
@@ -34,13 +36,13 @@ interface Group {
 }
 
 function parentDir(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, "");
+  const normalized = path.replace(/[/\\]+$/, "");
   const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
   return cut <= 0 ? normalized : normalized.slice(0, cut);
 }
 
 function baseName(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, "");
+  const normalized = path.replace(/[/\\]+$/, "");
   const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
   return cut < 0 ? normalized : normalized.slice(cut + 1) || normalized;
 }
@@ -103,31 +105,86 @@ const GROUP_HEADINGS: Record<Group["kind"], string> = {
   network: "On the network",
 };
 
+// -- context menu ------------------------------------------------------------
+
+let activeCtxMenu: HTMLElement | null = null;
+
+function closeCtxMenu(): void {
+  if (activeCtxMenu) {
+    activeCtxMenu.remove();
+    activeCtxMenu = null;
+  }
+}
+
+type CtxMenuItem =
+  | { label: string; danger?: boolean; action: () => void }
+  | "separator";
+
+function showCtxMenu(anchor: HTMLElement, items: CtxMenuItem[]): void {
+  closeCtxMenu();
+
+  const menu = el("div", { class: "ctx-menu", role: "menu" });
+  for (const item of items) {
+    if (item === "separator") {
+      menu.appendChild(el("div", { class: "ctx-menu__sep", role: "separator" }));
+      continue;
+    }
+    const btn = el(
+      "button",
+      {
+        class: "ctx-menu__item" + (item.danger ? " ctx-menu__item--danger" : ""),
+        type: "button",
+        role: "menuitem",
+        text: item.label,
+      },
+    );
+    on(btn, "click", () => {
+      closeCtxMenu();
+      item.action();
+    });
+    menu.appendChild(btn);
+  }
+
+  document.body.appendChild(menu);
+  activeCtxMenu = menu;
+
+  const rect = anchor.getBoundingClientRect();
+  const mRect = menu.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 4, window.innerHeight - mRect.height - 8);
+  const left = Math.min(rect.left, window.innerWidth - mRect.width - 8);
+  menu.style.top = `${top}px`;
+  menu.style.left = `${left}px`;
+
+  const dismiss = (e: MouseEvent | KeyboardEvent) => {
+    if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+    if (e instanceof MouseEvent && menu.contains(e.target as Node)) return;
+    closeCtxMenu();
+    document.removeEventListener("click", dismiss as EventListener, true);
+    document.removeEventListener("keydown", dismiss as EventListener, true);
+  };
+  setTimeout(() => {
+    document.addEventListener("click", dismiss as EventListener, true);
+    document.addEventListener("keydown", dismiss as EventListener, true);
+  }, 0);
+}
+
 // -- discovered candidates section ------------------------------------------
 
-/**
- * Renders a single discovered-candidate row in the "Discovered" section.
- *
- * Local/USB nodes get an "Adopt" button that starts them immediately (encrypted
- * nodes will prompt for a password because start_existing_node returns an error
- * that the window handles via the unlock flow). LAN-only peers that cannot be
- * run locally get "Add as peer" which opens the wizard seeded with the address.
- */
 function discoveredCandidateRow(
   candidate: DiscoveredCandidate,
   onAddAsPeer: (address: string) => void,
 ): HTMLElement {
   const isRemoteOnly = !candidate.has_node_config && !candidate.adoptable;
   const isEncrypted = candidate.encrypted;
-  const name = candidate.node_name || candidate.node_id.slice(0, 12) || candidate.path.split(/[\\/]/).pop() || "Unknown node";
+  const name = candidate.node_name || candidate.node_id.slice(0, 12) || candidate.path.split(/[/\\]/).pop() || "Unknown node";
 
   const actionLabel = isRemoteOnly ? " Add as peer" : isEncrypted ? " Unlock" : " Adopt";
-  const actionIcon = isRemoteOnly ? Icons.network : isEncrypted ? Icons.inspector : Icons.plug;
+  const actionIcon = isRemoteOnly ? Icons.network : isEncrypted ? Icons.lock : Icons.plug;
 
   const actionBtn = el(
     "button",
     {
-      class: isEncrypted ? "btn btn--sm btn--primary" : "btn btn--sm btn--primary",
+      class: "btn btn--sm btn--primary",
       type: "button",
       title: isRemoteOnly
         ? `Add ${name} as a bootstrap peer`
@@ -177,7 +234,7 @@ function discoveredCandidateRow(
   });
 
   const kindIcon = candidate.removable ? Icons.drive : isRemoteOnly ? Icons.network : Icons.folder;
-  const meta = candidate.encrypted ? "🔒 encrypted" : candidate.removable ? "removable" : "local";
+  const meta = candidate.encrypted ? "encrypted" : candidate.removable ? "removable" : "local";
 
   return el(
     "div",
@@ -196,16 +253,14 @@ function discoveredCandidateRow(
   );
 }
 
-/**
- * Renders the full "Discovered" section, or nothing if the list is empty.
- */
 function discoveredSection(onAddAsPeer: (address: string) => void): (Node | string)[] {
   const candidates = store.state.discoveredCandidates;
   if (candidates.length === 0) return [];
 
   const autoConnectCheckbox = el("input", {
+    class: "toggle__input",
+    id: "sidebar-autoconnect",
     type: "checkbox",
-    style: "cursor: pointer; margin-right: 4px;",
     title: "Automatically connect to discovered unencrypted nodes and USB drives",
   }) as HTMLInputElement;
   autoConnectCheckbox.checked = store.state.autoConnectEnabled;
@@ -215,18 +270,15 @@ function discoveredSection(onAddAsPeer: (address: string) => void): (Node | stri
 
   const autoConnectLabel = el(
     "label",
-    {
-      class: "row",
-      style: "font-size: var(--text-xs); color: var(--color-ink-muted); cursor: pointer; align-items: center;",
-      title: "Automatically connect to discovered unencrypted nodes and drives",
-    },
+    { class: "toggle", for: "sidebar-autoconnect" },
     autoConnectCheckbox,
-    "Auto-connect",
+    el("span", { class: "toggle__track" }),
+    el("span", { class: "toggle__label", text: "Auto-connect" }),
   );
 
   const refreshBtn = el(
     "button",
-    { class: "btn btn--sm btn--ghost", type: "button", title: "Scan again" },
+    { class: "btn btn--sm btn--ghost", type: "button", title: "Scan again", "aria-label": "Scan for nodes" },
     icon(Icons.refresh, 11),
   );
   on(refreshBtn, "click", () => {
@@ -236,9 +288,9 @@ function discoveredSection(onAddAsPeer: (address: string) => void): (Node | stri
   const rows: (Node | string)[] = [
     el(
       "div",
-      { class: "discovered-header", style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 8px;" },
-      el("p", { class: "tree__group-label discovered-label", text: "Discovered" }),
-      el("div", { class: "row", style: "gap: 8px; align-items: center;" }, autoConnectLabel, refreshBtn),
+      { class: "tree__group-header" },
+      el("p", { class: "tree__group-label", text: "Discovered" }),
+      el("div", { class: "tree__group-actions" }, autoConnectLabel, refreshBtn),
     ),
   ];
   for (const candidate of candidates) {
@@ -257,9 +309,18 @@ function statusLabel(status: Convergence): string {
   }
 }
 
-function dot(status: Convergence): HTMLElement {
+function dot(status: Convergence, nodeId?: string): HTMLElement {
   const node = el("span", { class: "dot", "data-status": status, role: "img" });
   node.setAttribute("aria-label", statusLabel(status));
+
+  if (nodeId !== undefined) {
+    const prev = prevStatus.get(nodeId);
+    if (prev !== undefined && prev !== status) {
+      node.classList.add("dot--pulse");
+    }
+    prevStatus.set(nodeId, status);
+  }
+
   return node;
 }
 
@@ -271,10 +332,17 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
   const collections = node.brain?.collections ?? [];
   const isExpanded = expandedNodes.has(node.process.node_id) || (filterQuery !== "" && collections.length > 0);
 
+  const collectionCount = collections.length;
   const meta =
     status === "offline"
       ? node.unreachableReason || node.process.last_error || "not running"
-      : `${collections.length} coll`;
+      : collectionCount === 0
+        ? "no collections yet"
+        : `${collectionCount} ${collectionCount === 1 ? "collection" : "collections"}`;
+
+  const hasUnderReplicated = collections.some(
+    (c) => (c as unknown as { under_replicated?: boolean }).under_replicated,
+  );
 
   const chevron = collections.length > 0
     ? (() => {
@@ -286,72 +354,79 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
     : el("span", { style: "width: 10px; flex: none;" });
 
   const ledgerBtn = el(
+    "button",
+    {
+      class: "tree__row-action",
+      type: "button",
+      title: `View ledger for ${name}`,
+      "aria-label": `View ledger for ${name}`,
+    },
+    icon(Icons.inspector, 12),
+  );
+  on(ledgerBtn, "click", (e) => {
+    e.stopPropagation();
+    store.select({ kind: "ledger", nodeId: node.process.node_id });
+  });
+
+  const deleteBtn = !node.process.supervisor
+    ? el(
+        "button",
+        {
+          class: "tree__row-action text-danger",
+          type: "button",
+          title: `Delete ${name}`,
+          "aria-label": `Delete ${name}`,
+        },
+        icon(Icons.trash, 12),
+      )
+    : null;
+
+  if (deleteBtn) {
+    on(deleteBtn, "click", (e) => {
+      e.stopPropagation();
+      promptDeleteSupervisedNode(node);
+    });
+  }
+
+  const isEncrypted = node.process.encrypted;
+  const isRunning = node.process.process === "running";
+
+  const lockUnlockBtn = isEncrypted
+    ? el(
         "button",
         {
           class: "tree__row-action",
           type: "button",
-          title: `View ledger for ${name}`,
-          "aria-label": `View ledger for ${name}`,
+          title: isRunning ? `Lock ${name}` : `Unlock ${name}`,
+          "aria-label": isRunning ? `Lock ${name}` : `Unlock ${name}`,
         },
-        icon(Icons.inspector, 12),
-      );
-    on(ledgerBtn, "click", (e) => {
+        icon(isRunning ? Icons.lockOpen : Icons.lock, 12),
+      )
+    : null;
+
+  if (lockUnlockBtn) {
+    on(lockUnlockBtn, "click", async (e) => {
       e.stopPropagation();
-      store.select({ kind: "ledger", nodeId: node.process.node_id });
-    });
-
-    const deleteBtn = !node.process.supervisor
-      ? el(
-          "button",
-          {
-            class: "tree__row-action text-danger",
-            type: "button",
-            title: `Delete ${name}`,
-            "aria-label": `Delete ${name}`,
-          },
-          icon(Icons.trash, 12),
-        )
-      : null;
-
-    if (deleteBtn) {
-      on(deleteBtn, "click", (e) => {
-        e.stopPropagation();
-        promptDeleteSupervisedNode(node);
-      });
-    }
-
-    const isEncrypted = node.process.encrypted;
-    const isRunning = node.process.process === "running";
-
-    const lockUnlockBtn = isEncrypted
-      ? el(
-          "button",
-          {
-            class: "tree__row-action",
-            type: "button",
-            title: isRunning ? `Lock ${name}` : `Unlock ${name}`,
-            "aria-label": isRunning ? `Lock ${name}` : `Unlock ${name}`,
-          },
-          isRunning ? "🔒" : "🔓",
-        )
-      : null;
-
-    if (lockUnlockBtn) {
-      on(lockUnlockBtn, "click", async (e) => {
-        e.stopPropagation();
-        if (isRunning) {
-          try {
-            await sidecar.lockNode(node.process.node_id);
-            store.toast("info", "Node locked", name);
-            await refreshNodeList();
-          } catch (err) {
-            store.toast("error", "Could not lock node", String(err));
-          }
-        } else {
-          openUnlockModal(node.process);
+      if (isRunning) {
+        try {
+          await sidecar.lockNode(node.process.node_id);
+          store.toast("info", "Node locked", name);
+          await refreshNodeList();
+        } catch (err) {
+          store.toast("error", "Could not lock node", String(err));
         }
-      });
-    }
+      } else {
+        openUnlockModal(node.process);
+      }
+    });
+  }
+
+  const metaEl =
+    status === "offline"
+      ? el("span", { class: "tree__meta tree__meta--error", text: meta })
+      : collectionCount === 0
+        ? el("span", { class: "tree__meta tree__meta--soft", text: meta })
+        : el("span", { class: "tree__meta", text: meta });
 
   const row = el(
     "div",
@@ -364,16 +439,18 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       title: `${name} — ${node.process.data_dir}`,
     },
     chevron,
-    dot(status),
+    dot(status, node.process.node_id),
     el("span", { class: "tree__label", text: name }),
-    el("span", { class: "tree__meta", text: meta }),
+    hasUnderReplicated
+      ? el("span", { class: "badge badge--warning", title: "Under-replicated" }, icon(Icons.warning, 10))
+      : null,
+    metaEl,
     lockUnlockBtn,
     ledgerBtn,
     deleteBtn,
   );
 
   const toggleOrSelect = (e: MouseEvent | KeyboardEvent) => {
-    // If clicking the chevron, toggle expansion; otherwise select node
     const target = e.target as HTMLElement;
     if (target.closest(".tree__chevron") && collections.length > 0) {
       e.stopPropagation();
@@ -393,15 +470,62 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
     }
   });
 
+  // Right-click context menu
+  on(row, "contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuItems: CtxMenuItem[] = [
+      {
+        label: "View Ledger",
+        action: () => store.select({ kind: "ledger", nodeId: node.process.node_id }),
+      },
+    ];
+    if (isEncrypted) {
+      menuItems.push({
+        label: isRunning ? "Lock node" : "Unlock node",
+        action: () => {
+          if (isRunning) {
+            sidecar
+              .lockNode(node.process.node_id)
+              .then(() => {
+                store.toast("info", "Node locked", name);
+                return refreshNodeList();
+              })
+              .catch((err: unknown) => store.toast("error", "Could not lock node", String(err)));
+          } else {
+            openUnlockModal(node.process);
+          }
+        },
+      });
+    }
+    if (!node.process.supervisor) {
+      menuItems.push("separator");
+      menuItems.push({
+        label: "Delete node\u2026",
+        danger: true,
+        action: () => promptDeleteSupervisedNode(node),
+      });
+    }
+    showCtxMenu(row, menuItems);
+  });
+
   const rows: HTMLElement[] = [row];
 
-  // If expanded, render collections under this node
   if (isExpanded && collections.length > 0) {
     for (const c of collections) {
-      if (filterQuery && !c.name.toLowerCase().includes(filterQuery.toLowerCase()) && !name.toLowerCase().includes(filterQuery.toLowerCase())) {
+      if (
+        filterQuery &&
+        !c.name.toLowerCase().includes(filterQuery.toLowerCase()) &&
+        !name.toLowerCase().includes(filterQuery.toLowerCase())
+      ) {
         continue;
       }
-      const isColSelected = selection.kind === "collection" && selection.nodeId === node.process.node_id && selection.collection === c.name;
+      const isColSelected =
+        selection.kind === "collection" &&
+        selection.nodeId === node.process.node_id &&
+        selection.collection === c.name;
+      const isUnderReplicated = (c as unknown as { under_replicated?: boolean }).under_replicated;
+
       const colRow = el(
         "div",
         {
@@ -414,7 +538,11 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
         },
         el("span", { class: "dot", style: "background: var(--color-primary); width: 6px; height: 6px;" }),
         el("span", { class: "tree__label mono", text: c.name }),
-        el("span", { class: "badge", text: `${c.document_count}d` }),
+        isUnderReplicated
+          ? el("span", { class: "badge badge--warning", title: "Under-replicated" }, icon(Icons.warning, 10))
+          : null,
+        el("span", { class: "badge", text: engineLabel(c.engine) }),
+        el("span", { class: "tree__meta", text: String(c.document_count) }),
       );
 
       const openCol = () => {
@@ -431,8 +559,19 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
   return rows;
 }
 
-function peerRow(peer: TopologyPeer): HTMLElement {
+function peerRow(peer: TopologyPeer, tip: ReturnType<typeof meshTip>): HTMLElement {
   const status: Convergence = peer.state === "running" ? "converged" : "offline";
+
+  let meta: string;
+  if (status === "offline") {
+    meta = "offline";
+  } else if (tip !== null && peer.ledger_entry_id !== undefined) {
+    const lag = tip.entry_id - peer.ledger_entry_id;
+    meta = lag <= 0 ? "in sync" : `\u2212${lag}`;
+  } else {
+    meta = shortNode(peer.node_id, 8);
+  }
+
   return el(
     "div",
     {
@@ -446,7 +585,7 @@ function peerRow(peer: TopologyPeer): HTMLElement {
     el("span", { style: "width: 10px; flex: none;" }),
     dot(status),
     el("span", { class: "tree__label", text: shortNode(peer.node_id, 12) }),
-    el("span", { class: "tree__meta", text: `entry ${peer.ledger_entry_id}` }),
+    el("span", { class: "tree__meta", text: meta }),
   );
 }
 
@@ -506,23 +645,41 @@ function emptyMountRow(): HTMLElement {
   return el(
     "div",
     { class: "tree__row", "data-depth": "2", "aria-disabled": "true" },
-    el("span", { class: "tree__label muted", text: "No node here yet" }),
+    el("span", { class: "tree__label tree__meta--soft", text: "No node here yet" }),
   );
 }
+
+// -- pinned navigation -------------------------------------------------------
+
+const PINNED_NAV = [
+  { id: "mesh",    label: "Mesh Map",    iconName: "mesh"     as keyof typeof Icons },
+  { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons },
+  { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons },
+  { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons },
+] as const;
 
 export interface SidebarHandles {
   render(): void;
   element: HTMLElement;
+  /** Collapse toggle button — caller should insert into the header. */
+  collapseBtn: HTMLElement;
 }
 
 export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: string) => void): SidebarHandles {
   void onNewNode;
-  const tree = el("div", { class: "stack", role: "tree", "aria-label": "Devices and nodes" });
+
+  let sidebarCollapsed = false;
+
+  const tree = el("div", {
+    class: "stack sidebar__tree-scroll",
+    role: "tree",
+    "aria-label": "Devices and nodes",
+  });
 
   const searchInput = el("input", {
     class: "sidebar__search-input",
     type: "search",
-    placeholder: "Search nodes or collections…",
+    placeholder: "Search\u2026",
     "aria-label": "Filter storage",
   }) as HTMLInputElement;
 
@@ -538,89 +695,94 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     searchInput,
   );
 
-  const pinnedNav = el("div", { class: "sidebar__pinned-nav", role: "navigation", "aria-label": "Primary views" });
+  const pinnedNav = el("nav", { class: "sidebar__pinned-nav", "aria-label": "Primary views" });
 
   const element = el(
     "aside",
-    { class: "sidebar", "data-open": "false" },
+    { class: "sidebar", "data-open": "false", "data-collapsed": "false" },
     pinnedNav,
     searchBox,
     tree,
   );
 
-  function renderPinnedNav(): HTMLElement {
+  // Sidebar collapse button (H2) — caller inserts into header toolbar
+  const collapseBtn = el(
+    "button",
+    {
+      class: "btn btn--icon-only",
+      type: "button",
+      title: "Toggle sidebar",
+      "aria-label": "Toggle sidebar",
+      "aria-expanded": "true",
+    },
+    icon(Icons.tree, 14),
+  );
+  on(collapseBtn, "click", () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    element.setAttribute("data-collapsed", String(sidebarCollapsed));
+    collapseBtn.setAttribute("aria-expanded", String(!sidebarCollapsed));
+  });
+
+  function isNavActive(id: string): boolean {
     const sel = store.state.selection;
-    const isMeshSelected = sel.kind === "none" || sel.kind === "node";
-    const isDropboxSelected = sel.kind === "dropbox";
-    const isConsoleSelected = sel.kind === "console";
-    const isLedgerSelected = sel.kind === "ledger";
+    switch (id) {
+      case "mesh":    return sel.kind === "none" || sel.kind === "node";
+      case "dropbox": return sel.kind === "dropbox";
+      case "console": return sel.kind === "console";
+      case "ledger":  return sel.kind === "ledger";
+      default:        return false;
+    }
+  }
 
-    const meshBtn = el(
-      "button",
-      {
-        class: "tree__row sidebar__pinned-item",
-        type: "button",
-        "aria-selected": String(isMeshSelected),
-      },
-      icon(Icons.mesh, 14),
-      el("span", { class: "tree__label", text: "Mesh Map" }),
-      el("span", { class: "tree__meta", text: store.state.canvasMode }),
-    );
-    on(meshBtn, "click", () => {
-      const first = store.selectedNode() ?? store.dataNodes()[0];
-      store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+  function navAction(id: string): void {
+    switch (id) {
+      case "mesh": {
+        const first = store.selectedNode() ?? store.dataNodes()[0];
+        store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+        break;
+      }
+      case "dropbox":
+        store.select({ kind: "dropbox" });
+        break;
+      case "console": {
+        const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+        store.select({ kind: "console", nodeId: node });
+        break;
+      }
+      case "ledger": {
+        const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
+        if (node) store.select({ kind: "ledger", nodeId: node });
+        break;
+      }
+    }
+  }
+
+  // H1: check if search query matches a pinned nav item by label
+  function matchesPinnedNav(q: string): string | undefined {
+    if (!q) return undefined;
+    const lower = q.toLowerCase();
+    return PINNED_NAV.find((item) => item.label.toLowerCase().includes(lower))?.id;
+  }
+
+  function renderPinnedNav(): HTMLElement {
+    const highlightedId = matchesPinnedNav(filterQuery);
+    const items = PINNED_NAV.map((item) => {
+      const isActive = isNavActive(item.id);
+      const isHighlighted = highlightedId === item.id;
+      const btn = el(
+        "button",
+        {
+          class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
+          type: "button",
+          "aria-selected": String(isActive),
+        },
+        icon(Icons[item.iconName], 14),
+        el("span", { class: "nav-item__label", text: item.label }),
+      );
+      on(btn, "click", () => navAction(item.id));
+      return btn;
     });
-
-    const dropBtn = el(
-      "button",
-      {
-        class: "tree__row sidebar__pinned-item",
-        type: "button",
-        "aria-selected": String(isDropboxSelected),
-      },
-      icon(Icons.inbox, 14),
-      el("span", { class: "tree__label", text: "Dropbox" }),
-    );
-    on(dropBtn, "click", () => store.select({ kind: "dropbox" }));
-
-    const consoleBtn = el(
-      "button",
-      {
-        class: "tree__row sidebar__pinned-item",
-        type: "button",
-        "aria-selected": String(isConsoleSelected),
-      },
-      icon(Icons.terminal, 14),
-      el("span", { class: "tree__label", text: "Console" }),
-    );
-    on(consoleBtn, "click", () => {
-      const activeNode = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-      store.select({ kind: "console", nodeId: activeNode });
-    });
-
-    const ledgerBtn = el(
-      "button",
-      {
-        class: "tree__row sidebar__pinned-item",
-        type: "button",
-        "aria-selected": String(isLedgerSelected),
-      },
-      icon(Icons.ledger, 14),
-      el("span", { class: "tree__label", text: "Ledger Feed" }),
-    );
-    on(ledgerBtn, "click", () => {
-      const activeNode = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-      if (activeNode) store.select({ kind: "ledger", nodeId: activeNode });
-    });
-
-    return el(
-      "div",
-      { class: "stack", style: "gap: 2px; margin-bottom: var(--space-sm);" },
-      meshBtn,
-      dropBtn,
-      consoleBtn,
-      ledgerBtn,
-    );
+    return el("div", { class: "stack", style: "gap: 2px;" }, ...items);
   }
 
   function render(): void {
@@ -630,10 +792,6 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     const tip = meshTip();
     const children: (Node | string)[] = [];
 
-    // Discovered section: shown whenever unmanaged nodes are found, above
-    // the regular topology groups. Not filtered by the search query -- a
-    // "Discovered" node the user has not yet adopted is not in the mesh and
-    // would never match any search term.
     children.push(...discoveredSection(onAddAsPeer));
 
     if (groups.length === 0 && store.state.discoveredCandidates.length === 0) {
@@ -648,18 +806,17 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
           }),
         ),
       );
-    } else if (groups.length === 0) {
-      // Discovered candidates exist but no managed groups yet: no empty state.
     }
 
     let lastKind: Group["kind"] | null = null;
     for (const group of groups) {
-      // Filter logic
       const filteredNodes = group.nodes.filter((node) => {
         if (!filterQuery) return true;
         const q = filterQuery.toLowerCase();
         const name = (node.process.node_name || node.process.node_id).toLowerCase();
-        const hasMatchingCol = (node.brain?.collections ?? []).some((c) => c.name.toLowerCase().includes(q));
+        const hasMatchingCol = (node.brain?.collections ?? []).some((c) =>
+          c.name.toLowerCase().includes(q),
+        );
         return name.includes(q) || node.process.data_dir.toLowerCase().includes(q) || hasMatchingCol;
       });
 
@@ -682,12 +839,14 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
       if (collapsed.has(group.id) && !filterQuery) continue;
 
       const sorted = [...filteredNodes].sort((a, b) =>
-        (a.process.node_name || a.process.node_id).localeCompare(b.process.node_name || b.process.node_id),
+        (a.process.node_name || a.process.node_id).localeCompare(
+          b.process.node_name || b.process.node_id,
+        ),
       );
       for (const node of sorted) {
         children.push(...nodeRow(node, tip));
       }
-      for (const peer of filteredPeers) children.push(peerRow(peer));
+      for (const peer of filteredPeers) children.push(peerRow(peer, tip));
       if (sorted.length === 0 && filteredPeers.length === 0 && group.kind === "mount") {
         children.push(emptyMountRow());
       }
@@ -696,5 +855,5 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     replace(tree, ...children);
   }
 
-  return { render, element };
+  return { render, element, collapseBtn };
 }
