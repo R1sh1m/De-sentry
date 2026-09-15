@@ -178,7 +178,8 @@ class NodeEngine {
   // means hold every chunk.
   Status HoldForOfflineOwner(const std::string& owner_node, const std::string& collection,
                               const std::string& key, const std::string& encoded_doc,
-                              const std::vector<uint32_t>* only_chunks = nullptr);
+                              const std::vector<uint32_t>* only_chunks = nullptr,
+                              const std::string& message_id = std::string());
 
   // Envelopes this node is holding for `owner_node` -- what a kTransitQuery
   // from that peer is answered with.

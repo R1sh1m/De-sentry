@@ -119,13 +119,15 @@ class NetworkManager {
   // HandleRequest already refreshed) still counts.
   WireMessage HandleHeartbeat(const std::string& peer_node_id, const HeartbeatPayload& request);
 
-  void BroadcastLocalWrite(const std::string& collection, const std::string& key,
-                            const std::string& encoded_doc);
+void BroadcastLocalWrite(const std::string& collection, const std::string& key,
+                             const std::string& encoded_doc);
   void FanOut(const OpBroadcastPayload& payload, const std::string& exclude_node_id);
   // Bytes for a key whose placement targets an unreachable owner are held on
-  // this node instead of being dropped.
+  // this node instead of being dropped. `message_id` is the broadcast's
+  // message_id, stored in the transit envelope so a held-ack can correlate
+  // back to the original write.
   void HoldForUnreachableOwners(const std::string& collection, const std::string& key,
-                                 const std::string& encoded_doc);
+                                 const std::string& encoded_doc, const std::string& message_id);
   // Builds this node's outbound heartbeat: ledger tip, quota/load figures
   // and self-assessed servability (degraded when over quota, running
   // otherwise). Informational for peers' fitness tables; lifecycle

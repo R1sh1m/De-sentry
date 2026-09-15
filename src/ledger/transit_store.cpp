@@ -77,6 +77,7 @@ std::string TransitStore::EncodeEnvelope(const TransitEnvelope& envelope) {
   w.U64(envelope.doc_size_bytes);
   w.U32(envelope.chunk_index);
   w.U32(envelope.chunk_total);
+  w.Bytes(envelope.message_id);
   return w.TakeString();
 }
 
@@ -134,6 +135,8 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
       if (envelope.chunk_total == 0 || envelope.chunk_index >= envelope.chunk_total) {
         return Status::Corruption("transit record has invalid chunk fields");
       }
+      // message_id is the last field for v2 records (v1 records don't have it)
+      if (r.remaining() > 0) envelope.message_id = r.Bytes();
     }
     // else: v1 record -- whole-document defaults (chunk_total == 1) stand.
     if (r.remaining() != 0) return Status::Corruption("transit record has trailing bytes");

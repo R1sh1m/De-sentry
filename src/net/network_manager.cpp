@@ -581,11 +581,11 @@ void NetworkManager::BroadcastLocalWrite(const std::string& collection, const st
   if (dedup_) dedup_->NoteAndCheckNew(payload.message_id);
 
   FanOut(payload, std::string());
-  HoldForUnreachableOwners(collection, key, encoded_doc);
+  HoldForUnreachableOwners(collection, key, encoded_doc, payload.message_id);
 }
 
 void NetworkManager::HoldForUnreachableOwners(const std::string& collection, const std::string& key,
-                                               const std::string& encoded_doc) {
+                                                const std::string& encoded_doc, const std::string& message_id) {
   if (placement_ == nullptr) return;
   // Transit envelopes themselves are never held for anyone: that would be a
   // recursion with no termination condition.
@@ -683,11 +683,15 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
         if (intent.chunk_index == c) { is_ours = true; break; }
       }
       if (!is_ours) continue;
+      // Fetch the envelope to get the original message_id.
+      auto env_or = engine_->transit().Lookup(replica, intent.key_hash);
+      if (!env_or.ok()) continue;
+      const TransitEnvelope& env = env_or.value();
       // Send held-ack to the writer (replica is the owner_node)
       PeerInfo holder_info;
       if (!peer_table_.Get(replica, &holder_info) || holder_info.p2p_port == 0) continue;
       TransitHeldPayload held;
-      held.message_id = "";  // TODO: track message_id from broadcast
+      held.message_id = env.message_id;
       held.key_hash = intent.key_hash;
       held.holder_node = self;
       held.intent_lsn = intent.intent_lsn;

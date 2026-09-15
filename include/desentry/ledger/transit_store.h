@@ -71,6 +71,9 @@ struct TransitEnvelope {
   uint64_t doc_size_bytes = 0;
   uint32_t chunk_index = 0;
   uint32_t chunk_total = 1;
+  // The original broadcast's message_id, so a held-ack can be correlated
+  // with the write that caused this hold. Empty for v1 envelopes.
+  std::string message_id;
 };
 
 class TransitStore {

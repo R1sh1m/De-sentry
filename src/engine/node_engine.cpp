@@ -313,7 +313,8 @@ CollectionSummary NodeEngine::Summarize(const std::string& collection) {
 
 Status NodeEngine::HoldForOfflineOwner(const std::string& owner_node, const std::string& collection,
                                         const std::string& key, const std::string& encoded_doc,
-                                        const std::vector<uint32_t>* only_chunks) {
+                                        const std::vector<uint32_t>* only_chunks,
+                                        const std::string& message_id) {
   if (owner_node.empty() || owner_node == identity_->node_id()) {
     return Status::InvalidArgument("transit: an owner must be another node");
   }
@@ -369,6 +370,7 @@ Status NodeEngine::HoldForOfflineOwner(const std::string& owner_node, const std:
     envelope.doc_size_bytes = encoded_doc.size();
     envelope.chunk_index = i;
     envelope.chunk_total = chunk_total;
+    envelope.message_id = message_id;
 
     // Ledger first, bytes second. If the process dies between the two, the
     // intent names bytes that are missing -- which a returning owner discovers
