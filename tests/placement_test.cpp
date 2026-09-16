@@ -222,6 +222,13 @@ void TestPolicyFiltering() {
   assert(!policy.ring().Contains("gone-1"));
   assert(!policy.ring().Contains("stale-1"));
 
+  // If the local node is configured as a supervisor, it must not be a placement target either.
+  PlacementOptions sup_options = options;
+  sup_options.is_supervisor = true;
+  PlacementPolicy sup_policy("supervisor-local", sup_options);
+  sup_policy.Rebuild(peers);
+  assert(!sup_policy.ring().Contains("supervisor-local"));
+
   // Exclusions are reported rather than silent: "why is this node not holding
   // anything" is a question the inspector has to be able to answer.
   const auto& skipped = policy.skipped();

@@ -6,4 +6,4 @@
 # `from desentry_client import ...` in the harness.
 #
 # `search-path` is the documented Pyrefly equivalent of Pyright `extraPaths`.
-search-path = ["clients/python"]
+search-path = ["clients/python", "tests/integration"]

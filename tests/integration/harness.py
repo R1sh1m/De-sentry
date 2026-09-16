@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "clients", "python"))
 
@@ -66,20 +66,26 @@ def find_engine(explicit: Optional[str] = None) -> str:
     )
 
 
-def free_port(start: int) -> int:
-    """First port at or above `start` that nothing is listening on.
+_ALLOCATED_PORTS: Set[int] = set()
 
-    Binding is the only test that means anything here; reading a list of
-    listeners and picking a gap races with every other process on the machine.
+
+def free_port(start: int, exclude: Optional[Set[int]] = None, udp: bool = False) -> int:
+    """First port at or above `start` that nothing is listening on and that
+    has not already been reserved for another node in this test process.
     """
-    for port in range(start, start + 500):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    exclude = exclude or set()
+    sock_type = socket.SOCK_DGRAM if udp else socket.SOCK_STREAM
+    for port in range(start, start + 2000):
+        if port in exclude or port in _ALLOCATED_PORTS:
+            continue
+        with socket.socket(socket.AF_INET, sock_type) as probe:
             try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", port))
                 return port
             except OSError:
                 continue
-    raise RuntimeError(f"no free port in {start}..{start + 500}")
+    raise RuntimeError(f"no free port in {start}..{start + 2000}")
 
 
 class Node:
@@ -163,9 +169,11 @@ class Node:
                 )
             try:
                 status = self.client.status()
-                self.node_id = status.get("node_id", "")
-                if self.node_id:
-                    return
+                # Ensure the answering process is this node, not a port collision
+                if status.get("node_name") == self.name:
+                    self.node_id = status.get("node_id", "")
+                    if self.node_id:
+                        return
             except Exception:
                 pass
             time.sleep(POLL_S)
@@ -223,14 +231,23 @@ class Cluster:
         self.root = root or tempfile.mkdtemp(prefix="desentry-acceptance-")
         self.api_base = api_base
         self.p2p_base = p2p_base
-        self.discovery_port = free_port(17900)
+        self._next_api_port = api_base
+        self._next_p2p_port = p2p_base
+        self.discovery_port = free_port(17900, udp=True)
+        _ALLOCATED_PORTS.add(self.discovery_port)
         self.nodes: List[Node] = []
 
     def add(self, name: str, *, supervisor: bool = False,
             data_dir: Optional[str] = None,
             config_overrides: Optional[Dict[str, Any]] = None) -> Node:
-        api_port = free_port(self.api_base + len(self.nodes) * 2)
-        p2p_port = free_port(self.p2p_base + len(self.nodes) * 2)
+        api_port = free_port(self._next_api_port)
+        _ALLOCATED_PORTS.add(api_port)
+        self._next_api_port = api_port + 1
+
+        p2p_port = free_port(self._next_p2p_port)
+        _ALLOCATED_PORTS.add(p2p_port)
+        self._next_p2p_port = p2p_port + 1
+
         node = Node(
             name=name,
             data_dir=data_dir or os.path.join(self.root, name),
@@ -266,6 +283,10 @@ class Cluster:
 
     def cleanup(self) -> None:
         self.stop_all()
+        for node in self.nodes:
+            _ALLOCATED_PORTS.discard(node.api_port)
+            _ALLOCATED_PORTS.discard(node.p2p_port)
+        _ALLOCATED_PORTS.discard(self.discovery_port)
         if self.owns_root:
             shutil.rmtree(self.root, ignore_errors=True)
 

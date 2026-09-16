@@ -60,6 +60,7 @@ Status NetworkManager::Start() {
   PlacementOptions placement_opts;
   placement_opts.replication_factor = config_.replication_factor;
   placement_opts.stale_after_ms = StaleThresholdMs(config_);
+  placement_opts.is_supervisor = config_.supervisor;
   placement_ = std::make_unique<PlacementPolicy>(engine_->identity().node_id(), placement_opts);
   placement_->Rebuild(peer_table_);
 

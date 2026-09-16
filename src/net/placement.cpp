@@ -116,10 +116,10 @@ void PlacementPolicy::Rebuild(const PeerTable& peers) {
 
   const int64_t now = options_.now_ms != 0 ? options_.now_ms : NowMs();
 
-  // The local node is always a candidate: it is reachable by definition, and
-  // excluding it would make a single-node (airplane-mode) deployment have
-  // nowhere to place anything.
-  if (!local_node_id_.empty()) {
+  // The local node is always a candidate unless it is a supervisor: it is reachable
+  // by definition, and excluding it would make a single-node (airplane-mode)
+  // deployment have nowhere to place anything. A supervisor holds no data.
+  if (!local_node_id_.empty() && !options_.is_supervisor) {
     ring_.AddNode(local_node_id_);
     ring_with_absent_.AddNode(local_node_id_);
   }

@@ -133,6 +133,7 @@ struct PlacementOptions {
   int64_t stale_after_ms = 30000;
   int64_t now_ms = 0;  // 0 == use the wall clock
   bool include_degraded = false;
+  bool is_supervisor = false;
 };
 
 class PlacementPolicy {
