@@ -556,17 +556,7 @@ export interface CanvasHandles {
 
 export function createCanvas(onNewNode: () => void): CanvasHandles {
   const body = el("div", { style: "width: 100%; height: 100%; position: relative; z-index: 1;" });
-  const summary = el("span", { class: "muted", style: "font: var(--text-fine);" });
-  const toolbar = el("div", { class: "canvas__toolbar", style: "position: relative; z-index: 2;" }, summary);
-
-  // Tree ⇄ Mesh toggle lives on the canvas edge now, not in the header.
-  const treeBtn = el("button", { type: "button", title: "Tree inventory (1)", "aria-label": "Tree view", "aria-pressed": "true" }, icon(Icons.tree, 14));
-  const meshBtn = el("button", { type: "button", title: "Mesh topology (2)", "aria-label": "Mesh view", "aria-pressed": "false" }, icon(Icons.mesh, 14));
-  on(treeBtn, "click", () => store.setCanvasMode("tree"));
-  on(meshBtn, "click", () => store.setCanvasMode("mesh"));
-  const viewSwitch = el("div", { class: "canvas-view-switch", role: "group", "aria-label": "Canvas view" }, treeBtn, meshBtn);
-
-  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, toolbar, body, viewSwitch);
+  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, body);
 
   function render(): void {
     const nodes = store.dataNodes();
@@ -581,16 +571,6 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
       popoverAnchor = null;
       popoverFor = null;
     }
-
-    treeBtn.setAttribute("aria-pressed", String(mode === "tree"));
-    meshBtn.setAttribute("aria-pressed", String(mode === "mesh"));
-
-    const reachable = nodes.filter((n) => n.reachable).length;
-    const held = nodes.reduce((sum, n) => sum + (n.brain?.transit_documents_held ?? 0), 0);
-    summary.textContent =
-      nodes.length === 0
-        ? ""
-        : `${reachable}/${nodes.length} online${held > 0 ? ` · ${count(held)} pending delivery` : ""}`;
 
     if (nodes.length === 0) {
       replace(body, emptyCanvas(onNewNode));

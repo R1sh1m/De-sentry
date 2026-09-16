@@ -712,7 +712,7 @@ function emptyMountRow(): HTMLElement {
 // -- pinned navigation -------------------------------------------------------
 
 const PINNED_NAV = [
-  { id: "mesh",    label: "Mesh Map",    iconName: "mesh"     as keyof typeof Icons },
+  { id: "view",    label: "View",        iconName: "mesh"     as keyof typeof Icons },
   { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons },
   { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons },
   { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons },
@@ -860,10 +860,12 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     collapseBtn.setAttribute("aria-expanded", String(!sidebarCollapsed));
   });
 
+  let viewToggleRevealed = false;
+
   function isNavActive(id: string): boolean {
     const sel = store.state.selection;
     switch (id) {
-      case "mesh":    return sel.kind === "none" || sel.kind === "node";
+      case "view":    return sel.kind === "none" || sel.kind === "node";
       case "dropbox": return sel.kind === "dropbox";
       case "console": return sel.kind === "console";
       case "ledger":  return sel.kind === "ledger";
@@ -873,9 +875,16 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
   function navAction(id: string): void {
     switch (id) {
-      case "mesh": {
-        const first = store.selectedNode() ?? store.dataNodes()[0];
-        store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+      case "view": {
+        const isCurrent = isNavActive("view");
+        if (isCurrent) {
+          viewToggleRevealed = !viewToggleRevealed;
+        } else {
+          viewToggleRevealed = true;
+          const first = store.selectedNode() ?? store.dataNodes()[0];
+          store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+        }
+        render();
         break;
       }
       case "dropbox":
@@ -898,28 +907,95 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
   function matchesPinnedNav(q: string): string | undefined {
     if (!q) return undefined;
     const lower = q.toLowerCase();
+    if (lower.includes("view") || lower.includes("mesh") || lower.includes("tree")) return "view";
     return PINNED_NAV.find((item) => item.label.toLowerCase().includes(lower))?.id;
   }
 
   function renderPinnedNav(): HTMLElement {
     const highlightedId = matchesPinnedNav(filterQuery);
-    const items = PINNED_NAV.map((item) => {
+    const canvasMode = store.state.canvasMode;
+    const elements: HTMLElement[] = [];
+
+    for (const item of PINNED_NAV) {
       const isActive = isNavActive(item.id);
       const isHighlighted = highlightedId === item.id;
-      const btn = el(
-        "button",
-        {
-          class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
-          type: "button",
-          "aria-selected": String(isActive),
-        },
-        icon(Icons[item.iconName], 14),
-        el("span", { class: "nav-item__label", text: item.label }),
-      );
-      on(btn, "click", () => navAction(item.id));
-      return btn;
-    });
-    return el("div", { class: "stack", style: "gap: 2px;" }, ...items);
+
+      if (item.id === "view") {
+        const modeIcon = canvasMode === "tree" ? Icons.tree : Icons.mesh;
+        const btn = el(
+          "button",
+          {
+            class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
+            type: "button",
+            "aria-selected": String(isActive),
+            "aria-expanded": String(viewToggleRevealed),
+            title: "Switch canvas view (Tree / Mesh)",
+          },
+          icon(modeIcon, 14),
+          el("span", { class: "nav-item__label", text: "View" }),
+          el("span", { class: "nav-item__badge-view", text: canvasMode === "tree" ? "Tree" : "Mesh" }),
+          el("span", { class: "nav-item__chevron-view", "data-open": String(viewToggleRevealed), text: "▾" }),
+        );
+        on(btn, "click", () => navAction("view"));
+        elements.push(btn);
+
+        if (viewToggleRevealed) {
+          const treeBtn = el(
+            "button",
+            {
+              class: "sidebar__view-btn",
+              type: "button",
+              "aria-pressed": String(canvasMode === "tree"),
+              title: "Tree inventory view (1)",
+            },
+            icon(Icons.tree, 13),
+            el("span", { text: "Tree" }),
+            el("kbd", { text: "1" }),
+          );
+          on(treeBtn, "click", (e) => {
+            e.stopPropagation();
+            store.setCanvasMode("tree");
+            render();
+          });
+
+          const meshBtn = el(
+            "button",
+            {
+              class: "sidebar__view-btn",
+              type: "button",
+              "aria-pressed": String(canvasMode === "mesh"),
+              title: "Mesh topology view (2)",
+            },
+            icon(Icons.mesh, 13),
+            el("span", { text: "Mesh" }),
+            el("kbd", { text: "2" }),
+          );
+          on(meshBtn, "click", (e) => {
+            e.stopPropagation();
+            store.setCanvasMode("mesh");
+            render();
+          });
+
+          const toggleRow = el("div", { class: "sidebar__view-toggle", role: "group", "aria-label": "Canvas view mode" }, treeBtn, meshBtn);
+          elements.push(toggleRow);
+        }
+      } else {
+        const btn = el(
+          "button",
+          {
+            class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
+            type: "button",
+            "aria-selected": String(isActive),
+          },
+          icon(Icons[item.iconName], 14),
+          el("span", { class: "nav-item__label", text: item.label }),
+        );
+        on(btn, "click", () => navAction(item.id));
+        elements.push(btn);
+      }
+    }
+
+    return el("div", { class: "stack", style: "gap: 2px;" }, ...elements);
   }
 
   function render(): void {

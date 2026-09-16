@@ -301,7 +301,12 @@ body {
 
 /* macOS-style About: single centred card, no titlebar/footer bands. */
 .sheet--about {
-  background: color-mix(in srgb, var(--color-ink) 36%, transparent);
+  background: transparent !important;
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  border-radius: 20px;
+  overflow: visible;
 }
 .about-macos {
   width: min(430px, 94vw);
@@ -426,43 +431,78 @@ body {
   color: #fff;
 }
 
-/* Tree ⇄ Mesh switch docked to the canvas edge (moved out of the header). */
-.canvas-view-switch {
-  position: absolute;
-  left: var(--space-sm);
-  top: 56px;
-  z-index: 12;
+/* View toggle revealed under the View nav button in the sidebar */
+.sidebar__view-toggle {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 3px;
-  border-radius: var(--radius-md);
-  background: var(--chrome-fill);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  background: var(--color-surface-pearl);
   border: 1px solid var(--color-hairline);
-  box-shadow: var(--elev-card);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+  margin: 2px 4px 6px 12px;
+  animation: view-toggle-slide var(--motion-quick) ease-out;
 }
-.canvas-view-switch button {
+@keyframes view-toggle-slide {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.sidebar__view-btn {
+  flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  gap: 5px;
+  padding: 5px 8px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--color-ink-muted-80);
-  cursor: default;
+  font: var(--text-fine);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--motion-instant);
 }
-.canvas-view-switch button:hover {
-  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+.sidebar__view-btn:hover {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
   color: var(--color-ink);
 }
-.canvas-view-switch button[aria-pressed="true"] {
-  background: var(--tree-row-selected-bg);
+.sidebar__view-btn[aria-pressed="true"] {
+  background: var(--color-surface);
   color: var(--color-primary);
-  box-shadow: var(--elev-hairline);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.sidebar__view-btn kbd {
+  font: var(--text-mono);
+  font-size: 9px;
+  opacity: 0.65;
+  background: var(--color-surface-sunken);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--color-hairline);
+}
+.nav-item__chevron-view {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-ink-muted-48);
+  transition: transform var(--motion-quick);
+}
+.nav-item__chevron-view[data-open="true"] {
+  transform: rotate(180deg);
+}
+.nav-item__badge-view {
+  font: var(--text-fine);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted-80);
+  border: 1px solid var(--color-hairline);
+  margin-left: auto;
+  margin-right: 4px;
 }
 
 /* Floating node popover: the inspector replacement, anchored above the node. */
@@ -1399,11 +1439,15 @@ svg.mesh {
  * `margin: auto`; the top layer removes every z-index conflict by design. */
 .modal-dialog {
   padding: 0;
-  border: 0;
-  background: transparent;
+  border: 0 !important;
+  outline: none !important;
+  background: transparent !important;
   max-width: calc(100vw - var(--space-lg));
   max-height: calc(100vh - var(--space-lg));
   color: var(--color-ink);
+  border-radius: 20px;
+  overflow: visible;
+  box-shadow: none !important;
 }
 .modal-dialog::backdrop {
   background: color-mix(in srgb, var(--color-ink) 36%, transparent);
