@@ -660,10 +660,8 @@ pub fn unlock_node(
     data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
     // TODO(platform): accept a password OR a recovery key, verified against the
-    // node's security.json (architecture-v3 section 6); honour `remember`. Today
-    // this still rejects anything that is not a recovery key -- the reported bug.
-    let _ = remember;
-    let password = secret;
+    // node's security.json (architecture-v3 section 6). Today this still rejects anything
+    // that is not a recovery key -- the reported bug.
     recovery::decode(&password).map_err(fail)?;
 
     let existing_spec = {
