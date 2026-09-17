@@ -117,21 +117,37 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   let particles: Particle[] = [];
 
-  const initParticles = (w: number, h: number) => {
-    particles = [];
-    // Dense enough to read fullscreen: ~250 dots at 1360x880, clamped so
-    // small windows and 4K desktops both stay smooth.
-    const count = Math.max(150, Math.min(300, Math.floor((w * h) / 4800)));
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        z: 0.3 + Math.random() * 0.7,
-        vx: (Math.random() - 0.5) * 0.46,
-        vy: (Math.random() - 0.5) * 0.46,
-        radius: 1.7 + Math.random() * 2.4,
-        phase: Math.random() * Math.PI * 2,
-      });
+  const targetParticleCount = (w: number, h: number, nodeCount: number): number => {
+    const baseCount = Math.max(140, Math.min(260, Math.floor((w * h) / 4800)));
+    // Each real node reduces ambient blue dust so the constellation shifts focus to the real mesh
+    const reduction = nodeCount * 35;
+    return Math.max(40, baseCount - reduction);
+  };
+
+  const adjustParticleCount = (w: number, h: number): void => {
+    const target = targetParticleCount(w, h, nodes.length);
+    if (particles.length > target) {
+      particles.splice(target);
+    } else if (particles.length < target) {
+      while (particles.length < target) {
+        let px = Math.random() * w;
+        let py = Math.random() * h;
+        for (const a of anchors) {
+          if (Math.hypot(px - a.x, py - a.y) < 100) {
+            px = (px + 120) % w;
+            py = (py + 120) % h;
+          }
+        }
+        particles.push({
+          x: px,
+          y: py,
+          z: 0.3 + Math.random() * 0.7,
+          vx: (Math.random() - 0.5) * 0.46,
+          vy: (Math.random() - 0.5) * 0.46,
+          radius: 1.7 + Math.random() * 2.4,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
     }
   };
 
@@ -170,10 +186,8 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     canvas.width = Math.floor(w * dpr);
     canvas.height = Math.floor(h * dpr);
 
-    if (particles.length === 0) {
-      initParticles(w, h);
-    }
     layoutAnchors(w, h);
+    adjustParticleCount(w, h);
   };
 
   const ro: ResizeObserver | null =
@@ -258,6 +272,32 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
         p.x -= (dx / dist) * force;
         p.y -= (dy / dist) * force;
       }
+
+      // Exclusion zone around real nodes (green dots): keep ambient blue plexus dots away
+      const EXCLUSION_RADIUS = 90;
+      const EXCLUSION_RADIUS_SQ = EXCLUSION_RADIUS * EXCLUSION_RADIUS;
+      for (let aIdx = 0; aIdx < anchors.length; aIdx++) {
+        const a = anchors[aIdx];
+        const adx = p.x - a.x;
+        const ady = p.y - a.y;
+        const adistSq = adx * adx + ady * ady;
+        if (adistSq < EXCLUSION_RADIUS_SQ) {
+          const adist = Math.max(0.01, Math.sqrt(adistSq));
+          const nx = adx / adist;
+          const ny = ady / adist;
+          const penetration = (EXCLUSION_RADIUS - adist) / EXCLUSION_RADIUS;
+          const pushForce = penetration * 3.8 + 0.8;
+          p.x += nx * pushForce;
+          p.y += ny * pushForce;
+
+          // Deflect particle velocity outward so it doesn't keep running towards the anchor
+          const dot = p.vx * nx + p.vy * ny;
+          if (dot < 0) {
+            p.vx -= 1.6 * dot * nx;
+            p.vy -= 1.6 * dot * ny;
+          }
+        }
+      }
     }
 
     // Draw connecting plexus lines (Vanta-NET style)
@@ -270,6 +310,25 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
         const dy = p1.y - p2.y;
         const distSq = dx * dx + dy * dy;
         if (distSq < CONNECT_DIST_SQ) {
+          // Do not draw plexus lines crossing through the real node exclusion core
+          let crossesAnchor = false;
+          for (let aIdx = 0; aIdx < anchors.length; aIdx++) {
+            const a = anchors[aIdx];
+            const segVx = p2.x - p1.x;
+            const segVy = p2.y - p1.y;
+            const segLenSq = segVx * segVx + segVy * segVy;
+            if (segLenSq > 0.001) {
+              const t = Math.max(0, Math.min(1, ((a.x - p1.x) * segVx + (a.y - p1.y) * segVy) / segLenSq));
+              const projX = p1.x + t * segVx;
+              const projY = p1.y + t * segVy;
+              if ((a.x - projX) ** 2 + (a.y - projY) ** 2 < 45 * 45) {
+                crossesAnchor = true;
+                break;
+              }
+            }
+          }
+          if (crossesAnchor) continue;
+
           const alpha = (1 - distSq / CONNECT_DIST_SQ) * 0.44 * Math.min(p1.z, p2.z);
           ctx.strokeStyle = palette.lineColor;
           ctx.globalAlpha = alpha;
@@ -387,15 +446,16 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
         const fresh = nextNodes.find((n) => n.id === a.id);
         if (fresh) a.status = fresh.status;
       }
+      const w = Math.max(1, window.innerWidth);
+      const h = Math.max(1, window.innerHeight);
       if (idsChanged) {
         try {
-          const w = Math.max(1, window.innerWidth);
-          const h = Math.max(1, window.innerHeight);
           layoutAnchors(w, h);
         } catch {
           // Layout happens on next resize/frame; never break render.
         }
       }
+      adjustParticleCount(w, h);
       if (reduceQuery?.matches === true) drawStatic();
     },
     setOnBattery(value: boolean): void {

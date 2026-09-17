@@ -94,6 +94,7 @@ export function icon(path: string, size = 16): SVGElement {
 }
 
 export const Icons = {
+  chevronDown: "M3.5 6 8 10.5 12.5 6",
   chevronRight: "M6 3.5 10.5 8 6 12.5",
   chevronLeft: "M10.5 3.5 6 8 10.5 12.5",
   folder: "M1.75 4.25A1.25 1.25 0 0 1 3 3h3l1.5 1.75h5.5A1.25 1.25 0 0 1 14.25 6v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z",

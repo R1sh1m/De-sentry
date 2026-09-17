@@ -1489,6 +1489,9 @@ svg.mesh {
   padding: var(--space-sm) var(--space-sm) var(--space-xs);
   pointer-events: auto;
 }
+.mesh__popover[data-placement="bottom"] {
+  transform: translate(-50%, 14px);
+}
 .mesh__popover[hidden] {
   display: none;
 }
@@ -2310,6 +2313,89 @@ select.ledger__filter-control option {
 .ledger__filter-control:focus {
   border-color: var(--color-primary);
   box-shadow: var(--focus-ring);
+}
+/* ---------------------------------------------------------------------------
+ * Custom select dropdown: rounded menus replacing sharp OS select popups
+ * ------------------------------------------------------------------------ */
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+.custom-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  text-align: left;
+  cursor: pointer;
+  padding: 0 10px 0 12px;
+  background-image: none;
+}
+.custom-select__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.custom-select__chevron {
+  flex-shrink: 0;
+  color: var(--color-ink-muted-48);
+  transition: transform var(--motion-quick);
+  display: inline-flex;
+}
+.custom-select__trigger[aria-expanded="true"] .custom-select__chevron {
+  transform: rotate(180deg);
+}
+.custom-select__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--color-surface-popover);
+  backdrop-filter: var(--chrome-blur-thin);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-popover);
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: ctx-menu-in var(--motion-instant) ease-out both;
+}
+.custom-select__menu[hidden] {
+  display: none !important;
+}
+.custom-select__option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink);
+  font: var(--text-caption);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--motion-instant);
+}
+.custom-select__option:hover,
+.custom-select__option:focus-visible {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  outline: none;
+}
+.custom-select__option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
+  font-weight: 600;
 }
 .ledger__filter-actions {
   grid-column: 1 / -1;

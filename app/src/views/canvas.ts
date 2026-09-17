@@ -285,17 +285,37 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       const hostRect = wrapper.getBoundingClientRect();
       if (nodeRect.width === 0 && nodeRect.height === 0) {
         popover.hidden = true;
+        // Schedule retry once mounted and laid out in the DOM
+        requestAnimationFrame(positionPopover);
+        window.setTimeout(positionPopover, 20);
         return;
       }
+      const halfPopover = 150;
       const left = nodeRect.left - hostRect.left + nodeRect.width / 2;
       const top = nodeRect.top - hostRect.top;
-      popover.style.left = `${Math.max(8, Math.min(hostRect.width - 8, left))}px`;
-      popover.style.top = `${Math.max(8, top)}px`;
+      const clampedX = Math.max(halfPopover + 12, Math.min(hostRect.width - halfPopover - 12, left));
+
+      const flipToBottom = top < 220 && hostRect.height - (top + nodeRect.height) > 220;
+      if (flipToBottom) {
+        popover.setAttribute("data-placement", "bottom");
+        popover.style.top = `${Math.round(top + nodeRect.height)}px`;
+      } else {
+        popover.removeAttribute("data-placement");
+        popover.style.top = `${Math.round(Math.max(8, top))}px`;
+      }
+      popover.style.left = `${Math.round(clampedX)}px`;
       popover.hidden = false;
     } catch {
       // Geometry unavailable: popover stays hidden rather than misplaced.
       popover.hidden = true;
     }
+  };
+
+  const schedulePositionPopover = (): void => {
+    positionPopover();
+    requestAnimationFrame(positionPopover);
+    window.setTimeout(positionPopover, 0);
+    window.setTimeout(positionPopover, 60);
   };
 
   const updateTransform = () => {
@@ -725,11 +745,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     };
     group.addEventListener("click", (e) => {
       e.stopPropagation();
-      select();
-    });
-    group.addEventListener("pointerup", (e) => {
       if (!draggedFar) {
-        e.stopPropagation();
         select();
       }
     });
@@ -847,7 +863,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         : null,
       el("div", { class: "mesh__popover-actions" }, ledgerBtn, consoleBtn),
     );
-    positionPopover();
+    schedulePositionPopover();
 
     // Lazy inspection: fetch manifest purpose, real directory size on disk, and allocation mode.
     if (cached === undefined || diskBytes === undefined || allocMode === undefined) {
@@ -967,6 +983,17 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
 
   wrapper.appendChild(controls);
   wrapper.appendChild(minimap);
+
+  (wrapper as HTMLElement & { __positionPopover?: () => void }).__positionPopover = schedulePositionPopover;
+
+  try {
+    const ro = new ResizeObserver(() => {
+      positionPopover();
+    });
+    ro.observe(wrapper);
+  } catch {
+    // ResizeObserver unavailable
+  }
 
   return wrapper;
 }
@@ -1255,7 +1282,9 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
 
     if (mode === "mesh") {
       const side = Math.max(760, 260 + Math.ceil(Math.sqrt(nodes.length)) * 200);
-      replace(body, meshView(nodes, side, Math.round(side * 0.65), element));
+      const view = meshView(nodes, side, Math.round(side * 0.65), element);
+      replace(body, view);
+      (view as HTMLElement & { __positionPopover?: () => void }).__positionPopover?.();
     } else {
       replace(body, treeView(nodes));
     }

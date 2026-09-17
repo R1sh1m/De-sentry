@@ -233,16 +233,188 @@ export function createLedger(): LedgerHandles {
     const opOptions = ["", "PUT", "DEL", "CHECKPOINT", "TRANSIT_INTENT", "TRANSIT_CLAIMED"];
     const originOptions = ["", ...node.peers.map((p) => p.node_id)];
 
+interface CustomSelectOption {
+  value: string;
+  label: string;
+  title?: string;
+}
+
+interface CustomSelectControl {
+  element: HTMLElement;
+  trigger: HTMLButtonElement;
+  get value(): string;
+  set value(val: string);
+  set id(idStr: string);
+}
+
+function createCustomSelect(
+  options: CustomSelectOption[],
+  initialValue: string,
+  ariaLabel: string,
+  onChange: (value: string) => void,
+): CustomSelectControl {
+  let currentValue = initialValue;
+  let isOpen = false;
+
+  const container = el("div", { class: "custom-select" });
+
+  const labelSpan = el("span", {
+    class: "custom-select__label",
+    text: options.find((o) => o.value === currentValue)?.label ?? options[0]?.label ?? "",
+  });
+
+  const chevron = icon(Icons.chevronDown, 11);
+  chevron.classList.add("custom-select__chevron");
+
+  const trigger = el(
+    "button",
+    {
+      type: "button",
+      class: "ledger__filter-control custom-select__trigger",
+      "aria-label": ariaLabel,
+      "aria-haspopup": "listbox",
+      "aria-expanded": "false",
+    },
+    labelSpan,
+    chevron,
+  ) as HTMLButtonElement;
+
+  const menu = el("div", {
+    class: "custom-select__menu",
+    role: "listbox",
+    "aria-label": ariaLabel,
+    hidden: true,
+  });
+
+  const optionEls: HTMLElement[] = [];
+
+  const updateSelectedDisplay = () => {
+    const selectedOpt = options.find((o) => o.value === currentValue) ?? options[0];
+    labelSpan.textContent = selectedOpt?.label ?? "";
+    trigger.title = selectedOpt?.title ?? selectedOpt?.label ?? "";
+    for (const optEl of optionEls) {
+      const isSel = optEl.getAttribute("data-value") === currentValue;
+      optEl.setAttribute("aria-selected", String(isSel));
+    }
+  };
+
+  const openMenu = () => {
+    if (isOpen) return;
+    document.querySelectorAll<HTMLElement>(".custom-select__menu:not([hidden])").forEach((m) => {
+      m.hidden = true;
+      m.parentElement?.querySelector(".custom-select__trigger")?.setAttribute("aria-expanded", "false");
+    });
+    isOpen = true;
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    const activeEl = optionEls.find((o) => o.getAttribute("data-value") === currentValue) ?? optionEls[0];
+    activeEl?.focus();
+  };
+
+  const closeMenu = (focusTrigger = false) => {
+    if (!isOpen) return;
+    isOpen = false;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (focusTrigger) trigger.focus();
+  };
+
+  for (const opt of options) {
+    const optEl = el("button", {
+      type: "button",
+      class: "custom-select__option",
+      role: "option",
+      "data-value": opt.value,
+      "aria-selected": String(opt.value === currentValue),
+      title: opt.title ?? opt.label,
+      text: opt.label,
+    });
+    on(optEl, "click", (e) => {
+      e.stopPropagation();
+      currentValue = opt.value;
+      updateSelectedDisplay();
+      closeMenu(true);
+      onChange(currentValue);
+    });
+    on(optEl, "keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMenu(true);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = optionEls[optionEls.indexOf(optEl) + 1] ?? optionEls[0];
+        next?.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = optionEls[optionEls.indexOf(optEl) - 1] ?? optionEls[optionEls.length - 1];
+        prev?.focus();
+      }
+    });
+    optionEls.push(optEl);
+    menu.appendChild(optEl);
+  }
+
+  on(trigger, "click", (e) => {
+    e.stopPropagation();
+    if (isOpen) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  });
+
+  on(trigger, "keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openMenu();
+    } else if (e.key === "Escape") {
+      closeMenu();
+    }
+  });
+
+  const outsideHandler = (e: MouseEvent) => {
+    if (!isOpen) return;
+    if (!container.contains(e.target as Node)) {
+      closeMenu();
+    }
+  };
+  document.addEventListener("pointerdown", outsideHandler, true);
+
+  container.appendChild(trigger);
+  container.appendChild(menu);
+  updateSelectedDisplay();
+
+  return {
+    element: container,
+    trigger,
+    get value(): string {
+      return currentValue;
+    },
+    set value(val: string) {
+      currentValue = val;
+      updateSelectedDisplay();
+    },
+    set id(idStr: string) {
+      trigger.id = idStr;
+    },
+  };
+}
+
     const peerLabel = (id: string): string => {
       const peer = node.peers.find((p) => p.node_id === id)
         ?? node.brain?.known_peers.find((p) => p.node_id === id);
       const host = peer?.hostname || peer?.host || "";
       return host ? `${host} · ${shortNode(id, 8)}` : shortNode(id, 12);
     };
-    const opSelect = el("select", { class: "ledger__filter-control", "aria-label": "Filter by operation" },
-      ...opOptions.map((op) => el("option", { value: op, selected: filter.operation === op }, op ? (OPERATION_LABELS[op] ?? op) : "All operations")),
-    ) as HTMLSelectElement;
-    on(opSelect, "change", () => { filter.operation = opSelect.value; void render(); });
+    const opSelect = createCustomSelect(
+      opOptions.map((op) => ({
+        value: op,
+        label: op ? (OPERATION_LABELS[op] ?? op) : "All operations",
+      })),
+      filter.operation,
+      "Filter by operation",
+      (val) => { filter.operation = val; void render(); },
+    );
 
     const collectionInput = el("input", {
       type: "text",
@@ -276,14 +448,16 @@ export function createLedger(): LedgerHandles {
       });
     });
 
-    const originSelect = el("select", { class: "ledger__filter-control", "aria-label": "Filter by origin node" },
-      ...originOptions.map((id) => {
-        const label = id ? peerLabel(id) : "All origin nodes";
-        const option = el("option", { value: id, selected: filter.originNode === id, title: id || undefined }, label);
-        return option;
-      }),
-    ) as HTMLSelectElement;
-    on(originSelect, "change", () => { filter.originNode = originSelect.value; void render(); });
+    const originSelect = createCustomSelect(
+      originOptions.map((id) => ({
+        value: id,
+        label: id ? peerLabel(id) : "All origin nodes",
+        title: id || undefined,
+      })),
+      filter.originNode,
+      "Filter by origin node",
+      (val) => { filter.originNode = val; void render(); },
+    );
 
     const toggleHidden = el("button", {
       class: "btn btn--sm btn--ghost", type: "button",
@@ -311,7 +485,7 @@ export function createLedger(): LedgerHandles {
       el("div", { class: "ledger__filter-grid" },
         el("div", { class: "ledger__filter-item" },
           el("label", { class: "ledger__filter-label", for: "ledger-filter-op", text: "Operation" }),
-          opSelect,
+          opSelect.element,
         ),
         el("div", { class: "ledger__filter-item" },
           el("label", { class: "ledger__filter-label", for: "ledger-filter-collection", text: "Collection" }),
@@ -323,7 +497,7 @@ export function createLedger(): LedgerHandles {
         ),
         el("div", { class: "ledger__filter-item" },
           el("label", { class: "ledger__filter-label", for: "ledger-filter-origin", text: "Origin" }),
-          originSelect,
+          originSelect.element,
         ),
         el("div", { class: "ledger__filter-actions" },
           toggleHidden,
