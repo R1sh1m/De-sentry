@@ -139,6 +139,7 @@ export interface CreateNodeRequest {
   removable: boolean;
   bootstrap_peers: string[];
   description: string;
+  preallocate?: boolean;
 }
 
 export interface CreateNodeResult {
@@ -237,6 +238,11 @@ export const sidecar = {
   /** Writes node.json, allocates ports, spawns the process, returns once it answers. */
   createNode(request: CreateNodeRequest): Promise<CreateNodeResult> {
     return invoke<CreateNodeResult>("create_node", { request });
+  },
+
+  /** Dynamically resizes the reservation file as user data grows. */
+  syncStorageReservation(dataDir: string, usedBytes: number, quotaMb: number): Promise<boolean> {
+    return invoke<boolean>("sync_storage_reservation", { dataDir, usedBytes, quotaMb }).catch(() => false);
   },
 
   /** Adopts an existing data directory: reads its config, allocates a free port, spawns. */

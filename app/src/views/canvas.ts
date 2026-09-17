@@ -26,6 +26,9 @@ const purposeCache = new Map<string, string | null>();
 /** Node physical folder size on disk cache (bytes), keyed by node id. */
 const diskUsageCache = new Map<string, number>();
 
+/** Node allocation mode cache (reserved vs dynamic), keyed by node id. */
+const allocationModeCache = new Map<string, "reserved" | "dynamic">();
+
 /** Best human name for a card: explicit name first, then folder, then id. */
 function displayNameOf(node: NodeView): string {
   return displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
@@ -771,6 +774,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     const engines = [...new Set(collections.map((c) => c.engine))];
     const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
     const diskBytes = diskUsageCache.get(node.process.node_id);
+    const allocMode = allocationModeCache.get(node.process.node_id);
     const uptime = node.status ? duration(node.status.uptime_seconds) : "—";
     const cached = purposeCache.get(node.process.node_id);
     const purpose = cached === undefined ? "Loading…" : (cached || "No description given");
@@ -812,13 +816,20 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         }),
         el("dt", { text: "On Disk" }),
         el("dd", {
-          title: "Physical folder size on disk (files, logs, and keys). Disk space is allocated on demand as records are written.",
+          title: "Physical folder size on disk (files, logs, and keys).",
           text: diskBytes !== undefined ? bytes(diskBytes) : "Reading…",
         }),
         el("dt", { text: "Quota Cap" }),
         el("dd", {
           title: "Configured safety ceiling: writes are refused past this limit to protect disk space.",
           text: node.quota ? `${bytes(node.quota.limit_bytes)} limit` : (node.brain ? `${node.brain.free_quota_mb} MiB budget` : "2.0 GiB limit"),
+        }),
+        el("dt", { text: "Allocation" }),
+        el("dd", {
+          title: allocMode === "reserved"
+            ? "Steam-style upfront reservation: quota space is physically allocated on disk with storage.reserved to guarantee headroom."
+            : "Dynamic allocation: disk space grows on demand as records are written up to quota cap.",
+          text: allocMode === "reserved" ? "Reserved (upfront)" : (allocMode === "dynamic" ? "Dynamic (on demand)" : "Detecting…"),
         }),
         el("dt", { text: "Purpose" }),
         el("dd", { class: cached ? "" : "muted", text: purpose }),
@@ -838,8 +849,8 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     );
     positionPopover();
 
-    // Lazy inspection: fetch manifest purpose and real directory size on disk.
-    if (cached === undefined || diskBytes === undefined) {
+    // Lazy inspection: fetch manifest purpose, real directory size on disk, and allocation mode.
+    if (cached === undefined || diskBytes === undefined || allocMode === undefined) {
       if (cached === undefined) purposeCache.set(node.process.node_id, null);
       const port = store.state.supervisorPort;
       if (port !== null) {
@@ -849,11 +860,17 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
           if (typeof candidate.used_bytes === "number") {
             diskUsageCache.set(node.process.node_id, candidate.used_bytes);
           }
+          if (typeof candidate.preallocated === "boolean") {
+            allocationModeCache.set(node.process.node_id, candidate.preallocated ? "reserved" : "dynamic");
+          } else {
+            allocationModeCache.set(node.process.node_id, "dynamic");
+          }
           if (store.state.selection.kind === "node" && store.state.selection.nodeId === node.process.node_id) {
             renderPopover();
           }
         }).catch(() => {
           purposeCache.set(node.process.node_id, null);
+          allocationModeCache.set(node.process.node_id, "dynamic");
         });
       }
     }

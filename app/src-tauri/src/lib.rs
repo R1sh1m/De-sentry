@@ -326,6 +326,7 @@ pub fn run() {
             commands::notify,
             commands::scan_for_nodes,
             commands::trigger_discovery_scan,
+            commands::sync_storage_reservation,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

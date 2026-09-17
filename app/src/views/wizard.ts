@@ -67,6 +67,7 @@ interface Draft {
   // 2 -- shape
   nodeName: string;
   quotaMb: number;
+  preallocate: boolean;
   encrypt: boolean;
   description: string;
   // 3 -- sizing
@@ -113,6 +114,7 @@ function newDraft(): Draft {
     adopt: false,
     nodeName: "",
     quotaMb: 2048,
+    preallocate: false,
     encrypt: true,
     description: "",
     spec: null,
@@ -578,10 +580,24 @@ export function createWizard(): WizardHandles {
       draft.nodeName = (nameInput as HTMLInputElement).value;
     });
 
+    const candidate = draft.candidates.find((c) => c.path === draft.dataDir);
+    const free = candidate?.free_bytes ?? 0;
+    const overCommitted = free > 0 && draft.quotaMb * 1024 * 1024 > free;
+
     const quotaInput = el("input", { type: "number", min: "64", step: "64", value: String(draft.quotaMb) });
     on(quotaInput, "input", () => {
       const value = Number((quotaInput as HTMLInputElement).value);
       draft.quotaMb = Number.isFinite(value) && value > 0 ? Math.round(value) : draft.quotaMb;
+    });
+
+    const preallocateInput = el("input", { type: "checkbox", checked: draft.preallocate && !overCommitted });
+    if (overCommitted) {
+      (preallocateInput as HTMLInputElement).disabled = true;
+      draft.preallocate = false;
+    }
+    on(preallocateInput, "change", () => {
+      draft.preallocate = (preallocateInput as HTMLInputElement).checked;
+      render();
     });
 
     const encryptInput = el("input", { type: "checkbox", checked: draft.encrypt });
@@ -625,10 +641,6 @@ export function createWizard(): WizardHandles {
       ),
     );
 
-    const candidate = draft.candidates.find((c) => c.path === draft.dataDir);
-    const free = candidate?.free_bytes ?? 0;
-    const overCommitted = free > 0 && draft.quotaMb * 1024 * 1024 > free;
-
     return el(
       "div",
       { class: "stack" },
@@ -648,6 +660,13 @@ export function createWizard(): WizardHandles {
           ? `Only ${bytes(free)} is free here — the node will refuse writes before it reaches this figure.`
           : "Default is 2048 MiB (2.0 GiB). This is a safety ceiling, not an upfront disk allocation. Space is allocated on demand as records are written.",
         quotaInput,
+      ),
+      field(
+        "Reserve disk space upfront",
+        overCommitted
+          ? `Cannot reserve upfront: volume only has ${bytes(free)} free, less than the ${bytes(draft.quotaMb * 1024 * 1024)} quota.`
+          : "Pre-allocates the full quota on disk immediately (Steam-style), guaranteeing other apps cannot take this space. The reservation file dynamically shrinks as real records are written. Leave unchecked for dynamic allocation on demand.",
+        preallocateInput,
       ),
       field(
         "Encrypt at rest",
@@ -1168,6 +1187,7 @@ export function createWizard(): WizardHandles {
       removable: draft.removable,
       bootstrap_peers: [],
       description: draft.description,
+      preallocate: draft.preallocate,
     };
 
     try {

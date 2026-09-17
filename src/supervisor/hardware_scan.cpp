@@ -102,6 +102,7 @@ JsonValue DataDirCandidate::ToJson() const {
   o.emplace_back("used_bytes", JsonValue(static_cast<int64_t>(used_bytes)));
   o.emplace_back("existing_node", JsonValue(LooksLikeExistingNode()));
   o.emplace_back("adoptable", JsonValue(LooksAdoptable()));
+  o.emplace_back("preallocated", JsonValue(preallocated));
   return JsonValue(std::move(o));
 }
 
@@ -258,7 +259,12 @@ DataDirCandidate HardwareScanner::Inspect(const std::string& path) {
       // concern, so the full string travels.
       const JsonValue* desc = manifest.value().Find("description");
       if (desc && desc->is_string()) candidate.description = desc->AsString();
+      const JsonValue* pre = manifest.value().Find("preallocate");
+      if (pre && pre->is_bool()) candidate.preallocated = pre->AsBool();
     }
+  }
+  if (!candidate.preallocated) {
+    candidate.preallocated = PathExists(JoinPath(path, "storage.reserved"));
   }
   return candidate;
 }

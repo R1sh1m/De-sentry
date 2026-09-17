@@ -335,6 +335,8 @@ export interface DataDirCandidate {
   existing_node: boolean;
   /** Empty enough to provision into without touching someone else's files. */
   adoptable: boolean;
+  /** Whether the full quota space was pre-allocated upfront on disk. */
+  preallocated?: boolean;
 }
 
 export interface MountPoint {

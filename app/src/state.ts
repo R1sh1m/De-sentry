@@ -374,6 +374,10 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
       // Per-engine quota is a separate call and only the inspector shows it,
       // so it is refreshed with the rest rather than on its own timer.
       view.quota = await api.quota().catch(() => view.quota);
+      if (view.quota && !view.process.supervisor) {
+        const quotaMb = view.brain?.free_quota_mb ?? Math.round(view.quota.limit_bytes / (1024 * 1024));
+        sidecar.syncStorageReservation(view.process.data_dir, view.quota.used_bytes, quotaMb).catch(() => {});
+      }
     }
     view.reachable = true;
     view.unreachableReason = "";

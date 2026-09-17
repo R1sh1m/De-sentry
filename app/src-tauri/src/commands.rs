@@ -287,6 +287,8 @@ pub struct CreateNodeRequest {
     pub bootstrap_peers: Vec<String>,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub preallocate: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,6 +346,18 @@ pub fn create_node(
         bootstrap_peers: request.bootstrap_peers.clone(),
         advertise_hostname: hostname(),
     };
+    // If upfront space reservation was requested, allocate storage.reserved now.
+    let reserved_path = if request.preallocate && request.quota_mb > 0 {
+        let path = data_dir.join("storage.reserved");
+        if let Err(error) = preallocate_reservation_file(&path, request.quota_mb * 1024 * 1024) {
+            state.release_ports(allocation);
+            return Err(format!("could not pre-allocate storage reservation file: {error}"));
+        }
+        Some(path)
+    } else {
+        None
+    };
+
     // Every step below can fail after earlier steps have already had effects
     // (reserved ports, a node.json on disk, a started child, a keychain
     // entry). There is exactly one rollback path for all of them --
@@ -354,7 +368,7 @@ pub fn create_node(
     let config_path = match config.write() {
         Ok(path) => path,
         Err(error) => {
-            state.release_ports(allocation);
+            rollback_create(&state, allocation, None, None, None, reserved_path.as_deref());
             return Err(format!("could not write {}: {error}", data_dir.join("node.json").display()));
         }
     };
@@ -375,7 +389,7 @@ pub fn create_node(
     let node = match state.start_node(spec) {
         Ok(node) => node,
         Err(error) => {
-            rollback_create(&state, allocation, None, None, Some(&config_path));
+            rollback_create(&state, allocation, None, None, Some(&config_path), reserved_path.as_deref());
             return Err(fail(error));
         }
     };
@@ -392,7 +406,7 @@ pub fn create_node(
             keychain_ref = keychain::reference_for(&node.node_id);
             if let Err(error) = keychain::store(&keychain_ref, key) {
                 let message = fail(error);
-                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path));
+                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path), reserved_path.as_deref());
                 return Err(message);
             }
             let mut updated = config.clone();
@@ -405,6 +419,7 @@ pub fn create_node(
                     Some(&node.node_id),
                     Some(keychain_ref.as_str()),
                     Some(&config_path),
+                    reserved_path.as_deref(),
                 );
                 return Err(message);
             }
@@ -422,6 +437,7 @@ pub fn create_node(
         "encrypted": request.encrypt_at_rest,
         "removable": request.removable,
         "quota_mb": request.quota_mb,
+        "preallocate": request.preallocate,
         "engines": request.spec.engines,
         "default_engine": request.spec.default_engine,
         "replication_factor": request.spec.replication_factor,
@@ -447,6 +463,45 @@ fn normalise_split(split: QuotaSplit) -> QuotaSplit {
     split.normalised()
 }
 
+/// Creates and resizes a reservation file to guarantee space upfront.
+fn preallocate_reservation_file(path: &Path, bytes: u64) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    file.set_len(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Dynamically adjusts the reservation file so that
+/// `reserved_file_size + used_bytes == quota_bytes`.
+#[tauri::command]
+pub fn sync_storage_reservation(data_dir: String, used_bytes: u64, quota_mb: u64) -> Reply<bool> {
+    if quota_mb == 0 {
+        return Ok(false);
+    }
+    let path = PathBuf::from(data_dir).join("storage.reserved");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let quota_bytes = quota_mb * 1024 * 1024;
+    let target = quota_bytes.saturating_sub(used_bytes);
+    if target == 0 {
+        let _ = std::fs::remove_file(&path);
+        return Ok(true);
+    }
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) {
+        let _ = file.set_len(target);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Undoes a half-finished `create_node`: stops the child (if started),
 /// releases the port reservation, forgets a keychain entry this attempt
 /// stored, and removes the node.json this attempt wrote so a later directory
@@ -462,6 +517,7 @@ fn rollback_create(
     node_id: Option<&str>,
     keychain_ref: Option<&str>,
     config_path: Option<&Path>,
+    reserved_path: Option<&Path>,
 ) {
     if let Some(id) = node_id {
         // Stops the child, releases its ports, and drops its pending key.
@@ -480,6 +536,9 @@ fn rollback_create(
         if let Err(error) = std::fs::remove_file(path) {
             log::warn!("rollback: could not remove {}: {error}", path.display());
         }
+    }
+    if let Some(path) = reserved_path {
+        let _ = std::fs::remove_file(path);
     }
 }
 

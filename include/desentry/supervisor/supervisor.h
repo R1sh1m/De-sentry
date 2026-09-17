@@ -67,6 +67,7 @@ struct DataDirCandidate {
   std::string description;        // wizard purpose, from manifest.json (may be empty)
   uint64_t free_bytes = 0;
   uint64_t used_bytes = 0;
+  bool preallocated = false;
 
   // A directory with data but no identity is not a De-Sentry node -- it is
   // someone else's folder that happens to contain a file we recognise. Being
