@@ -64,6 +64,7 @@ struct DataDirCandidate {
   bool encrypted = false;         // manifest declares at-rest encryption
   std::string node_name;          // from node.json, when present
   std::string node_id;            // from manifest.json, when present
+  std::string description;        // wizard purpose, from manifest.json (may be empty)
   uint64_t free_bytes = 0;
   uint64_t used_bytes = 0;
 

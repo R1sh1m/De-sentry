@@ -97,6 +97,7 @@ JsonValue DataDirCandidate::ToJson() const {
   o.emplace_back("encrypted", JsonValue(encrypted));
   o.emplace_back("node_name", JsonValue(node_name));
   o.emplace_back("node_id", JsonValue(node_id));
+  o.emplace_back("description", JsonValue(description));
   o.emplace_back("free_bytes", JsonValue(static_cast<int64_t>(free_bytes)));
   o.emplace_back("used_bytes", JsonValue(static_cast<int64_t>(used_bytes)));
   o.emplace_back("existing_node", JsonValue(LooksLikeExistingNode()));
@@ -251,6 +252,12 @@ DataDirCandidate HardwareScanner::Inspect(const std::string& path) {
         const JsonValue* name = manifest.value().Find("node_name");
         if (name && name->is_string()) candidate.node_name = name->AsString();
       }
+      // Wizard purpose: written at creation (commands.rs manifest). Absent on
+      // adopted/legacy nodes -- the app shows its "No description given"
+      // fallback. Bounds-checked by the JSON parser; truncation is a display
+      // concern, so the full string travels.
+      const JsonValue* desc = manifest.value().Find("description");
+      if (desc && desc->is_string()) candidate.description = desc->AsString();
     }
   }
   return candidate;

@@ -327,6 +327,8 @@ export interface DataDirCandidate {
   encrypted: boolean;
   node_name: string;
   node_id: string;
+  /** Wizard purpose from manifest.json; absent/empty on adopted legacy nodes. */
+  description?: string;
   free_bytes: number;
   used_bytes: number;
   /** Has an identity *and* config-or-data: a real node, not a lookalike folder. */
