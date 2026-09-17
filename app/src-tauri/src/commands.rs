@@ -279,6 +279,8 @@ pub struct CreateNodeRequest {
     pub quota_mb: u64,
     pub spec: NodeSpec,
     pub encrypt_at_rest: bool,
+    #[serde(default = "default_store_key_in_keychain")]
+    pub store_key_in_keychain: bool,
     #[serde(default)]
     pub supervisor: bool,
     #[serde(default)]
@@ -289,6 +291,10 @@ pub struct CreateNodeRequest {
     pub description: String,
     #[serde(default)]
     pub preallocate: bool,
+}
+
+fn default_store_key_in_keychain() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -402,7 +408,7 @@ pub fn create_node(
     // the recovery key the user is about to export.
     let mut keychain_ref = String::new();
     if let Some(key) = recovery_key.as_ref() {
-        if !request.removable {
+        if !request.removable && request.store_key_in_keychain {
             keychain_ref = keychain::reference_for(&node.node_id);
             if let Err(error) = keychain::store(&keychain_ref, key) {
                 let message = fail(error);
@@ -718,20 +724,22 @@ pub fn unlock_node(
 
     let view = state.start_node(spec).map_err(fail)?;
 
-    // Store in OS keychain for seamless future starts
-    let keychain_ref = keychain::reference_for(&view.node_id);
-    let _ = keychain::store(&keychain_ref, &password);
-
-    // Also update node.json if needed to record keychain_ref
     let config_path = PathBuf::from(&view.data_dir).join("node.json");
-    if let Ok(text) = std::fs::read_to_string(&config_path) {
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(obj) = val.as_object_mut() {
-                obj.insert("keychain_ref".into(), keychain_ref.into());
-                if let Ok(body) = serde_json::to_string_pretty(&val) {
-                    let _ = std::fs::write(&config_path, body + "\n");
-                }
-            }
+    // Preserve the node's storage choice. A node created without a keychain
+    // reference must continue requiring its recovery key after restarts.
+    let keychain_ref = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("keychain_ref")
+                .and_then(|reference| reference.as_str())
+                .filter(|reference| !reference.is_empty())
+                .map(str::to_owned)
+        });
+    if let Some(keychain_ref) = keychain_ref {
+        if let Err(error) = keychain::store(&keychain_ref, &password) {
+            log::warn!("could not refresh keychain entry {keychain_ref}: {error}");
         }
     }
 

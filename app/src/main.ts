@@ -9,7 +9,7 @@
  */
 
 import { apiFor } from "./api.js";
-import { sidecar } from "./bridge.js";
+import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
@@ -376,7 +376,10 @@ function build(): void {
 
   const header = el(
     "header",
-    { class: "header" },
+    {
+      class: `header${isTauri() && /Macintosh|Mac OS X/.test(navigator.userAgent) ? " header--macos-overlay" : ""}`,
+      "data-tauri-drag-region": true,
+    },
     title,
     el("span", { class: "header__spacer" }),
     paletteButton,

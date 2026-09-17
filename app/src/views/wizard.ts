@@ -69,6 +69,7 @@ interface Draft {
   quotaMb: number;
   preallocate: boolean;
   encrypt: boolean;
+  storeKeyInKeychain: boolean;
   description: string;
   // 3 -- sizing
   spec: NodeSpec | null;
@@ -116,6 +117,7 @@ function newDraft(): Draft {
     quotaMb: 2048,
     preallocate: false,
     encrypt: true,
+    storeKeyInKeychain: true,
     description: "",
     spec: null,
     sizing: false,
@@ -246,7 +248,7 @@ export function createWizard(): WizardHandles {
         store.toast(
           "warning",
           "Recovery key not exported",
-          "This node cannot be recovered if its keychain entry is lost.",
+          "This node cannot be recovered if its recovery key is lost.",
           0,
         );
         doClose();
@@ -283,7 +285,7 @@ export function createWizard(): WizardHandles {
       ),
       el("h3", { class: "modal-box__heading", text: "Recovery key not exported" }),
       el("p", { class: "modal-box__prompt-text", text: "The recovery key for this node has not been saved. There is no copy anywhere else — close anyway?" }),
-      el("p", { class: "modal-box__warning-note", text: "If this device's keychain is lost and you do not have the key, the data on this node cannot be read by anyone, including us." }),
+      el("p", { class: "modal-box__warning-note", text: "If the recovery key is lost, the data on this node cannot be read by anyone, including us." }),
       el(
         "div",
         { class: "modal-box__footer" },
@@ -605,6 +607,14 @@ export function createWizard(): WizardHandles {
       draft.encrypt = (encryptInput as HTMLInputElement).checked;
       render();
     });
+    const keychainInput = el("input", {
+      type: "checkbox",
+      checked: draft.storeKeyInKeychain,
+      disabled: draft.removable,
+    });
+    on(keychainInput, "change", () => {
+      draft.storeKeyInKeychain = (keychainInput as HTMLInputElement).checked;
+    });
 
     const descriptionInput = el("textarea", {
       rows: "4",
@@ -675,6 +685,13 @@ export function createWizard(): WizardHandles {
           : "The key is kept in this operating system's keychain, and never in the config file.",
         encryptInput,
       ),
+      draft.encrypt && !draft.removable
+        ? field(
+            "Store key in macOS Keychain",
+            "On: restarts unlock automatically. Off: the recovery key is required after the app or Mac restarts, and no Keychain prompt is used.",
+            keychainInput,
+          )
+        : null,
       field(
         "What is this node for?",
         "Plain language. The next step reads this to propose engines, quotas and indexes — and shows you how sure it is.",
@@ -1183,6 +1200,7 @@ export function createWizard(): WizardHandles {
       quota_mb: draft.quotaMb,
       spec,
       encrypt_at_rest: draft.encrypt,
+      store_key_in_keychain: draft.encrypt && !draft.removable && draft.storeKeyInKeychain,
       supervisor: false,
       removable: draft.removable,
       bootstrap_peers: [],
@@ -1461,7 +1479,9 @@ export function createWizard(): WizardHandles {
         if (draft.step === 2) {
           const nameInput = content.querySelector<HTMLInputElement>('input[type="text"]');
           const quotaInput = content.querySelector<HTMLInputElement>('input[type="number"]');
-          const encryptInput = content.querySelector<HTMLInputElement>('input[type="checkbox"]');
+          const checkboxInputs = content.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+          const encryptInput = checkboxInputs[0] ?? null;
+          const keychainInput = checkboxInputs[1] ?? null;
           const descriptionInput = content.querySelector<HTMLTextAreaElement>("textarea");
           if (nameInput !== null) draft.nodeName = nameInput.value.trim();
           if (quotaInput !== null) {
@@ -1469,6 +1489,7 @@ export function createWizard(): WizardHandles {
             if (Number.isFinite(value) && value > 0) draft.quotaMb = Math.round(value);
           }
           if (encryptInput !== null) draft.encrypt = encryptInput.checked;
+          if (keychainInput !== null) draft.storeKeyInKeychain = keychainInput.checked;
           if (descriptionInput !== null) draft.description = descriptionInput.value;
           if (draft.nodeName.trim() === "" || looksLikePath(draft.nodeName) || draft.quotaMb <= 0) {
             if (nameInput && (draft.nodeName.trim() === "" || looksLikePath(draft.nodeName))) {

@@ -135,6 +135,8 @@ export interface CreateNodeRequest {
   quota_mb: number;
   spec: NodeSpec;
   encrypt_at_rest: boolean;
+  /** Store the at-rest key in the OS keychain for automatic restarts. */
+  store_key_in_keychain: boolean;
   supervisor: boolean;
   removable: boolean;
   bootstrap_peers: string[];
@@ -147,7 +149,8 @@ export interface CreateNodeResult {
   /**
    * The recovery key, in plain text, exactly once. It is not stored anywhere
    * the app can read back: this response is the only time it exists outside
-   * the OS keychain. The wizard cannot advance until the user has exported it.
+   * the OS keychain when selected. The wizard cannot advance until the user
+   * has exported it.
    */
   recovery_key: string | null;
   /** Keychain entry name, so the node config can reference it. */

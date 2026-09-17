@@ -145,7 +145,6 @@ input::-ms-clear {
     "sidebar canvas";
   height: 100vh;
 }
-
 /* Below the minimum comfortable width the sidebar becomes an overlay rather
  * than squeezing the canvas into uselessness. There is no inspector column
  * any more; node details are a popover above the node. */
@@ -189,6 +188,10 @@ input::-ms-clear {
   transform: translateZ(0);
   /* Tauri's decorationless window: this strip is what the user drags. */
   -webkit-app-region: drag;
+}
+.header--macos-overlay {
+  /* Native traffic lights occupy the leading edge of the overlay titlebar. */
+  padding-left: 96px;
 }
 .header > * {
   -webkit-app-region: no-drag;
