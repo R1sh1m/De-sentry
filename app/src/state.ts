@@ -184,14 +184,33 @@ class Store {
     });
   }
 
-  toast(tone: Toast["tone"], title: string, detail = "", ms = 5000): void {
+  private toastTimers = new Map<number, number>();
+
+  toast(tone: Toast["tone"], title: string, detail = "", ms = 3500): void {
     const toast: Toast = { id: this.nextToastId++, tone, title, detail, ms };
-    this.state.toasts = [...this.state.toasts, toast];
+    const recent = this.state.toasts.slice(-2);
+    this.state.toasts = [...recent, toast];
     this.notify();
-    if (ms > 0) window.setTimeout(() => this.dismissToast(toast.id), ms);
+    if (ms > 0) {
+      const timer = window.setTimeout(() => this.dismissToast(toast.id), ms);
+      this.toastTimers.set(toast.id, timer);
+    }
+  }
+
+  freezeToast(id: number): void {
+    const timer = this.toastTimers.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.toastTimers.delete(id);
+    }
   }
 
   dismissToast(id: number): void {
+    const timer = this.toastTimers.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.toastTimers.delete(id);
+    }
     this.state.toasts = this.state.toasts.filter((t) => t.id !== id);
     this.notify();
   }

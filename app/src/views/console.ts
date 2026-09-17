@@ -7,7 +7,7 @@
 
 import { apiFor, ApiError } from "../api.js";
 import { store, type NodeView } from "../state.js";
-import { engineLabel, json, shortNode } from "../util/format.js";
+import { displayNodeName, engineLabel, json } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
 
@@ -84,7 +84,7 @@ export function createConsole(): ConsoleHandles {
     }) as HTMLSelectElement;
 
     for (const d of store.dataNodes()) {
-      const opt = el("option", { value: d.process.node_id, text: `${d.process.node_name || shortNode(d.process.node_id)} (port ${d.process.api_port})` }) as HTMLOptionElement;
+      const opt = el("option", { value: d.process.node_id, text: `${displayNodeName(d.process.node_name, d.process.data_dir, d.process.node_id)} (port ${d.process.api_port})` }) as HTMLOptionElement;
       if (d.process.node_id === node.process.node_id) opt.selected = true;
       nodeSelector.appendChild(opt);
     }

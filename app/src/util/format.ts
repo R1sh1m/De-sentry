@@ -87,6 +87,7 @@ export function timestamp(epochMs: number | undefined | null): string {
 export function shortHash(hex: string | undefined | null, head = 8, tail = 6): string {
   if (!hex) return "—";
   if (hex.length <= head + tail + 1) return hex;
+  if (tail <= 0) return `${hex.slice(0, head)}…`;
   return `${hex.slice(0, head)}…${hex.slice(-tail)}`;
 }
 
@@ -137,6 +138,41 @@ export function documentPreview(doc: unknown, maxFields = 4): string {
 
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** Last segment of a filesystem path, either separator flavour. */
+export function baseName(path: string | undefined | null): string {
+  if (!path) return "";
+  const normalized = path.replace(/[/\\]+$/, "");
+  const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return cut < 0 ? normalized : normalized.slice(cut + 1) || normalized;
+}
+
+/** True when a node name is really a filesystem path (e.g. pasted data_dir). */
+export function looksLikePath(text: string | undefined | null): boolean {
+  if (!text) return false;
+  return /[\\/]/.test(text) || /^[A-Za-z]:/.test(text) || text.startsWith("\\\\");
+}
+
+/**
+ * A node's human name for cards, rows and titles. Never renders a raw path:
+ * path-looking names (and empty ones) fall back to the data directory's
+ * folder, then to the short id. The full string stays available for
+ * `title` tooltips and the popover's Location row.
+ */
+export function displayNodeName(
+  nodeName: string | undefined | null,
+  dataDir: string | undefined | null,
+  nodeId: string | undefined | null,
+): string {
+  const raw = (nodeName || "").trim();
+  if (raw !== "") {
+    if (!looksLikePath(raw)) return raw;
+    const base = baseName(raw);
+    if (base) return base;
+    return raw;
+  }
+  return baseName(dataDir) || shortNode(nodeId, 8);
 }
 
 /** Title-cases an engine or state identifier for display: `ts_rollup` -> `Ts Rollup`. */

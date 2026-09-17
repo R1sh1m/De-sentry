@@ -15,7 +15,7 @@ import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
-import { createMeshGlobe, type GlobeHandle, type GlobeNodePoint } from "./util/meshGlobe.js";
+import { createMeshGlobe, type GlobeHandle, type GlobeLink, type GlobeNodePoint } from "./util/meshGlobe.js";
 import { canvasZoomFit, canvasZoomStep, createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
 import { createHealthAlerts } from "./views/healthAlerts.js";
@@ -50,10 +50,19 @@ function openShortcutsCheatsheet(): void {
   const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
   const body = el("div", { class: "macos-modal about-macos" });
   const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "Keyboard Shortcuts" }, body);
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
   const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
     if (sheet.open) sheet.close();
     sheet.remove();
   };
+  window.addEventListener("keydown", onKey);
 
   const shortcuts: [string, string][] = [
     ["N", "New node"],
@@ -127,12 +136,20 @@ function openPairingSheet(): void {
 
   const body = el("div", { class: "wizard" });
   const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
-  const dismiss = () => sheet.remove();
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
+  const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
+    sheet.remove();
+  };
+  window.addEventListener("keydown", onKey);
   on(sheet, "click", (event) => {
     if (event.target === sheet) dismiss();
-  });
-  on(sheet, "keydown", (event) => {
-    if (event.key === "Escape") dismiss();
   });
   document.body.appendChild(sheet);
   sheet.focus();
@@ -154,8 +171,6 @@ function openPairingSheet(): void {
   void apiFor(port)
     .pairing()
     .then((pairing) => {
-      const close = el("button", { class: "btn btn--ghost", type: "button", text: "Close" });
-      on(close, "click", dismiss);
       const payload = JSON.stringify(pairing);
 
       replace(
@@ -183,7 +198,7 @@ function openPairingSheet(): void {
           }),
         ),
       );
-      replace(body, titleBar, content, el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close));
+      replace(body, titleBar, content);
     })
     .catch((error) => {
       replace(
@@ -206,10 +221,19 @@ function openAboutSheet(): void {
   const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
   const body = el("div", { class: "macos-modal about-macos" });
   const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "About De-Sentry" }, body);
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
   const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
     if (sheet.open) sheet.close();
     sheet.remove();
   };
+  window.addEventListener("keydown", onKey);
 
   const content = el(
     "div",
@@ -249,9 +273,6 @@ function openAboutSheet(): void {
   replace(body, content);
 
   on(done, "click", dismiss);
-  on(sheet, "click", (event) => {
-    if (event.target === sheet) dismiss();
-  });
   on(sheet, "keydown", (event) => {
     if (event.key === "Escape") dismiss();
   });
@@ -286,6 +307,7 @@ function build(): void {
   const sidebar = createSidebar(() => wizard.open(), onAddAsPeer);
   const canvas = createCanvas(() => wizard.open());
   const explorer = createExplorer();
+  const explorerMain = el("main", { class: "canvas" }, explorer.element);
   const ledger = createLedger();
   const consoleView = createConsole();
   const dropbox = createDropbox();
@@ -394,25 +416,54 @@ function build(): void {
 
   // Toasts ------------------------------------------------------------------
   const toastHost = document.getElementById("toasts");
+  const expandedToasts = new Set<number>();
 
   function renderToasts(): void {
     if (toastHost === null) return;
     replace(
       toastHost,
       ...store.state.toasts.map((toast) => {
-        const close = el("button", { class: "btn btn--sm btn--ghost", type: "button", "aria-label": "Dismiss" }, icon(Icons.close, 12));
-        on(close, "click", () => store.dismissToast(toast.id));
-        return el(
+        const isExpanded = expandedToasts.has(toast.id);
+        const dot = el("span", { class: "toast__dot", "aria-hidden": "true" });
+        const titleEl = el("span", { class: "toast__title", text: toast.title });
+        const contentChildren = [titleEl];
+        if (toast.detail) {
+          contentChildren.push(el("span", { class: "toast__detail", text: toast.detail }));
+        }
+        const content = el("div", { class: "toast__content" }, ...contentChildren);
+        const close = el(
+          "button",
+          { class: "toast__close", type: "button", "aria-label": "Dismiss", title: "Dismiss" },
+          icon(Icons.close, 10),
+        );
+        on(close, "click", (e) => {
+          e.stopPropagation();
+          expandedToasts.delete(toast.id);
+          store.dismissToast(toast.id);
+        });
+        const toastEl = el(
           "div",
-          { class: "toast", "data-tone": toast.tone, role: "status" },
-          el(
-            "div",
-            {},
-            el("strong", { text: toast.title }),
-            toast.detail ? el("p", { class: "muted", text: toast.detail }) : null,
-          ),
+          {
+            class: isExpanded ? "toast toast--expanded" : "toast",
+            "data-tone": toast.tone,
+            "data-expanded": String(isExpanded),
+            role: "status",
+            title: isExpanded ? "Click to collapse" : (toast.detail ? "Click to expand" : undefined),
+          },
+          dot,
+          content,
           close,
         );
+        on(toastEl, "click", () => {
+          if (expandedToasts.has(toast.id)) {
+            expandedToasts.delete(toast.id);
+          } else {
+            expandedToasts.add(toast.id);
+            store.freezeToast(toast.id);
+          }
+          renderToasts();
+        });
+        return toastEl;
       }),
     );
   }
@@ -444,7 +495,26 @@ function build(): void {
       id: n.process.node_id,
       status: convergenceOf(n, tip),
     }));
-    activeGlobe?.setData(globePoints, []);
+    // Authentic backdrop: same peer edges the mesh view draws, so the
+    // background constellation forms/breaks with the actual hierarchy.
+    const knownIds = new Set(nodes.map((n) => n.process.node_id));
+    const seenLinks = new Set<string>();
+    const globeLinks: GlobeLink[] = [];
+    for (const n of nodes) {
+      for (const peer of n.peers) {
+        if (!knownIds.has(peer.node_id)) continue;
+        const key = [n.process.node_id, peer.node_id].sort().join("|");
+        if (seenLinks.has(key)) continue;
+        seenLinks.add(key);
+        globeLinks.push({
+          a: n.process.node_id,
+          b: peer.node_id,
+          live: peer.state === "running" && Date.now() - peer.last_seen_ms < 30_000,
+          fitness: peer.fitness?.score ?? 0.5,
+        });
+      }
+    }
+    activeGlobe?.setData(globePoints, globeLinks);
     activeGlobe?.setOnBattery(info?.on_battery ?? false);
 
     const subtitle = [
@@ -464,21 +534,27 @@ function build(): void {
     // The explorer replaces the canvas when a collection is open; the ledger
     // viewer replaces it when a ledger is open; console replaces it for engine
     // interaction; dropbox replaces it for smart data intake.
+    const mountInCentre = (viewEl: HTMLElement) => {
+      if (centre.firstElementChild !== viewEl || centre.childElementCount !== 1) {
+        replace(centre, viewEl);
+      }
+    };
+
     if (state.selection.kind === "collection") {
       explorer.render();
-      replace(centre, el("main", { class: "canvas" }, explorer.element));
+      mountInCentre(explorerMain);
     } else if (state.selection.kind === "ledger") {
       ledger.render();
-      replace(centre, ledger.element);
+      mountInCentre(ledger.element);
     } else if (state.selection.kind === "console") {
       consoleView.render();
-      replace(centre, consoleView.element);
+      mountInCentre(consoleView.element);
     } else if (state.selection.kind === "dropbox") {
       dropbox.render();
-      replace(centre, dropbox.element);
+      mountInCentre(dropbox.element);
     } else {
       canvas.render();
-      replace(centre, canvas.element);
+      mountInCentre(canvas.element);
     }
 
     renderToasts();
@@ -498,6 +574,10 @@ function build(): void {
     const target = event.target as HTMLElement | null;
     const typing = target !== null && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
     if (typing) return;
+
+    if (event.key === "Escape") {
+      if (wizard.isOpen()) return;
+    }
 
     if (event.key === "?" && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -519,8 +599,13 @@ function build(): void {
     } else if (event.key === "2") {
       store.setCanvasMode("mesh");
     } else if (event.key === "3") {
-      const node = store.selectedNode();
-      if (node) store.select({ kind: "ledger", nodeId: node.process.node_id });
+      const node = store.selectedNode() ?? store.dataNodes()[0];
+      if (node) {
+        store.select({ kind: "ledger", nodeId: node.process.node_id });
+      } else {
+        store.select({ kind: "ledger" });
+        store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
+      }
     } else if (event.key === "4") {
       const node = store.selectedNode() ?? store.dataNodes()[0];
       if (node) store.select({ kind: "console", nodeId: node.process.node_id });

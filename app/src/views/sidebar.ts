@@ -10,7 +10,7 @@
 
 import type { MountPoint, TopologyPeer } from "../api.js";
 import { convergenceOf, meshTip, refreshDiscovered, refreshNodeList, store, type Convergence, type NodeView } from "../state.js";
-import { bytes, engineLabel, shortNode } from "../util/format.js";
+import { bytes, displayNodeName, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
@@ -381,7 +381,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
   const selection = store.state.selection;
   const isNodeSelected = selection.kind === "node" && selection.nodeId === node.process.node_id;
   const status = convergenceOf(node, tip);
-  const name = node.process.node_name || shortNode(node.process.node_id);
+  const name = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
   const collections = node.brain?.collections ?? [];
   const isExpanded = expandedNodes.has(node.process.node_id) || (filterQuery !== "" && collections.length > 0);
 
@@ -834,13 +834,167 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
   const pinnedNav = el("nav", { class: "sidebar__pinned-nav", "aria-label": "Primary views" });
 
+  const resizer = el("div", {
+    class: "sidebar__resizer",
+    title: "Drag to resize sidebar · Double-click to reset",
+    role: "separator",
+    "aria-orientation": "vertical",
+  });
+
   const element = el(
     "aside",
     { class: "sidebar", "data-open": "false", "data-collapsed": "false" },
     pinnedNav,
     searchBox,
     tree,
+    resizer,
   );
+
+  // Load saved sidebar width
+  try {
+    const savedWidth = localStorage.getItem("desentry.sidebar.width");
+    if (savedWidth) {
+      const w = parseInt(savedWidth, 10);
+      if (!isNaN(w) && w >= 220 && w <= 550) {
+        document.documentElement.style.setProperty("--sidebar-width", `${w}px`);
+      }
+    }
+  } catch {
+    // private window
+  }
+
+  const SIDEBAR_MIN_W = 220;
+  const SIDEBAR_MAX_W = 550;
+  const SIDEBAR_DEFAULT_W = 280;
+  const clampSidebarWidth = (w: number): number => Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, Math.round(w)));
+  const applySidebarWidth = (w: number): void => {
+    document.documentElement.style.setProperty("--sidebar-width", `${clampSidebarWidth(w)}px`);
+  };
+  const persistSidebarWidth = (w: number): void => {
+    try {
+      localStorage.setItem("desentry.sidebar.width", String(clampSidebarWidth(w)));
+    } catch {
+      // private window or quota exceeded
+    }
+  };
+
+  let isResizing = false;
+  let dragStartWidth = SIDEBAR_DEFAULT_W;
+  const currentSidebarWidth = (): number => {
+    try {
+      const raw = getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width").trim();
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed)) return clampSidebarWidth(parsed);
+    } catch {
+      // fall through to default
+    }
+    return SIDEBAR_DEFAULT_W;
+  };
+  const endResize = (persist: boolean, finalWidth?: number): void => {
+    if (!isResizing) return;
+    isResizing = false;
+    if (persist && finalWidth !== undefined) persistSidebarWidth(finalWidth);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    try {
+      if (resizer.hasPointerCapture?.(0)) {
+        // no-op: capture released per-pointer below
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  // Pointer Events + capture: mouseup outside the window, touch release, and
+  // pointercancel all settle the drag instead of leaving isResizing stuck on
+  // (the "sidebar follows the mouse forever / frozen sliver" bug).
+  resizer.setAttribute("tabindex", "0");
+  on(resizer, "pointerdown", (e: PointerEvent) => {
+    e.preventDefault();
+    isResizing = true;
+    dragStartWidth = currentSidebarWidth();
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    try {
+      resizer.setPointerCapture(e.pointerId);
+    } catch {
+      // Older webviews without capture fall back to window listeners below.
+      const onMoveFallback = (moveEvent: MouseEvent) => {
+        if (!isResizing) return;
+        applySidebarWidth(moveEvent.clientX);
+      };
+      const onUpFallback = () => {
+        const w = currentSidebarWidth();
+        endResize(true, w);
+        window.removeEventListener("mousemove", onMoveFallback);
+        window.removeEventListener("mouseup", onUpFallback);
+      };
+      window.addEventListener("mousemove", onMoveFallback);
+      window.addEventListener("mouseup", onUpFallback);
+    }
+  });
+  on(resizer, "pointermove", (e: PointerEvent) => {
+    if (!isResizing) return;
+    // clientX is viewport-relative and the sidebar starts at x=0 in the
+    // default grid; clamp so a fast fling left can never park a sliver.
+    applySidebarWidth(e.clientX);
+  });
+  const finishPointerResize = (e: PointerEvent, persist: boolean): void => {
+    if (!isResizing) return;
+    const w = clampSidebarWidth(e.clientX);
+    // Re-apply from the event so the persisted value matches what is shown.
+    if (persist) applySidebarWidth(w);
+    else applySidebarWidth(dragStartWidth);
+    try {
+      if (resizer.hasPointerCapture(e.pointerId)) resizer.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    endResize(persist, persist ? w : undefined);
+    if (!persist) persistSidebarWidth(dragStartWidth);
+  };
+  on(resizer, "pointerup", (e: PointerEvent) => finishPointerResize(e, true));
+  on(resizer, "pointercancel", (e: PointerEvent) => finishPointerResize(e, false));
+  // Release outside the window (dragged off-screen) still settles the drag.
+  on(resizer, "lostpointercapture", () => {
+    if (isResizing) endResize(true, currentSidebarWidth());
+  });
+  window.addEventListener("blur", () => {
+    if (isResizing) endResize(true, currentSidebarWidth());
+  });
+  on(resizer, "keydown", (e: KeyboardEvent) => {
+    if (e.key === "Escape" && isResizing) {
+      e.preventDefault();
+      applySidebarWidth(dragStartWidth);
+      endResize(false);
+      return;
+    }
+    const step = e.shiftKey ? 24 : 8;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const delta = e.key === "ArrowRight" ? step : -step;
+      const next = clampSidebarWidth(currentSidebarWidth() + delta);
+      applySidebarWidth(next);
+      persistSidebarWidth(next);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      applySidebarWidth(SIDEBAR_MIN_W);
+      persistSidebarWidth(SIDEBAR_MIN_W);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      applySidebarWidth(SIDEBAR_MAX_W);
+      persistSidebarWidth(SIDEBAR_MAX_W);
+    }
+  });
+
+  on(resizer, "dblclick", () => {
+    document.documentElement.style.setProperty("--sidebar-width", "280px");
+    try {
+      localStorage.removeItem("desentry.sidebar.width");
+    } catch {
+      // ignore
+    }
+  });
 
   // Sidebar collapse button (H2) — caller inserts into header toolbar
   const collapseBtn = el(
@@ -896,8 +1050,19 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
         break;
       }
       case "ledger": {
+        const isCurrent = store.state.selection.kind === "ledger";
         const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-        if (node) store.select({ kind: "ledger", nodeId: node });
+        if (node) {
+          store.select({ kind: "ledger", nodeId: node });
+          if (isCurrent) {
+            const nodeObj = store.state.nodes.get(node);
+            const nodeName = nodeObj?.status?.node_name || node.slice(0, 8);
+            store.toast("info", "Ledger Feed", `Feed synced for ${nodeName}`, 2500);
+          }
+        } else {
+          store.select({ kind: "ledger" });
+          store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
+        }
         break;
       }
     }
@@ -1022,7 +1187,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
       const filteredNodes = group.nodes.filter((node) => {
         if (!filterQuery) return true;
         const q = filterQuery.toLowerCase();
-        const name = (node.process.node_name || node.process.node_id).toLowerCase();
+        const name = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id).toLowerCase();
         const hasMatchingCol = (node.brain?.collections ?? []).some((c) =>
           c.name.toLowerCase().includes(q),
         );

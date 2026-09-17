@@ -94,16 +94,34 @@ function highlightedLabel(label: string, indices: number[] | null): HTMLElement 
 
 export function openPalette(opts: { onNewNode: () => void; onPair: () => void }): void {
   const dialog = el("dialog", { class: "modal-dialog palette-dialog", "aria-label": "Command palette" });
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      dismiss();
+    }
+  };
   const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
     if (dialog.open) dialog.close();
     dialog.remove();
   };
+  window.addEventListener("keydown", onKey);
+  on(dialog, "cancel", (e) => {
+    e.preventDefault();
+    dismiss();
+  });
 
   // View jumps mirror the sidebar pinned-nav logic (kept local so the
   // palette depends only on the store, not on sidebar internals).
   const ledgerTarget = (): void => {
     const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-    if (node) store.select({ kind: "ledger", nodeId: node });
+    if (node) {
+      store.select({ kind: "ledger", nodeId: node });
+    } else {
+      store.select({ kind: "ledger" });
+      store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
+    }
   };
   const consoleTarget = (): void => {
     const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;

@@ -9,7 +9,7 @@
 
 import { apiFor, ApiError } from "../api.js";
 import { refreshCollection, refreshNode, store, type NodeView } from "../state.js";
-import { bytes, engineLabel, json, shortNode, truncate } from "../util/format.js";
+import { bytes, displayNodeName, engineLabel, json, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 
 function describeError(error: unknown): string {
@@ -206,13 +206,28 @@ export function createDropbox(): DropboxHandles {
     const titleCluster = el(
       "div",
       { style: "margin-bottom: 20px;" },
-      el("h2", { class: "title", text: "Universal Mesh Dropbox" }),
+      el("h2", { class: "title", text: "Universal Dropbox" }),
       el("p", {
         class: "muted",
         style: "max-width: 680px; margin-top: 4px; line-height: 1.5;",
         text: "Drop any files, JSON records, vector embeddings, time-series metrics, or text notes here. The Dropbox classifies the workload, chooses the optimal storage engine, and synchronizes the records into the mesh.",
       }),
     );
+
+    const fileInput = el("input", { type: "file", multiple: true, style: "display: none;" }) as HTMLInputElement;
+    on(fileInput, "change", () => {
+      if (fileInput.files && fileInput.files.length > 0) {
+        for (const file of Array.from(fileInput.files)) readFile(file);
+        // Reset so picking the same files again still fires a change.
+        fileInput.value = "";
+      }
+    });
+
+    const browseBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Browse Files…");
+    on(browseBtn, "click", (e) => {
+      e.stopPropagation();
+      fileInput.click();
+    });
 
     // Drop zone element
     const dropZone = el(
@@ -224,25 +239,20 @@ export function createDropbox(): DropboxHandles {
       el("div", { class: "drop-zone__icon-wrap" }, icon(Icons.inbox, 30)),
       el("h3", { style: "margin: 12px 0 4px; font-size: var(--text-base);", text: "Drag & drop data files here" }),
       el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "Supports JSON, CSV, Vectors, Logs, or Plain Text" }),
-      (() => {
-        const fileInput = el("input", { type: "file", multiple: true, style: "display: none;" }) as HTMLInputElement;
-        on(fileInput, "change", () => {
-          if (fileInput.files && fileInput.files.length > 0) {
-            for (const file of Array.from(fileInput.files)) readFile(file);
-            // Reset so picking the same files again still fires a change.
-            fileInput.value = "";
-          }
-        });
-
-        const browseBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Browse Files…");
-        on(browseBtn, "click", (e) => {
-          e.stopPropagation();
-          fileInput.click();
-        });
-        return el("div", { class: "row", style: "justify-content: center;" }, browseBtn, fileInput);
-      })(),
+      el("div", { class: "row", style: "justify-content: center;" }, browseBtn, fileInput),
     );
 
+    on(dropZone, "click", () => {
+      fileInput.click();
+    });
+    on(dropZone, "mouseenter", () => {
+      dropZone.style.borderColor = "var(--color-primary)";
+      dropZone.style.background = "var(--color-surface)";
+    });
+    on(dropZone, "mouseleave", () => {
+      dropZone.style.borderColor = "var(--color-hairline)";
+      dropZone.style.background = "var(--color-surface-pearl)";
+    });
     on(dropZone, "dragover", (e) => {
       e.preventDefault();
       dropZone.style.borderColor = "var(--color-primary)";
@@ -314,7 +324,7 @@ export function createDropbox(): DropboxHandles {
         ?? null;
       const opt = el("option", {
         value: n.process.node_id,
-        text: `${n.process.node_name || shortNode(n.process.node_id)}${freeMiB !== null ? ` (${freeMiB} MiB free)` : ""}`,
+        text: `${displayNodeName(n.process.node_name, n.process.data_dir, n.process.node_id)}${freeMiB !== null ? ` (${freeMiB} MiB free)` : ""}`,
       }) as HTMLOptionElement;
       if (n.process.node_id === item.targetNodeId) opt.selected = true;
       nodeSelect.appendChild(opt);

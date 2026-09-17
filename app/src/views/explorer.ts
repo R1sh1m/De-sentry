@@ -47,16 +47,27 @@ function showModalPrompt(title: string, message: string, defaultValue = ""): Pro
       ),
     );
 
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
     const close = (val: string | null) => {
+      window.removeEventListener("keydown", onKey);
       scrim.remove();
       resolve(val);
     };
 
+    on(scrim, "click", (e) => {
+      if (e.target === scrim) close(null);
+    });
     on(cancelBtn, "click", () => close(null));
     on(okBtn, "click", () => close(input.value.trim() || null));
     on(input, "keydown", (e) => {
       if (e.key === "Enter") close(input.value.trim() || null);
-      else if (e.key === "Escape") close(null);
     });
 
     document.body.appendChild(scrim);
@@ -85,16 +96,25 @@ function showModalConfirm(title: string, message: string, confirmLabel = "Delete
       ),
     );
 
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
     const close = (val: boolean) => {
+      window.removeEventListener("keydown", onKey);
       scrim.remove();
       resolve(val);
     };
 
+    on(scrim, "click", (e) => {
+      if (e.target === scrim) close(false);
+    });
     on(cancelBtn, "click", () => close(false));
     on(okBtn, "click", () => close(true));
-    on(scrim, "keydown", (e) => {
-      if (e.key === "Escape") close(false);
-    });
 
     document.body.appendChild(scrim);
     okBtn.focus();

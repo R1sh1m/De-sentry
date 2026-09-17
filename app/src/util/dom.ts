@@ -131,4 +131,7 @@ export const Icons = {
   /** Window chrome (custom titlebar when decorations are off) */
   minus: "M3.5 8h9",
   square: "M3.5 3.5h9v9h-9z",
+  /** Password visibility toggle */
+  eye: "M1.5 8s2.5-4.5 6.5-4.5 6.5 4.5 6.5 4.5-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  eyeOff: "M2 2l12 12M6.6 6.7a2 2 0 0 0 2.7 2.7M3.5 5.5C2.4 6.4 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.4 0 2.7-.4 3.7-1.1M6.2 3.6C6.8 3.5 7.4 3.5 8 3.5c4 0 6.5 4.5 6.5 4.5s-.8 1.5-2.1 2.7",
 };

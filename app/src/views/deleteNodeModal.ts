@@ -23,10 +23,19 @@ export function openDeleteNodeModal(opts: DeleteNodeOptions): void {
 
   const sheet = el("dialog", { class: "modal-dialog sheet-dialog", "aria-label": "Delete Node Confirmation" });
 
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !busy) {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
   const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
     if (sheet.open) sheet.close();
     sheet.remove();
   };
+  window.addEventListener("keydown", onKey);
 
   const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
   on(closeButton, "click", dismiss);
