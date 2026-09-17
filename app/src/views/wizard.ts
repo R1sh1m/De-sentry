@@ -25,7 +25,7 @@ import {
   type SupervisedNode,
 } from "../bridge.js";
 import { refreshNodeList, refreshTopology, store } from "../state.js";
-import { bytes, engineLabel, percent } from "../util/format.js";
+import { bytes, engineLabel, looksLikePath, percent } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { qrSvg } from "../util/qr.js";
 import { promptDeleteCandidateNode } from "../util/nodeDeleteHelper.js";
@@ -89,6 +89,18 @@ interface Draft {
   verifyProgress: number;
   createError: string;
 }
+
+const DEFAULT_COLLECTIONS: Record<string, { name: string; schema?: Record<string, unknown> }> = {
+  kv: { name: "documents" },
+  columnar_lite: { name: "events" },
+  ts_rollup: { name: "readings" },
+  vector_hnsw_lite: { name: "embeddings" },
+  graph_adj: { name: "nodes" },
+  sqlite: { name: "records" },
+  duckdb: { name: "analytics" },
+  lmdb: { name: "fast_kv" },
+  sqlite_vec: { name: "vectors" },
+};
 
 function newDraft(): Draft {
   return {
@@ -316,6 +328,60 @@ export function createWizard(): WizardHandles {
     }
   }
 
+  function syncCollectionsWithEngines(): void {
+    if (!draft.spec) {
+      draft.spec = {
+        engines: [...draft.manualEngines],
+        default_engine: [...draft.manualEngines][0] ?? "kv",
+        quota_split: { db_pct: 60, transit_store_pct: 15, cache_hash_pct: 10, ledger_pct: 10, net_buffers_pct: 5 },
+        shard_key: "",
+        replication_factor: 3,
+        secondary_indexes: [],
+        retention_days: 0,
+        collections: [],
+        decision: {
+          workload: "unspecified",
+          confidence: 0,
+          method: "keyword",
+          scores: [],
+          fallback_reason: "configured manually",
+          confidence_floor: CONFIDENCE_FLOOR,
+          description: draft.description,
+          decided_at_ms: Date.now(),
+        },
+      };
+    }
+    const currentCollections = draft.spec.collections ?? [];
+    const updatedCollections: typeof currentCollections = [];
+    const existingByEngine = new Map<string, (typeof currentCollections)[0]>();
+    for (const c of currentCollections) {
+      if (!existingByEngine.has(c.engine)) {
+        existingByEngine.set(c.engine, c);
+      }
+    }
+
+    for (const eng of draft.manualEngines) {
+      if (existingByEngine.has(eng)) {
+        updatedCollections.push(existingByEngine.get(eng)!);
+      } else {
+        const def = DEFAULT_COLLECTIONS[eng] ?? { name: `${eng}_data` };
+        updatedCollections.push({
+          name: def.name,
+          engine: eng,
+          shard_key: "",
+          retention_days: 0,
+          schema: def.schema,
+        });
+      }
+    }
+
+    draft.spec.collections = updatedCollections;
+    draft.spec.engines = [...draft.manualEngines];
+    if (!draft.spec.engines.includes(draft.spec.default_engine)) {
+      draft.spec.default_engine = draft.spec.engines[0] ?? "kv";
+    }
+  }
+
   function chooseCandidate(candidate: DataDirCandidate): void {
     draft.dataDir = candidate.path;
     draft.removable = candidate.removable;
@@ -323,9 +389,7 @@ export function createWizard(): WizardHandles {
     if (draft.nodeName === "") {
       draft.nodeName = candidate.node_name || candidate.path.split(/[\\/]/).filter(Boolean).pop() || "node";
     }
-    // An existing node has its own quota and engines already; adopting it is a
-    // different act from creating one, and the wizard says so rather than
-    // silently overwriting node.json.
+    store.toast("success", "Storage folder selected", candidate.path, 3000);
     render();
   }
 
@@ -340,15 +404,40 @@ export function createWizard(): WizardHandles {
       const port = store.state.supervisorPort;
       if (port !== null) {
         try {
-          chooseCandidate(await apiFor(port).inspect(picked));
+          const inspected = await apiFor(port).inspect(picked);
+          if (!draft.candidates.some((c) => c.path === inspected.path)) {
+            draft.candidates.unshift(inspected);
+          }
+          chooseCandidate(inspected);
           return;
         } catch {
           // Inspection is a convenience; a folder the supervisor cannot stat is
           // still a folder the user may legitimately have chosen.
         }
       }
+      if (!draft.candidates.some((c) => c.path === picked)) {
+        draft.candidates.unshift({
+          path: picked,
+          has_node_config: false,
+          has_identity: false,
+          has_data_file: false,
+          has_manifest: false,
+          adoptable: true,
+          existing_node: false,
+          removable: false,
+          encrypted: false,
+          node_name: picked.split(/[\\/]/).filter(Boolean).pop() || "node",
+          node_id: "",
+          free_bytes: 0,
+          used_bytes: 0,
+        });
+      }
       draft.dataDir = picked;
       draft.adopt = false;
+      if (draft.nodeName === "") {
+        draft.nodeName = picked.split(/[\\/]/).filter(Boolean).pop() || "node";
+      }
+      store.toast("success", "Storage folder selected", picked, 3000);
       render();
     });
 
@@ -420,6 +509,52 @@ export function createWizard(): WizardHandles {
       }
     }
 
+    const selectedCard = draft.dataDir
+      ? el(
+          "div",
+          {
+            class: "card card--selected-location",
+            style:
+              "border: 1px solid var(--color-status-converged); background: rgba(34, 197, 94, 0.08); padding: var(--space-md); margin-top: var(--space-md); margin-bottom: var(--space-sm);",
+          },
+          el(
+            "div",
+            { class: "row row--between", style: "align-items: center;" },
+            el(
+              "div",
+              { class: "row", style: "gap: 12px; align-items: center;" },
+              el(
+                "span",
+                {
+                  style:
+                    "display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: rgba(34, 197, 94, 0.2); color: var(--color-status-converged); flex-shrink: 0;",
+                },
+                icon(draft.removable ? Icons.drive : Icons.folder, 18),
+              ),
+              el(
+                "div",
+                {},
+                el(
+                  "div",
+                  {
+                    style:
+                      "font: var(--text-fine); color: var(--color-status-converged); font-weight: 700; text-transform: uppercase; letter-spacing: var(--tracking-label); margin-bottom: 2px;",
+                  },
+                  "✓ Selected Storage Location",
+                ),
+                el("strong", { class: "mono", style: "word-break: break-all; font-size: 13px;", text: draft.dataDir }),
+              ),
+            ),
+            el(
+              "div",
+              { class: "row", style: "gap: 8px;" },
+              el("span", { class: "badge", "data-tone": "converged", text: draft.adopt ? "adopting node" : "selected" }),
+              draft.removable ? el("span", { class: "badge", text: "removable" }) : null,
+            ),
+          ),
+        )
+      : null;
+
     return el(
       "div",
       { class: "stack" },
@@ -430,6 +565,7 @@ export function createWizard(): WizardHandles {
         text: "A node is a folder. On this machine it survives reboots; on a removable drive it travels, and its replicas hold any writes it misses while it is unplugged.",
       }),
       el("div", { class: "row row--between" }, browse, rescan),
+      selectedCard,
       section("Found on this device", list),
     );
   }
@@ -499,12 +635,18 @@ export function createWizard(): WizardHandles {
       el("p", { class: "wizard__eyebrow", text: "Step 2 of 5" }),
       el("h2", { class: "wizard__title", text: "How big, and how private?" }),
       el("p", { class: "wizard__lead", text: draft.dataDir }),
-      field("Name", "Shown in the sidebar and in logs. Not the node's identity.", nameInput),
       field(
-        "Budget (MiB)",
+        "Name",
+        looksLikePath((nameInput as HTMLInputElement).value)
+          ? "That looks like a folder path — use a short name like studio-archive. The folder path is shown separately."
+          : "Shown in the sidebar and in logs. Not the node's identity.",
+        nameInput,
+      ),
+      field(
+        "Storage Quota Cap (MiB)",
         overCommitted
           ? `Only ${bytes(free)} is free here — the node will refuse writes before it reaches this figure.`
-          : "The node refuses writes past this, rather than filling the disk.",
+          : "Default is 2048 MiB (2.0 GiB). This is a safety ceiling, not an upfront disk allocation. Space is allocated on demand as records are written.",
         quotaInput,
       ),
       field(
@@ -542,6 +684,7 @@ export function createWizard(): WizardHandles {
         }),
       ]);
       draft.manualEngines = new Set(draft.spec.engines);
+      syncCollectionsWithEngines();
       draft.engines = store.state.engines;
     } catch (error) {
       draft.sizingError = describeError(error);
@@ -586,15 +729,16 @@ export function createWizard(): WizardHandles {
 
     const spec = draft.spec;
     if (spec === null) {
-      const start = el("button", { class: "btn btn--primary", type: "button", text: "Propose a shape" });
+      const start = el("button", { class: "btn btn--primary", type: "button", text: "Propose a shape with AI" });
       on(start, "click", () => void runSizing());
       return el(
         "div",
         { class: "stack" },
         el("p", { class: "wizard__eyebrow", text: "Step 3 of 5" }),
         el("h2", { class: "wizard__title", text: "What shape should this node be?" }),
-        el("p", { class: "wizard__lead", text: draft.description || "No description given — the proposal will be generic." }),
-        start,
+        el("p", { class: "wizard__lead", text: draft.description || "No description given — you can propose with AI or configure manually below." }),
+        el("div", { class: "row", style: "margin-bottom: var(--space-xs);" }, start),
+        section("Configure storage engines", enginePicker()),
       );
     }
 
@@ -820,14 +964,23 @@ export function createWizard(): WizardHandles {
     );
 
     // Collections
-    if (spec.collections.length > 0) {
+    syncCollectionsWithEngines();
+    const collectionsToRender = (spec.collections && spec.collections.length > 0)
+      ? spec.collections
+      : [...draft.manualEngines].map((eng) => ({
+          name: DEFAULT_COLLECTIONS[eng]?.name ?? `${eng}_data`,
+          engine: eng,
+          schema: undefined,
+        }));
+
+    if (collectionsToRender.length > 0) {
       container.appendChild(
         section(
           "Collections it will create",
           el(
             "div",
-            { class: "row" },
-            ...spec.collections.map((c) =>
+            { class: "row", style: "flex-wrap: wrap; gap: 8px;" },
+            ...collectionsToRender.map((c) =>
               el("span", {
                 class: "chip",
                 title: c.schema ? "With a schema" : "No schema",
@@ -844,16 +997,14 @@ export function createWizard(): WizardHandles {
 
   function enginePicker(): HTMLElement {
     const available = draft.engines.length > 0 ? draft.engines : store.state.engines;
-    const row = el("div", { class: "row" });
+    const container = el("div", { class: "stack", style: "gap: 8px;" });
+    const row = el("div", { class: "row", style: "flex-wrap: wrap; gap: 8px;" });
 
     for (const engine of available) {
-      // An engine the binary does not contain is shown greyed with the CMake
-      // option that would add it, rather than hidden: "why is DuckDB missing"
-      // is a question the UI should answer, not raise.
       const enabled = engine.compiled_in;
       const chosen = draft.manualEngines.has(engine.name);
       const chip = el("button", {
-        class: "chip",
+        class: enabled ? (chosen ? "chip chip--selected" : "chip") : "chip chip--optin",
         type: "button",
         "aria-pressed": String(chosen),
         disabled: !enabled,
@@ -862,21 +1013,67 @@ export function createWizard(): WizardHandles {
             ? "Built in — always available"
             : "Vendored backend, compiled into this build"
           : `Not in this build. Rebuild with ${engine.enable_with ?? "the matching CMake option"}.`,
-        text: engineLabel(engine.name),
-        style: chosen ? "outline: 2px solid var(--color-primary); outline-offset: -2px" : "",
+        text: (chosen ? "✓ " : "") + (enabled ? engineLabel(engine.name) : `${engineLabel(engine.name)} (opt-in)`),
+        style: chosen
+          ? "border: 1px solid var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, transparent); font-weight: 600;"
+          : "",
       });
       on(chip, "click", () => {
+        if (!enabled) {
+          store.toast(
+            "info",
+            `${engineLabel(engine.name)} is an optional backend`,
+            `To enable ${engineLabel(engine.name)}, place its source in third_party/ and rebuild with ${engine.enable_with ?? "CMake"}.`,
+            6000,
+          );
+          return;
+        }
         if (draft.manualEngines.has(engine.name)) {
-          // Never leave a node with no engine at all.
           if (draft.manualEngines.size > 1) draft.manualEngines.delete(engine.name);
         } else {
           draft.manualEngines.add(engine.name);
         }
+        syncCollectionsWithEngines();
         render();
       });
       row.appendChild(chip);
     }
-    return row;
+    container.appendChild(row);
+
+    syncCollectionsWithEngines();
+    const cols = (draft.spec?.collections && draft.spec.collections.length > 0)
+      ? draft.spec.collections
+      : [...draft.manualEngines].map((eng) => ({
+          name: DEFAULT_COLLECTIONS[eng]?.name ?? `${eng}_data`,
+          engine: eng,
+        }));
+
+    if (cols.length > 0) {
+      container.appendChild(
+        el("div", { class: "stack", style: "gap: 4px; margin-top: 4px;" },
+          el("span", { class: "muted", style: "font-size: 11px;", text: "Initial collections created automatically:" }),
+          el(
+            "div",
+            { class: "row", style: "flex-wrap: wrap; gap: 6px;" },
+            ...cols.map((c) =>
+              el("span", {
+                class: "chip",
+                text: `${c.name} (${engineLabel(c.engine)})`,
+              }),
+            ),
+          ),
+        ),
+      );
+    }
+
+    container.appendChild(
+      el("p", {
+        class: "muted",
+        style: "font: var(--text-fine); margin-top: 4px;",
+        text: "Built-in engines (Key-Value, Columnar, Time series, Vector, Graph) run zero-dependency.",
+      }),
+    );
+    return container;
   }
 
   // -- step 4: confirm -------------------------------------------------------
@@ -925,6 +1122,7 @@ export function createWizard(): WizardHandles {
     draft.createError = "";
     render();
 
+    syncCollectionsWithEngines();
     const spec: NodeSpec = draft.spec ?? {
       engines: [...draft.manualEngines],
       default_engine: [...draft.manualEngines][0] ?? "kv",
@@ -949,6 +1147,15 @@ export function createWizard(): WizardHandles {
     // wins, and the audit record in the manifest keeps both.
     spec.engines = [...draft.manualEngines].length > 0 ? [...draft.manualEngines] : spec.engines;
     if (!spec.engines.includes(spec.default_engine)) spec.default_engine = spec.engines[0] ?? "kv";
+    if (spec.collections.length === 0) {
+      spec.collections = spec.engines.map((eng) => ({
+        name: DEFAULT_COLLECTIONS[eng]?.name ?? `${eng}_data`,
+        engine: eng,
+        shard_key: "",
+        retention_days: 0,
+        schema: DEFAULT_COLLECTIONS[eng]?.schema,
+      }));
+    }
 
     const request: CreateNodeRequest = {
       node_name: draft.nodeName,
@@ -1031,7 +1238,7 @@ export function createWizard(): WizardHandles {
     }
 
     const chips = order.map((groupIdx) => {
-      const done = order.indexOf(groupIdx) < progress;
+      const done = groupIdx < progress;
       const chip = el("button", {
         class: "btn btn--sm constellation__chip",
         type: "button",
@@ -1040,7 +1247,7 @@ export function createWizard(): WizardHandles {
         text: game[groupIdx],
       });
       on(chip, "click", () => {
-        if (groupIdx === order[draft.verifyProgress]) {
+        if (groupIdx === draft.verifyProgress) {
           draft.verifyProgress += 1;
           if (draft.verifyProgress >= game.length) {
             draft.recoveryVerified = true;
@@ -1236,16 +1443,27 @@ export function createWizard(): WizardHandles {
           const quotaInput = content.querySelector<HTMLInputElement>('input[type="number"]');
           const encryptInput = content.querySelector<HTMLInputElement>('input[type="checkbox"]');
           const descriptionInput = content.querySelector<HTMLTextAreaElement>("textarea");
-          if (nameInput !== null) draft.nodeName = nameInput.value;
+          if (nameInput !== null) draft.nodeName = nameInput.value.trim();
           if (quotaInput !== null) {
             const value = Number(quotaInput.value);
             if (Number.isFinite(value) && value > 0) draft.quotaMb = Math.round(value);
           }
           if (encryptInput !== null) draft.encrypt = encryptInput.checked;
           if (descriptionInput !== null) draft.description = descriptionInput.value;
-          if (draft.nodeName.trim() === "" || draft.quotaMb <= 0) {
+          if (draft.nodeName.trim() === "" || looksLikePath(draft.nodeName) || draft.quotaMb <= 0) {
+            if (nameInput && (draft.nodeName.trim() === "" || looksLikePath(draft.nodeName))) {
+              nameInput.setCustomValidity(
+                draft.nodeName.trim() === ""
+                  ? "Give the node a name."
+                  : "Use a short name (no / \\ or :); the folder path is shown separately.",
+              );
+            } else {
+              nameInput?.setCustomValidity("");
+            }
             nameInput?.reportValidity();
+            nameInput?.setCustomValidity("");
             quotaInput?.reportValidity();
+            render();
             return;
           }
           draft.spec = null;
