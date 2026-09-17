@@ -70,9 +70,22 @@ function readPalette(): Palette {
   };
 }
 
+interface Anchor {
+  id: string;
+  status: GlobeStatus;
+  /** Base position (centered constellation, layout space = CSS px). */
+  bx: number;
+  by: number;
+  x: number;
+  y: number;
+  phase: number;
+}
+
 export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   const ctx = canvas.getContext("2d");
   let nodes: GlobeNodePoint[] = [];
+  let links: GlobeLink[] = [];
+  let anchors: Anchor[] = [];
   let onBattery = false;
   let destroyed = false;
   let raf = 0;
@@ -122,6 +135,33 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     }
   };
 
+  /** Centered constellation for real nodes: ring around viewport center. */
+  const layoutAnchors = (w: number, h: number): void => {
+    const cx = w / 2;
+    const cy = h / 2;
+    const n = nodes.length;
+    const radius = n <= 1 ? 0 : Math.max(60, Math.min(220, Math.min(w, h) * 0.16));
+    anchors = nodes.map((node, i) => {
+      const prev = anchors.find((a) => a.id === node.id);
+      let bx = cx;
+      let by = cy;
+      if (n > 1) {
+        const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+        bx = cx + Math.cos(angle) * radius;
+        by = cy + Math.sin(angle) * radius * 0.72;
+      }
+      return {
+        id: node.id,
+        status: node.status,
+        bx,
+        by,
+        x: prev?.x ?? bx,
+        y: prev?.y ?? by,
+        phase: prev?.phase ?? Math.random() * Math.PI * 2,
+      };
+    });
+  };
+
   const resize = (): void => {
     if (destroyed) return;
     const w = Math.max(1, window.innerWidth);
@@ -133,6 +173,7 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     if (particles.length === 0) {
       initParticles(w, h);
     }
+    layoutAnchors(w, h);
   };
 
   const ro: ResizeObserver | null =
@@ -170,15 +211,6 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   };
   document.addEventListener("visibilitychange", onVisibility);
 
-  // Sync actual mesh nodes into particles
-  const syncMeshNodes = () => {
-    for (let i = 0; i < nodes.length && i < particles.length; i++) {
-      particles[i].anchorId = nodes[i].id;
-      particles[i].status = nodes[i].status;
-      particles[i].radius = 3.2;
-    }
-  };
-
   const draw = (timeS: number): void => {
     if (ctx === null) return;
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);
@@ -190,7 +222,17 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     ctx.clearRect(0, 0, w, h);
 
     palette = readPalette();
-    syncMeshNodes();
+    const reduceMotion = reduceQuery?.matches === true;
+
+    // Real nodes ease toward their constellation slots; a gentle breathing
+    // offset keeps them alive without ever drifting away from center.
+    for (const a of anchors) {
+      const breathe = reduceMotion ? 0 : 1;
+      const tx = a.bx + Math.sin(timeS * 0.5 + a.phase) * 5 * breathe;
+      const ty = a.by + Math.cos(timeS * 0.4 + a.phase) * 5 * breathe;
+      a.x += (tx - a.x) * (reduceMotion ? 1 : 0.06);
+      a.y += (ty - a.y) * (reduceMotion ? 1 : 0.06);
+    }
 
     const speedScale = onBattery ? 0.5 : 1.0;
 
@@ -239,24 +281,72 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
       }
     }
 
-    // Draw particles
+    // Draw particles (ambient dust stays decorative and dim)
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
       const pulse = 0.8 + 0.2 * Math.sin(timeS * 1.8 + p.phase);
       const r = p.radius * p.z * pulse;
-      const color = p.status ? palette.status[p.status] : palette.pointColor;
 
       // Glow halo
-      ctx.globalAlpha = 0.22 * p.z;
-      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.16 * p.z;
+      ctx.fillStyle = palette.pointColor;
       ctx.beginPath();
       ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
       ctx.fill();
 
       // Sharp Core
-      ctx.globalAlpha = 0.85 * p.z;
+      ctx.globalAlpha = 0.6 * p.z;
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Real mesh links: the actual hierarchy. Lone nodes (no links) render as
+    // independent dots; linked ones form the mesh with their fellows.
+    const byId = new Map(anchors.map((a) => [a.id, a]));
+    ctx.lineWidth = 1.2;
+    for (const link of links) {
+      const a = byId.get(link.a);
+      const b = byId.get(link.b);
+      if (!a || !b) continue;
+      const fitness = Math.max(0.25, Math.min(1, link.fitness || 0.5));
+      ctx.globalAlpha = link.live ? 0.28 + fitness * 0.5 : 0.22;
+      ctx.strokeStyle = palette.lineColor;
+      try {
+        ctx.setLineDash(link.live ? [] : [5, 5]);
+      } catch {
+        // Older canvas implementations: solid fallback is fine.
+      }
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    try {
+      ctx.setLineDash([]);
+    } catch {
+      // ignore
+    }
+
+    // Real nodes: larger, status-colored, centered behind the cards.
+    for (const a of anchors) {
+      const color = palette.status[a.status] ?? palette.pointColor;
+      const pulse = reduceMotion ? 1 : 0.85 + 0.15 * Math.sin(timeS * 1.8 + a.phase);
+      const r = 4.4 * pulse;
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      // Crisp light core so green/converged reads at a glance.
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r * 0.38, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -287,8 +377,25 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   return {
     setData(nextNodes: GlobeNodePoint[], nextLinks: GlobeLink[]): void {
+      const idsChanged = nextNodes.length !== nodes.length
+        || nextNodes.some((n, i) => n.id !== nodes[i]?.id || n.status !== nodes[i]?.status);
       nodes = nextNodes;
-      void nextLinks;
+      links = nextLinks.filter((l) =>
+        nextNodes.some((n) => n.id === l.a) && nextNodes.some((n) => n.id === l.b),
+      );
+      for (const a of anchors) {
+        const fresh = nextNodes.find((n) => n.id === a.id);
+        if (fresh) a.status = fresh.status;
+      }
+      if (idsChanged) {
+        try {
+          const w = Math.max(1, window.innerWidth);
+          const h = Math.max(1, window.innerHeight);
+          layoutAnchors(w, h);
+        } catch {
+          // Layout happens on next resize/frame; never break render.
+        }
+      }
       if (reduceQuery?.matches === true) drawStatic();
     },
     setOnBattery(value: boolean): void {
