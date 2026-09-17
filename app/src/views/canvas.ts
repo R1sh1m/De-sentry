@@ -290,12 +290,15 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         window.setTimeout(positionPopover, 20);
         return;
       }
-      const halfPopover = 150;
+      // Scale proportionally with zoom level (matches zoomScale down to ZOOM_MIN 0.35x, up to 1.25x max)
+      const popScale = Math.max(0.35, Math.min(1.25, zoomScale));
+      popover.style.setProperty("--popover-scale", String(popScale));
+      const halfPopover = 118 * popScale;
       const left = nodeRect.left - hostRect.left + nodeRect.width / 2;
       const top = nodeRect.top - hostRect.top;
-      const clampedX = Math.max(halfPopover + 12, Math.min(hostRect.width - halfPopover - 12, left));
+      const clampedX = Math.max(halfPopover + 8, Math.min(hostRect.width - halfPopover - 8, left));
 
-      const flipToBottom = top < 220 && hostRect.height - (top + nodeRect.height) > 220;
+      const flipToBottom = top < (180 * popScale) && hostRect.height - (top + nodeRect.height) > (180 * popScale);
       if (flipToBottom) {
         popover.setAttribute("data-placement", "bottom");
         popover.style.top = `${Math.round(top + nodeRect.height)}px`;
@@ -838,17 +841,21 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         el("dt", { text: "Quota Cap" }),
         el("dd", {
           title: "Configured safety ceiling: writes are refused past this limit to protect disk space.",
-          text: node.quota ? `${bytes(node.quota.limit_bytes)} limit` : (node.brain ? `${node.brain.free_quota_mb} MiB budget` : "2.0 GiB limit"),
+          text: node.quota ? bytes(node.quota.limit_bytes) : (node.brain ? `${node.brain.free_quota_mb} MiB` : "2.0 GiB"),
         }),
         el("dt", { text: "Allocation" }),
         el("dd", {
           title: allocMode === "reserved"
             ? "Steam-style upfront reservation: quota space is physically allocated on disk with storage.reserved to guarantee headroom."
             : "Dynamic allocation: disk space grows on demand as records are written up to quota cap.",
-          text: allocMode === "reserved" ? "Reserved (upfront)" : (allocMode === "dynamic" ? "Dynamic (on demand)" : "Detecting…"),
+          text: allocMode === "reserved" ? "Reserved" : (allocMode === "dynamic" ? "Dynamic" : "Detecting…"),
         }),
         el("dt", { text: "Purpose" }),
-        el("dd", { class: cached ? "" : "muted", text: purpose }),
+        el("dd", {
+          class: ((cached ? "" : "muted ") + "mesh__popover-purpose").trim(),
+          title: purpose,
+          text: purpose,
+        }),
         el("dt", { text: "Ledger" }),
         el("dd", { class: "mono", text: `#${(node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 1)} · ${shortHash(node.tip?.entry_hash ?? node.brain?.ledger_tip.entry_hash, 6, 0)}` }),
         el("dt", { text: "Uptime" }),

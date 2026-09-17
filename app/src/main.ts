@@ -374,18 +374,119 @@ function build(): void {
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
 
-  const header = el(
-    "header",
-    {
-      class: `header${isTauri() && /Macintosh|Mac OS X/.test(navigator.userAgent) ? " header--macos-overlay" : ""}`,
-      "data-tauri-drag-region": true,
-    },
+  // Windows custom window controls (integrated in header on Windows/non-macOS desktop)
+  const isWindowsDesktop = isTauri() && !/Macintosh|Mac OS X/.test(navigator.userAgent);
+  let winControls: HTMLElement | null = null;
+  if (isWindowsDesktop) {
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const appWindow = getCurrentWindow();
+      appWindow.setDecorations(false).catch(() => {});
+    }).catch(() => {});
+
+    const minBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--min",
+        type: "button",
+        title: "Minimize",
+        "aria-label": "Minimize",
+        tabIndex: -1,
+      },
+      icon(Icons.minus, 10),
+    );
+    on(minBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().minimize().catch(() => {});
+      }).catch(() => {});
+    });
+
+    const maxBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--max",
+        type: "button",
+        title: "Maximize",
+        "aria-label": "Maximize",
+        tabIndex: -1,
+      },
+      icon(Icons.square, 10),
+    );
+    const updateMaxIcon = () => {
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().isMaximized().then((maximized) => {
+          replace(maxBtn, icon(maximized ? Icons.restoreWindow : Icons.square, 10));
+          maxBtn.title = maximized ? "Restore" : "Maximize";
+          maxBtn.setAttribute("aria-label", maxBtn.title);
+        }).catch(() => {});
+      }).catch(() => {});
+    };
+    on(maxBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().toggleMaximize().then(updateMaxIcon).catch(() => {});
+      }).catch(() => {});
+    });
+
+    const closeBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--close",
+        type: "button",
+        title: "Close",
+        "aria-label": "Close",
+        tabIndex: -1,
+      },
+      icon(Icons.close, 10),
+    );
+    on(closeBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().close().catch(() => {});
+      }).catch(() => {});
+    });
+
+    winControls = el(
+      "div",
+      { class: "header__win-controls", "aria-label": "Window controls" },
+      minBtn,
+      maxBtn,
+      closeBtn,
+    );
+
+    window.addEventListener("resize", updateMaxIcon);
+  }
+
+  const headerChildren: HTMLElement[] = [
     title,
     el("span", { class: "header__spacer" }),
     paletteButton,
     pairButton,
     newButton,
+  ];
+  if (winControls !== null) {
+    headerChildren.push(winControls);
+  }
+
+  const header = el(
+    "header",
+    {
+      class: `header${isTauri() && /Macintosh|Mac OS X/.test(navigator.userAgent) ? " header--macos-overlay" : ""}${isWindowsDesktop ? " header--windows" : ""}`,
+      "data-tauri-drag-region": true,
+    },
+    ...headerChildren,
   );
+
+  if (isWindowsDesktop) {
+    on(header, "dblclick", (e) => {
+      const target = e.target as HTMLElement | null;
+      if (target === header || target?.classList.contains("header__spacer")) {
+        import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+          getCurrentWindow().toggleMaximize().catch(() => {});
+        }).catch(() => {});
+      }
+    });
+  }
 
   const centre = el("div", { class: "centre" });
   root.removeAttribute("data-loading");

@@ -193,6 +193,46 @@ input::-ms-clear {
   /* Native traffic lights occupy the leading edge of the overlay titlebar. */
   padding-left: 96px;
 }
+.header--windows {
+  padding-right: 0;
+}
+.header__win-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  height: 100%;
+  margin-left: var(--space-xs);
+  -webkit-app-region: no-drag;
+}
+.header__win-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-muted-64);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--motion-instant), color var(--motion-instant);
+  -webkit-app-region: no-drag;
+}
+.header__win-btn:hover {
+  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  color: var(--color-ink);
+}
+.header__win-btn:active {
+  background: color-mix(in srgb, var(--color-ink) 14%, transparent);
+}
+.header__win-btn--close:hover {
+  background: #c42b1c !important;
+  color: #ffffff !important;
+}
+.header__win-btn--close:active {
+  background: #b12517 !important;
+  color: #ffffff !important;
+}
 .header > * {
   -webkit-app-region: no-drag;
 }
@@ -1478,28 +1518,31 @@ svg.mesh {
 .mesh__popover {
   position: absolute;
   z-index: 20;
-  width: min(300px, calc(100% - 32px));
-  transform: translate(-50%, calc(-100% - 14px));
+  width: min(235px, calc(100% - 24px));
+  transform: translate(-50%, calc(-100% - 8px)) scale(var(--popover-scale, 1));
+  transform-origin: bottom center;
   background: var(--color-surface-popover);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--elev-popover);
   backdrop-filter: var(--chrome-blur-thin);
   -webkit-backdrop-filter: var(--chrome-blur-thin);
-  padding: var(--space-sm) var(--space-sm) var(--space-xs);
+  padding: 8px 10px 6px;
   pointer-events: auto;
+  transition: transform var(--motion-instant);
 }
 .mesh__popover[data-placement="bottom"] {
-  transform: translate(-50%, 14px);
+  transform: translate(-50%, 8px) scale(var(--popover-scale, 1));
+  transform-origin: top center;
 }
 .mesh__popover[hidden] {
-  display: none;
+  display: none !important;
 }
 .mesh__popover-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 .mesh__popover-title {
   flex: 1;
@@ -1507,14 +1550,15 @@ svg.mesh {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--text-body-strong);
+  font: var(--text-caption-strong);
+  font-size: 12px;
 }
 .mesh__popover-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border: 0;
   border-radius: 50%;
   background: transparent;
@@ -1528,21 +1572,53 @@ svg.mesh {
 }
 .mesh__popover-kv {
   margin: 0;
+  grid-template-columns: minmax(62px, auto) 1fr;
+  gap: 2px 8px;
+}
+.mesh__popover-kv dt {
+  font-size: 11px;
+  line-height: 1.35;
+}
+.mesh__popover-kv dd {
+  font-size: 11px;
+  line-height: 1.35;
 }
 .mesh__popover-path {
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px !important;
+}
+.mesh__popover-purpose {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
 }
 .mesh__popover-cols {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 4px;
+  margin-top: 6px;
+}
+.mesh__popover-cols .chip {
+  font-size: 10px;
+  padding: 1px 4px;
 }
 .mesh__popover-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-divider-soft);
+}
+.mesh__popover-actions .btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  height: 22px;
 }
 .mesh__tooltip {
   position: absolute;

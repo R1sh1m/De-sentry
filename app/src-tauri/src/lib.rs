@@ -362,6 +362,11 @@ pub fn run() {
             start_tray_updater(handle.clone(), Arc::clone(&state));
             tray::build(&handle, Arc::clone(&state))?;
 
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(false);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {

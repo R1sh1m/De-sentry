@@ -130,8 +130,9 @@ export const Icons = {
   /** Pairing: QR code — scan to link another device. Replaces the generic shield. */
   qr: "M2 2h4.5v4.5H2zM9.5 2h4.5v4.5H9.5zM2 9.5h4.5v4.5H2zM4.25 4.25h.01M11.75 4.25h.01M4.25 11.75h.01M9.5 9.5h2M14 9.5v2.5M9.5 12.5v1.5M12 14h2M11.75 11.75h.01",
   /** Window chrome (custom titlebar when decorations are off) */
-  minus: "M3.5 8h9",
-  square: "M3.5 3.5h9v9h-9z",
+  minus: "M3 8h10",
+  square: "M3 3h10v10H3z",
+  restoreWindow: "M3 5.5h7.5v7.5H3zm2.5-2.5V3h7.5v7.5h-2",
   /** Password visibility toggle */
   eye: "M1.5 8s2.5-4.5 6.5-4.5 6.5 4.5 6.5 4.5-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
   eyeOff: "M2 2l12 12M6.6 6.7a2 2 0 0 0 2.7 2.7M3.5 5.5C2.4 6.4 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.4 0 2.7-.4 3.7-1.1M6.2 3.6C6.8 3.5 7.4 3.5 8 3.5c4 0 6.5 4.5 6.5 4.5s-.8 1.5-2.1 2.7",
