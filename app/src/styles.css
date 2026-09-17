@@ -447,43 +447,6 @@ input::-ms-clear {
   min-height: 0;
 }
 
-/* Custom window controls for the borderless shell (decorations: false). */
-.win-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: var(--space-xs);
-}
-.win-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 28px;
-  border: 0;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--color-ink-muted-80);
-  cursor: pointer;
-  transition: all var(--motion-instant);
-}
-.win-btn:hover {
-  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
-  color: var(--color-ink);
-}
-.win-btn:active {
-  transform: scale(0.93);
-  filter: brightness(0.85);
-}
-.win-btn--close:hover {
-  background: #e81123;
-  color: #fff;
-}
-.win-btn--close:active {
-  background: #c40f1d;
-  filter: brightness(0.9);
-}
-
 /* View toggle revealed under the View nav button in the sidebar */
 .sidebar__view-toggle {
   display: flex;

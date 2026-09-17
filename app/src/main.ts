@@ -9,7 +9,7 @@
  */
 
 import { apiFor } from "./api.js";
-import { isTauri, sidecar } from "./bridge.js";
+import { sidecar } from "./bridge.js";
 import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
@@ -374,30 +374,6 @@ function build(): void {
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
 
-  // Custom window chrome. The native titlebar (with its own De-Sentry icon +
-  // title) is disabled in tauri.conf.json, so this header is the only brand
-  // row. Controls render only inside the desktop shell; browsers get no dead
-  // buttons.
-  const winControls = el("div", { class: "win-controls", hidden: true });
-  if (isTauri()) {
-    winControls.hidden = false;
-    const minBtn = el("button", { class: "win-btn", type: "button", title: "Minimize", "aria-label": "Minimize" }, icon(Icons.minus, 12));
-    const maxBtn = el("button", { class: "win-btn", type: "button", title: "Maximize / Restore", "aria-label": "Maximize or restore" }, icon(Icons.square, 11));
-    const closeBtn = el("button", { class: "win-btn win-btn--close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 12));
-    const withWindow = async (fn: (w: { minimize: () => Promise<void>; toggleMaximize: () => Promise<void>; close: () => Promise<void> }) => Promise<void>) => {
-      try {
-        const mod = await import("@tauri-apps/api/window");
-        await fn(mod.getCurrentWindow());
-      } catch {
-        // Browser dev session or old shell: controls stay visible but inert.
-      }
-    };
-    on(minBtn, "click", () => void withWindow((w) => w.minimize()));
-    on(maxBtn, "click", () => void withWindow((w) => w.toggleMaximize()));
-    on(closeBtn, "click", () => void withWindow((w) => w.close()));
-    replace(winControls, minBtn, maxBtn, closeBtn);
-  }
-
   const header = el(
     "header",
     { class: "header" },
@@ -406,7 +382,6 @@ function build(): void {
     paletteButton,
     pairButton,
     newButton,
-    winControls,
   );
 
   const centre = el("div", { class: "centre" });
