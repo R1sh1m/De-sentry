@@ -592,22 +592,90 @@ pub fn unlock_node(
     state: State<'_, std::sync::Arc<AppState>>,
     node_id: String,
     password: String,
+    data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
     // Parsed before anything is restarted, so a mistyped key produces "that is
     // not a valid recovery key" rather than a node that fails to start.
     recovery::decode(&password).map_err(fail)?;
 
-    let mut handle_spec = {
+    let existing_spec = {
         let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
-        nodes
-            .get(&node_id)
-            .map(|handle| handle.spec.clone())
-            .ok_or_else(|| format!("there is no node with id {node_id}"))?
+        nodes.get(&node_id).map(|handle| handle.spec.clone())
     };
-    handle_spec.unlock_secret = Some(password);
 
-    state.forget_node(&node_id).map_err(fail)?;
-    let view = state.start_node(handle_spec).map_err(fail)?;
+    let spec = if let Some(mut handle_spec) = existing_spec {
+        handle_spec.unlock_secret = Some(password.clone());
+        let _ = state.forget_node(&node_id);
+        handle_spec
+    } else {
+        // Node is not currently supervised. Find its data directory.
+        let target_dir = if let Some(dir_str) = data_dir.filter(|s| !s.is_empty()) {
+            PathBuf::from(dir_str)
+        } else {
+            let candidates = appstate::scan_for_candidates(&state);
+            candidates
+                .into_iter()
+                .find(|c| c.node_id == node_id)
+                .map(|c| PathBuf::from(c.path))
+                .ok_or_else(|| format!("there is no node with id {node_id}"))?
+        };
+
+        let config_path = target_dir.join("node.json");
+        if !config_path.exists() {
+            return Err(format!("{} has no node.json to adopt or unlock", target_dir.display()));
+        }
+
+        let node_name = configgen::read_node_name(&target_dir).unwrap_or_else(|| {
+            target_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "node".to_owned())
+        });
+
+        let allocation = state.allocate_ports().map_err(fail)?;
+        let existing: serde_json::Value = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if let Err(error) = rewrite_ports(&config_path, &allocation) {
+            state.release_ports(allocation);
+            return Err(error);
+        }
+
+        LaunchSpec {
+            node_name,
+            data_dir: target_dir.clone(),
+            config_path,
+            api_port: allocation.api_port,
+            p2p_port: allocation.p2p_port,
+            discovery_port: allocation.discovery_port,
+            supervisor: existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false),
+            removable: false,
+            encrypted: true,
+            unlock_secret: Some(password.clone()),
+        }
+    };
+
+    let view = state.start_node(spec).map_err(fail)?;
+
+    // Store in OS keychain for seamless future starts
+    let keychain_ref = keychain::reference_for(&view.node_id);
+    let _ = keychain::store(&keychain_ref, &password);
+
+    // Also update node.json if needed to record keychain_ref
+    let config_path = PathBuf::from(&view.data_dir).join("node.json");
+    if let Ok(text) = std::fs::read_to_string(&config_path) {
+        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("keychain_ref".into(), keychain_ref.into());
+                if let Ok(body) = serde_json::to_string_pretty(&val) {
+                    let _ = std::fs::write(&config_path, body + "\n");
+                }
+            }
+        }
+    }
+
     appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
     Ok(view)
 }

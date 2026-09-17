@@ -183,6 +183,8 @@ export interface DiscoveredCandidate {
   path: string;
   node_id: string;
   node_name: string;
+  /** Wizard purpose when the Rust scan surfaces one; optional for compat. */
+  description?: string;
   existing_node: boolean;
   adoptable: boolean;
   removable: boolean;
@@ -306,9 +308,9 @@ export const sidecar = {
     return invoke<void>("export_recovery_key", { nodeId, path });
   },
 
-  /** Unlocks an encrypted node with a password (USB nodes have no keychain entry). */
-  unlockNode(nodeId: string, password: string): Promise<SupervisedNode> {
-    return invoke<SupervisedNode>("unlock_node", { nodeId, password });
+  /** Unlocks an encrypted node with a password or recovery key. */
+  unlockNode(nodeId: string, password: string, dataDir?: string): Promise<SupervisedNode> {
+    return invoke<SupervisedNode>("unlock_node", { nodeId, password, dataDir });
   },
 
   /** Locks an encrypted node: stops process and clears in-memory keys. */
