@@ -35,9 +35,11 @@
   --color-divider-soft: rgba(255, 255, 255, 0.06);
 
   /* -- frosted chrome (Liquid Glass per Apple HIG) ----------------------- */
-  --chrome-fill: rgba(28, 28, 30, 0.58);
-  --chrome-fill-sidebar: rgba(22, 22, 24, 0.56);
-  --chrome-blur: saturate(180%) blur(24px);
+  --chrome-fill: rgba(20, 20, 22, 0.72);
+  --chrome-fill-sidebar: rgba(22, 22, 24, 0.70);
+  --chrome-blur: saturate(200%) blur(40px);
+  --chrome-blur-thick: saturate(200%) blur(40px);
+  --chrome-blur-thin: saturate(180%) blur(12px);
   /* Glass edge-light: the 1px top highlight that sells the frosted plane. */
   --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 
@@ -117,6 +119,8 @@
   --motion-instant: 90ms cubic-bezier(0.4, 0, 0.2, 1);
   --motion-quick: 160ms cubic-bezier(0.4, 0, 0.2, 1);
   --motion-settle: 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-bounce: 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  --radius-float: 20px;
 
   /* -- layout ------------------------------------------------------------- */
   --chrome-header-height: 52px;
@@ -134,6 +138,9 @@
   --backdrop-node: rgba(102, 194, 255, 0.9);
   --backdrop-rim: rgba(41, 151, 255, 0.20);
   --backdrop-glow: rgba(41, 151, 255, 0.12);
+  --backdrop-packets: rgba(102, 194, 255, 0.85);
+  --backdrop-shock: rgba(41, 151, 255, 0.35);
+  --backdrop-storm: rgba(255, 69, 58, 0.10);
 
   /* -- json syntax -------------------------------------------------------- */
   --syntax-key: #4aa8ff;

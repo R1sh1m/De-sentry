@@ -58,8 +58,8 @@ function readPalette(): Palette {
   // Dark-only UI: a single ramp, no prefers-color-scheme branch.
   return {
     pointColor: cssVar("--color-primary", "#2997ff"),
-    lineColor: "rgba(64, 169, 255, 0.16)",
-    glowColor: "rgba(41, 151, 255, 0.08)",
+    lineColor: "rgba(64, 169, 255, 0.26)",
+    glowColor: "rgba(41, 151, 255, 0.12)",
     status: {
       converged: cssVar("--color-status-converged", "#30d158"),
       lagging: cssVar("--color-status-lagging", "#ffd60a"),
@@ -99,23 +99,24 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   let palette = readPalette();
 
-  const CONNECT_DIST = 96;
+  const CONNECT_DIST = 172;
   const CONNECT_DIST_SQ = CONNECT_DIST * CONNECT_DIST;
 
   let particles: Particle[] = [];
 
   const initParticles = (w: number, h: number) => {
     particles = [];
-    // Clean, sparse constellation: ~25-50 subtle dots instead of cluttered dense knots
-    const count = Math.max(25, Math.min(50, Math.floor((w * h) / 24000)));
+    // Dense enough to read fullscreen: ~250 dots at 1360x880, clamped so
+    // small windows and 4K desktops both stay smooth.
+    const count = Math.max(150, Math.min(300, Math.floor((w * h) / 4800)));
     for (let i = 0; i < count; i++) {
       particles.push({
         x: Math.random() * w,
         y: Math.random() * h,
         z: 0.3 + Math.random() * 0.7,
-        vx: (Math.random() - 0.5) * 0.22,
-        vy: (Math.random() - 0.5) * 0.22,
-        radius: 1.2 + Math.random() * 1.6,
+        vx: (Math.random() - 0.5) * 0.46,
+        vy: (Math.random() - 0.5) * 0.46,
+        radius: 1.7 + Math.random() * 2.4,
         phase: Math.random() * Math.PI * 2,
       });
     }
@@ -217,26 +218,23 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
       }
     }
 
-    // Draw subtle, uncluttered connecting lines (max 2 links per particle)
-    ctx.lineWidth = 0.65;
+    // Draw connecting plexus lines (Vanta-NET style)
+    ctx.lineWidth = 0.85;
     for (let i = 0; i < particles.length; i++) {
       const p1 = particles[i];
-      let links = 0;
       for (let j = i + 1; j < particles.length; j++) {
-        if (links >= 2) break;
         const p2 = particles[j];
         const dx = p1.x - p2.x;
         const dy = p1.y - p2.y;
         const distSq = dx * dx + dy * dy;
         if (distSq < CONNECT_DIST_SQ) {
-          const alpha = (1 - distSq / CONNECT_DIST_SQ) * 0.16 * Math.min(p1.z, p2.z);
+          const alpha = (1 - distSq / CONNECT_DIST_SQ) * 0.44 * Math.min(p1.z, p2.z);
           ctx.strokeStyle = palette.lineColor;
           ctx.globalAlpha = alpha;
           ctx.beginPath();
           ctx.moveTo(p1.x, p1.y);
           ctx.lineTo(p2.x, p2.y);
           ctx.stroke();
-          links++;
         }
       }
     }
@@ -248,15 +246,15 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
       const r = p.radius * p.z * pulse;
       const color = p.status ? palette.status[p.status] : palette.pointColor;
 
-      // Subtle glow halo
-      ctx.globalAlpha = 0.08 * p.z;
+      // Glow halo
+      ctx.globalAlpha = 0.22 * p.z;
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
       ctx.fill();
 
       // Sharp Core
-      ctx.globalAlpha = 0.55 * p.z;
+      ctx.globalAlpha = 0.85 * p.z;
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fill();

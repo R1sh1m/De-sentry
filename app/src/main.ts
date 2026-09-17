@@ -16,7 +16,7 @@ import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
 import { createMeshGlobe, type GlobeHandle, type GlobeNodePoint } from "./util/meshGlobe.js";
-import { createCanvas } from "./views/canvas.js";
+import { canvasZoomFit, canvasZoomStep, createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
 import { createHealthAlerts } from "./views/healthAlerts.js";
 import { createLedger } from "./views/ledger.js";
@@ -62,6 +62,9 @@ function openShortcutsCheatsheet(): void {
     ["3", "Open ledger for selected node"],
     ["4", "Open console for selected node"],
     ["5", "Open Dropbox"],
+    ["+", "Zoom mesh in"],
+    ["-", "Zoom mesh out"],
+    ["Ctrl/Cmd + 0", "Fit mesh view"],
     ["Esc", "Close panel / deselect node"],
     ["Ctrl/Cmd + K", "Command palette"],
     ["Ctrl/Cmd + R", "Refresh node list"],
@@ -162,7 +165,7 @@ function openPairingSheet(): void {
           class: "wizard__lead",
           text: "Scan this from De-Sentry on the other machine. It carries addresses and a public key — no secret is in the code, so a photograph of it grants nothing on its own.",
         }),
-        el("div", { class: "qr" }, qrSvg(payload, { scale: 4, title: "Pairing code" })),
+        el("div", { class: "qr qr--constellation" }, qrSvg(payload, { scale: 4, title: "Pairing code" })),
         el(
           "dl",
           { class: "kv" },
@@ -523,6 +526,15 @@ function build(): void {
       if (node) store.select({ kind: "console", nodeId: node.process.node_id });
     } else if (event.key === "5") {
       store.select({ kind: "dropbox" });
+    } else if ((event.metaKey || event.ctrlKey) && event.key === "0") {
+      event.preventDefault();
+      canvasZoomFit();
+    } else if ((event.key === "+" || event.key === "=") && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      canvasZoomStep(1.25);
+    } else if (event.key === "-" && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      canvasZoomStep(0.8);
     } else if (event.key === "Escape" && store.state.selection.kind === "node") {
       store.select({ kind: "none" });
     }

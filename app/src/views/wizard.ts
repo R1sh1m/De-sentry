@@ -82,6 +82,11 @@ interface Draft {
   recoveryExported: boolean;
   recoveryConfirmed: boolean;
   recoveryPrintPending: boolean;
+  /** Optional constellation self-check. Never gates Done (see canAdvance). */
+  recoveryVerified: boolean;
+  /** Shuffled challenge order + progress for the verify game. */
+  verifyOrder: number[] | null;
+  verifyProgress: number;
   createError: string;
 }
 
@@ -109,6 +114,9 @@ function newDraft(): Draft {
     recoveryExported: false,
     recoveryConfirmed: false,
     recoveryPrintPending: false,
+    recoveryVerified: false,
+    verifyOrder: null,
+    verifyProgress: 0,
     createError: "",
   };
 }
@@ -960,6 +968,9 @@ export function createWizard(): WizardHandles {
       draft.created = result.node;
       draft.recoveryKey = result.recovery_key;
       draft.recoveryExported = result.recovery_key === null;
+      draft.recoveryVerified = false;
+      draft.verifyOrder = null;
+      draft.verifyProgress = 0;
       draft.step = 5;
       await refreshNodeList();
       await refreshTopology();
@@ -973,10 +984,89 @@ export function createWizard(): WizardHandles {
     }
   }
 
+  /**
+   * Constellation visual: the key's groups rendered as twinkling stars.
+   * Decorative (`aria-hidden`) — the mono key text above stays the
+   * accessible, copyable source. Print CSS collapses this to nothing.
+   */
+  function keyConstellation(key: string): HTMLElement {
+    const groups = key.split(/[\s-]+/).filter((g) => g !== "");
+    return el(
+      "div",
+      { class: "constellation", "aria-hidden": "true" },
+      ...groups.map((g, i) =>
+        el("span", {
+          class: "constellation__star",
+          style: `animation-delay: ${(i * 0.35).toFixed(2)}s;`,
+          text: g,
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Optional verify mini-game: tap the first stars back in order. Power
+   * users skip it entirely — Done is gated only on export + checkbox
+   * (see canAdvance), and Save/Print/Copy are always one click away.
+   */
+  function keyVerifyGame(key: string): HTMLElement {
+    const groups = key.split(/[\s-]+/).filter((g) => g !== "");
+    const game = groups.slice(0, Math.min(groups.length, 8));
+    if (game.length < 3) return el("span", { hidden: true });
+
+    if (draft.verifyOrder === null) {
+      const order = game.map((_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      draft.verifyOrder = order;
+      draft.verifyProgress = 0;
+    }
+    const order = draft.verifyOrder;
+    const progress = Math.min(draft.verifyProgress, game.length);
+
+    if (draft.recoveryVerified) {
+      return el("p", { class: "muted", text: "Constellation verified — you read the key correctly. This was only a self-check." });
+    }
+
+    const chips = order.map((groupIdx) => {
+      const done = order.indexOf(groupIdx) < progress;
+      const chip = el("button", {
+        class: "btn btn--sm constellation__chip",
+        type: "button",
+        disabled: done ? "true" : undefined,
+        "data-done": String(done),
+        text: game[groupIdx],
+      });
+      on(chip, "click", () => {
+        if (groupIdx === order[draft.verifyProgress]) {
+          draft.verifyProgress += 1;
+          if (draft.verifyProgress >= game.length) {
+            draft.recoveryVerified = true;
+            store.toast("success", "Constellation verified", "You read the key back correctly. Save it somewhere durable.");
+          }
+        } else {
+          draft.verifyProgress = 0;
+          store.toast("info", "Constellation reset", "Wrong star — try again from the first. The key above has not changed.");
+        }
+        render();
+      });
+      return chip;
+    });
+
+    return el(
+      "details",
+      { class: "disclosure" },
+      el("summary", { class: "disclosure__summary", text: `Verify constellation (optional, first ${game.length} groups)` }),
+      el("p", { class: "muted", style: "font: var(--text-fine);", text: `Tap the stars back in key order — ${progress} of ${game.length} placed. Skipping this changes nothing about Done.` }),
+      el("div", { class: "row", style: "flex-wrap: wrap;" }, ...chips),
+    );
+  }
+
   function stepRecovery(): HTMLElement {
     const node = draft.created;
     const key = draft.recoveryKey;
-
     if (node === null) return el("div", { class: "skeleton", style: "height: 220px" });
 
     if (key === null) {
@@ -1089,8 +1179,10 @@ export function createWizard(): WizardHandles {
       }),
       el("div", { class: "qr" }, qrSvg(key, { scale: 4, title: "Recovery key" })),
       el("p", { class: "mono", style: "user-select: text; word-break: break-all", text: key }),
+      keyConstellation(key),
       el("div", { class: "row" }, saveButton, printButton, copyButton),
       printConfirm,
+      keyVerifyGame(key),
       confirmRow,
       draft.recoveryExported && draft.recoveryConfirmed
         ? el("p", { class: "muted", text: "Saved. The supervisor has recorded that the export happened — never the key itself." })

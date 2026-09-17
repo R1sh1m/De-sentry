@@ -68,6 +68,10 @@ let panX = 0;
 let panY = 0;
 let zoomScale = 1.0;
 
+/** Upper zoom bound (Slice 1 guardrail): past 2.2x SVG text raster blurs. */
+const ZOOM_MIN = 0.35;
+const ZOOM_MAX = 2.2;
+
 /** Popover anchor (px, relative to the canvas wrapper) for the selected node. */
 let popoverAnchor: { x: number; y: number } | null = null;
 let popoverFor: string | null = null;
@@ -257,7 +261,10 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   const edges = edgesOf(placed);
   const selectedId = store.state.selection.nodeId;
 
-  const wrapper = el("div", { style: "position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;" });
+  const wrapper = el("div", {
+    class: zoomScale < 0.6 ? "mesh-zoom-host mesh-canvas--compact" : "mesh-zoom-host",
+    style: "position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;",
+  });
 
   const vignette = el("div", { class: "mesh__vignette", "aria-hidden": "true" });
   wrapper.appendChild(vignette);
@@ -288,7 +295,84 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
 
   const updateTransform = () => {
     viewport.setAttribute("transform", `translate(${panX} ${panY}) scale(${zoomScale})`);
+    wrapper.classList.toggle("mesh-canvas--compact", zoomScale < 0.6);
+    wrapper.classList.toggle("mesh-canvas--surface", zoomScale > 1.6);
+    minimapRect?.setAttribute("x", String(centerX() - viewW() / 2));
+    minimapRect?.setAttribute("y", String(centerY() - viewH() / 2));
+    minimapRect?.setAttribute("width", String(viewW()));
+    minimapRect?.setAttribute("height", String(viewH()));
   };
+
+  // Viewport geometry in layout coords (screen S = P*z + pan).
+  const centerX = (): number => (width / 2 - panX) / zoomScale;
+  const centerY = (): number => (height / 2 - panY) / zoomScale;
+  const viewW = (): number => width / zoomScale;
+  const viewH = (): number => height / zoomScale;
+
+  // Starmap minimap: dots for every node + viewport rect, click-to-center.
+  const MM_W = 96;
+  const MM_H = 64;
+  const mmSvg = svg("svg", {
+    class: "mesh-minimap__svg",
+    viewBox: `0 0 ${width} ${height}`,
+    width: MM_W,
+    height: MM_H,
+    "aria-hidden": "true",
+  });
+  for (const p of placed) {
+    mmSvg.appendChild(
+      svg("circle", { cx: p.x, cy: p.y, r: 9, fill: STATUS_VAR[p.status] }),
+    );
+  }
+  const minimapRect = svg("rect", {
+    class: "mesh-minimap__viewport",
+    x: centerX() - viewW() / 2,
+    y: centerY() - viewH() / 2,
+    width: viewW(),
+    height: viewH(),
+    rx: 24,
+  });
+  mmSvg.appendChild(minimapRect);
+  const minimap = el(
+    "button",
+    { class: "mesh-minimap", type: "button", title: "Starmap — click to center", "aria-label": "Starmap overview. Activate, then use arrow keys to pan." },
+    mmSvg as unknown as HTMLElement,
+  );
+  // Click-to-center: clicking a point centers it in the main view.
+  mmSvg.addEventListener("click", (e: MouseEvent) => {
+    try {
+      const r = (mmSvg as unknown as SVGSVGElement).getBoundingClientRect();
+      const lx = ((e.clientX - r.left) / Math.max(1, r.width)) * width;
+      const ly = ((e.clientY - r.top) / Math.max(1, r.height)) * height;
+      panX = width / 2 - lx * zoomScale;
+      panY = height / 2 - ly * zoomScale;
+      updateTransform();
+    } catch {
+      // Geometry unavailable: minimap stays informational.
+    }
+  });
+  // Keyboard: arrows pan the main view when the minimap is focused.
+  minimap.addEventListener("keydown", (e: KeyboardEvent) => {
+    const step = 40;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      panX += step;
+      updateTransform();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      panX -= step;
+      updateTransform();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      panY += step;
+      updateTransform();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      panY -= step;
+      updateTransform();
+    }
+  });
+  updateTransform();
 
   root.addEventListener("mousedown", (e) => {
     const target = e.target as SVGElement;
@@ -316,8 +400,29 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   root.addEventListener("wheel", (e) => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.08 : 0.92;
-    zoomScale = Math.max(0.35, Math.min(2.8, zoomScale * factor));
+    zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
     updateTransform();
+  });
+
+  // Double-click empty water: spring-settle zoom-to-fit.
+  root.addEventListener("dblclick", (e) => {
+    const target = e.target as SVGElement;
+    if (target.closest(".mesh__node")) return;
+    try {
+      viewport.style.transition = "transform var(--motion-settle)";
+      panX = 0;
+      panY = 0;
+      zoomScale = 1.0;
+      updateTransform();
+      window.setTimeout(() => {
+        viewport.style.transition = "";
+      }, 300);
+    } catch {
+      panX = 0;
+      panY = 0;
+      zoomScale = 1.0;
+      updateTransform();
+    }
   });
 
   // Edge layer
@@ -423,13 +528,13 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   // Floating Zoom Controls
   const zoomInBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom in" }, icon(Icons.zoomIn, 14));
   on(zoomInBtn, "click", () => {
-    zoomScale = Math.min(2.8, zoomScale * 1.25);
+    zoomScale = Math.min(ZOOM_MAX, zoomScale * 1.25);
     updateTransform();
   });
 
   const zoomOutBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom out" }, icon(Icons.zoomOut, 14));
   on(zoomOutBtn, "click", () => {
-    zoomScale = Math.max(0.35, zoomScale * 0.8);
+    zoomScale = Math.max(ZOOM_MIN, zoomScale * 0.8);
     updateTransform();
   });
 
@@ -443,6 +548,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
 
   const controls = el("div", { class: "canvas__controls" }, zoomInBtn, zoomOutBtn, resetBtn);
   wrapper.appendChild(controls);
+  wrapper.appendChild(minimap);
 
   // Selected-node popover just above the card.
   if (selectedId && popoverFor === selectedId && popoverAnchor) {
@@ -540,11 +646,11 @@ function treeView(nodes: NodeView[]): HTMLElement {
 }
 
 function emptyCanvas(onNewNode: () => void): HTMLElement {
-  const button = el("button", { class: "btn btn--primary", type: "button", text: "Create a node" });
+  const button = el("button", { class: "btn btn--primary", type: "button", text: "Ignite first node" });
   on(button, "click", onNewNode);
   return emptyState({
-    title: "Nothing to chart yet",
-    body: "A node is a place to keep data — a folder on this machine, or a drive you can carry. Create one and it will appear here, along with every peer it finds.",
+    title: "This sector is dark",
+    body: "No nodes yet — a node is a place to keep data, a folder on this machine or a drive you can carry. Ignite one and its star appears here, along with every peer it finds.",
     actions: [button],
   });
 }
@@ -590,4 +696,30 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
 
 export function statusText(status: Convergence): string {
   return STATUS_TEXT[status];
+}
+
+/** Live-update the mounted viewport transform, if a mesh is on screen. */
+function pushZoomToDom(): void {
+  try {
+    const vp = document.querySelector(".mesh__viewport");
+    vp?.setAttribute("transform", `translate(${panX} ${panY}) scale(${zoomScale})`);
+    const host = document.querySelector(".mesh-zoom-host");
+    host?.classList.toggle("mesh-canvas--compact", zoomScale < 0.6);
+    host?.classList.toggle("mesh-canvas--surface", zoomScale > 1.6);
+  } catch {
+    // No mesh mounted: module vars still apply on next render.
+  }
+}
+
+/** Global keyboard parity: +/- step, Ctrl/⌘+0 fit (wired in main.ts). */
+export function canvasZoomStep(factor: number): void {
+  zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
+  pushZoomToDom();
+}
+
+export function canvasZoomFit(): void {
+  panX = 0;
+  panY = 0;
+  zoomScale = 1.0;
+  pushZoomToDom();
 }

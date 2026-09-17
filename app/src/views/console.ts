@@ -114,7 +114,7 @@ export function createConsole(): ConsoleHandles {
     const tabs: { id: ConsoleTab; label: string; icon: string }[] = [
       { id: "documents", label: "Documents & KV", icon: Icons.folder },
       { id: "vector", label: "Vector Search", icon: Icons.search },
-      { id: "timeseries", label: "Time-Series", icon: Icons.tree },
+      { id: "timeseries", label: "Time-Series", icon: Icons.chart },
       { id: "graph", label: "Graph Explorer", icon: Icons.mesh },
       { id: "api", label: "Direct API", icon: Icons.inspector },
     ];

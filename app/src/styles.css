@@ -172,10 +172,13 @@ body {
   gap: var(--space-sm);
   padding: 0 var(--space-md);
   background: var(--chrome-fill);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  -webkit-backdrop-filter: var(--chrome-blur-thick);
+  backdrop-filter: var(--chrome-blur-thick);
   border-bottom: 1px solid var(--color-hairline);
   box-shadow: var(--glass-edge);
+  /* Compositor hint for Webview2: live Canvas2D sits behind this plane. */
+  will-change: transform;
+  transform: translateZ(0);
   /* Tauri's decorationless window: this strip is what the user drags. */
   -webkit-app-region: drag;
 }
@@ -380,13 +383,16 @@ body {
 .sidebar {
   grid-area: sidebar;
   background: var(--chrome-fill-sidebar);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  -webkit-backdrop-filter: var(--chrome-blur-thick);
+  backdrop-filter: var(--chrome-blur-thick);
   border-right: 1px solid var(--color-hairline);
   box-shadow: var(--glass-edge);
   padding: var(--space-sm);
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* Compositor hint: sidebar floats above the live backdrop canvas. */
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .centre {
@@ -420,15 +426,24 @@ body {
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--color-ink-muted-80);
-  cursor: default;
+  cursor: pointer;
+  transition: all var(--motion-instant);
 }
 .win-btn:hover {
   background: color-mix(in srgb, var(--color-ink) 10%, transparent);
   color: var(--color-ink);
 }
+.win-btn:active {
+  transform: scale(0.93);
+  filter: brightness(0.85);
+}
 .win-btn--close:hover {
   background: #e81123;
   color: #fff;
+}
+.win-btn--close:active {
+  background: #c40f1d;
+  filter: brightness(0.9);
 }
 
 /* View toggle revealed under the View nav button in the sidebar */
@@ -466,11 +481,18 @@ body {
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
   color: var(--color-ink);
 }
+.sidebar__view-btn:active {
+  transform: scale(0.96) translateY(0.5px);
+  filter: brightness(0.88);
+}
 .sidebar__view-btn[aria-pressed="true"] {
   background: var(--color-surface);
   color: var(--color-primary);
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.sidebar__view-btn[aria-pressed="true"]:active {
+  filter: brightness(0.92);
 }
 .sidebar__view-btn kbd {
   font: var(--text-mono);
@@ -513,8 +535,8 @@ body {
   max-width: calc(100% - 24px);
   transform: translate(-50%, -100%);
   background: var(--chrome-fill);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  backdrop-filter: var(--chrome-blur-thin);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--elev-popover);
@@ -704,7 +726,7 @@ svg.mesh {
   width: 100%;
   text-align: left;
   cursor: pointer;
-  transition: background var(--motion-instant);
+  transition: background var(--motion-instant), transform 0.08s ease-out, filter 0.08s ease-out;
 }
 .nav-item__label {
   flex: 1;
@@ -716,11 +738,18 @@ svg.mesh {
 .nav-item:hover {
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
 }
+.nav-item:active {
+  transform: scale(0.98) translateY(0.5px);
+  filter: brightness(0.88);
+}
 .nav-item[aria-selected="true"] {
   background: var(--tree-row-selected-bg);
   color: var(--tree-row-selected-color);
   font-weight: 600;
   box-shadow: inset 3px 0 0 0 var(--color-primary);
+}
+.nav-item[aria-selected="true"]:active {
+  filter: brightness(0.92);
 }
 /* Search-match highlight for pinned nav items (H1) */
 .nav-item--highlighted {
@@ -1093,45 +1122,94 @@ svg.mesh {
   border-radius: var(--radius-pill);
   padding: 7px 16px;
   border: 0;
-  cursor: default;
+  cursor: pointer;
   background: var(--color-surface-pearl);
   color: var(--color-ink);
   box-shadow: var(--elev-hairline);
-  transition: transform var(--motion-instant), opacity var(--motion-instant);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1), transform 0.08s ease-out;
   white-space: nowrap;
+  user-select: none;
+}
+.btn:hover {
+  filter: brightness(1.05);
 }
 .btn:active {
-  transform: scale(0.97);
+  transform: scale(0.975) translateY(0.5px);
+  filter: brightness(0.85) saturate(0.95);
 }
 .btn:disabled {
   opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 70%, transparent);
+  outline-offset: 2px;
 }
 .btn--primary {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 88%, #ffffff 12%), var(--color-primary));
-  color: var(--color-on-primary);
-  box-shadow: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-primary) 74%, #ffffff 4%),
+    color-mix(in srgb, var(--color-primary) 82%, #000000 18%)
+  );
+  color: #ffffff;
+  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.btn--primary:hover {
+  filter: brightness(1.07);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.btn--primary:active {
+  transform: scale(0.975) translateY(0.5px);
+  filter: brightness(0.82) saturate(0.92);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.4), inset 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 /* Uniform system: default (.btn) / primary / secondary / outline / ghost /
  * destructive (.btn--danger). The old text-style .btn--danger duplicate is
  * gone: destructive is solid red everywhere it is used (delete flows). */
 .btn--danger {
-  background: #ff3b30;
+  background: #e0352b;
   color: #ffffff;
-  border: 1px solid #e02d23;
-  box-shadow: none;
+  border: 1px solid #c92a20;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .btn--danger:hover {
   filter: brightness(1.08);
 }
+.btn--danger:active {
+  transform: scale(0.975) translateY(0.5px);
+  filter: brightness(0.82);
+}
 .btn--secondary {
-  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--color-primary);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
   box-shadow: var(--elev-hairline);
+}
+.btn--secondary:hover {
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+.btn--secondary:active {
+  transform: scale(0.975) translateY(0.5px);
+  filter: brightness(0.85);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 .btn--ghost {
   background: transparent;
   box-shadow: none;
   color: var(--color-primary);
+  border: 1px solid transparent;
+}
+.btn--ghost:hover {
+  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  color: var(--color-ink);
+}
+.btn--ghost:active {
+  transform: scale(0.975) translateY(0.5px);
+  background: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  filter: brightness(0.85);
 }
 .btn--sm {
   padding: 4px 10px;
@@ -1142,10 +1220,18 @@ svg.mesh {
   padding: 0;
   border-radius: var(--radius-sm);
   color: var(--color-ink-muted-80);
+  border: 1px solid transparent;
+  cursor: pointer;
 }
 .btn--icon-only:hover {
   color: var(--color-ink);
   background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  border-color: var(--color-hairline);
+}
+.btn--icon-only:active {
+  transform: scale(0.94) translateY(0.5px);
+  background: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  filter: brightness(0.85);
 }
 
 .segmented {
@@ -1295,12 +1381,60 @@ svg.mesh {
   align-items: center;
   gap: var(--space-xxs);
   background: var(--chrome-fill);
-  backdrop-filter: var(--chrome-blur);
-  -webkit-backdrop-filter: var(--chrome-blur);
+  backdrop-filter: var(--chrome-blur-thin);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
   border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-float);
   padding: 3px 6px;
   box-shadow: var(--elev-card);
+  will-change: transform;
+  transform: translateZ(0);
+}
+/* Galaxy mode (z < 0.6): secondary metadata dissolves, glyph + name remain. */
+.mesh-canvas--compact .mesh__node-meta {
+  opacity: 0;
+}
+.mesh__node-meta {
+  transition: opacity var(--motion-quick);
+}
+/* Surface mode (z > 1.6): cards lift for close reading. */
+.mesh-canvas--surface .mesh__node-card {
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.12));
+}
+@media (prefers-reduced-motion: reduce) {
+  .mesh__node-meta {
+    transition: none;
+  }
+}
+/* Starmap minimap: frosted corner overview, click-to-center. */
+.mesh-minimap {
+  position: absolute;
+  bottom: var(--space-md);
+  left: var(--space-md);
+  z-index: 10;
+  width: 112px;
+  height: 80px;
+  display: grid;
+  place-content: center;
+  background: var(--chrome-fill);
+  backdrop-filter: var(--chrome-blur-thin);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elev-card);
+  padding: 0;
+  cursor: pointer;
+  will-change: transform;
+  transform: translateZ(0);
+}
+.mesh-minimap__svg {
+  display: block;
+}
+.mesh-minimap__viewport {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 14;
+  opacity: 0.8;
 }
 .mesh__tooltip {
   position: absolute;
@@ -1482,6 +1616,37 @@ svg.mesh {
   justify-content: flex-end;
   gap: var(--space-xs);
   margin-top: var(--space-xs);
+}
+
+/* Recovery-key constellation: groups as twinkling stars + optional verify. */
+.constellation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  justify-content: center;
+  padding: var(--space-sm) 0;
+}
+.constellation__star {
+  font: var(--text-mono);
+  color: var(--color-ink);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  animation: star-twinkle 3s ease-in-out infinite;
+}
+@keyframes star-twinkle {
+  0%, 100% { opacity: 0.65; box-shadow: none; }
+  50% { opacity: 1; box-shadow: 0 0 12px var(--glow-brand); }
+}
+.constellation__chip[data-done="true"] {
+  opacity: 0.45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .constellation__star {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1822,8 +1987,8 @@ svg.mesh {
 }
 .palette {
   background: var(--chrome-fill);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  backdrop-filter: var(--chrome-blur-thin);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-lg);
   box-shadow: var(--elev-popover);
@@ -1888,6 +2053,79 @@ svg.mesh {
   text-align: center;
   padding: var(--space-md);
   margin: 0;
+}
+/* Fuzzy-match highlight: why this row matched. Meaning-free accent wash. */
+.palette__match {
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--color-primary);
+  text-underline-offset: 2px;
+}
+/* Linear-style footer: contextual key hints. */
+.palette__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-xs) var(--space-md);
+  border-top: 1px solid var(--color-hairline);
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+}
+.palette__footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.palette__footer kbd {
+  font: var(--text-mono);
+  font-size: 10px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-hairline);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Ledger Time-River: entries drift downstream, one lane per operation.
+ * ------------------------------------------------------------------------ */
+.river__wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.river__lane {
+  stroke: var(--color-hairline);
+  stroke-width: 1.5;
+}
+.river__lane-label {
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  fill: var(--color-ink-muted-48);
+}
+.river__dam {
+  stroke: var(--color-status-lagging);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  opacity: 0.85;
+}
+.river__dot {
+  cursor: pointer;
+  stroke: transparent;
+  stroke-width: 2.5;
+}
+.river__dot:hover {
+  stroke: var(--color-ink);
+}
+.river__dot[data-selected="true"] {
+  stroke: var(--color-primary);
+}
+.river__dot:focus-visible {
+  outline: none;
+  stroke: var(--color-primary);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2207,6 +2445,19 @@ svg.mesh {
   background: #ffffff;
   padding: var(--space-sm);
 }
+/* Pairing constellation: the QR resolves like stars appearing. */
+.qr--constellation svg {
+  animation: qr-twinkle 1.2s ease-out both;
+}
+@keyframes qr-twinkle {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qr--constellation svg {
+    animation: none;
+  }
+}
 
 .row {
   display: flex;
@@ -2251,6 +2502,8 @@ svg.mesh {
   .toasts,
   .wizard__footer,
   .btn,
+  .constellation,
+  .disclosure,
   dialog {
     display: none !important;
   }
@@ -2433,6 +2686,11 @@ svg.mesh {
   overflow: hidden;
   background: var(--color-canvas);
 }
+/* Reactor phosphor caret. */
+.console-view input,
+.console-view textarea {
+  caret-color: var(--color-primary);
+}
 
 .dropbox-view {
   display: flex;
@@ -2505,8 +2763,8 @@ svg.mesh {
   z-index: 100;
   min-width: 160px;
   background: var(--chrome-fill);
-  -webkit-backdrop-filter: var(--chrome-blur);
-  backdrop-filter: var(--chrome-blur);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  backdrop-filter: var(--chrome-blur-thin);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--elev-popover);

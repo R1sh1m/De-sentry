@@ -18,16 +18,17 @@ interface PaletteItem {
   run: () => void;
 }
 
-/** Subsequence fuzzy score; contiguous runs score higher. -1 means no match. */
-function fuzzyScore(query: string, label: string): number {
+/** Subsequence fuzzy match; contiguous runs score higher. Null = no match. */
+function fuzzyMatch(query: string, label: string): { score: number; indices: number[] } | null {
   const q = query.toLowerCase();
   const l = label.toLowerCase();
   let score = 0;
   let li = 0;
   let run = 0;
+  const indices: number[] = [];
   for (let qi = 0; qi < q.length; qi++) {
     const found = l.indexOf(q[qi], li);
-    if (found < 0) return -1;
+    if (found < 0) return null;
     if (found === li) {
       run++;
       score += 2 + run;
@@ -35,10 +36,60 @@ function fuzzyScore(query: string, label: string): number {
       run = 0;
       score += 1;
     }
+    indices.push(found);
     li = found + 1;
   }
   // Prefer shorter labels on ties: exact names surface first.
-  return score * 100 - l.length;
+  return { score: score * 100 - l.length, indices };
+}
+
+/** Recent command ids, newest first, capped at 3. Best-effort storage. */
+const RECENT_KEY = "desentry:palette:recent";
+const RECENT_MAX = 3;
+function loadRecents(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string").slice(0, RECENT_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+function recordRecent(id: string): void {
+  try {
+    const next = [id, ...loadRecents().filter((x) => x !== id)].slice(0, RECENT_MAX);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    // Private window: recents simply don't persist.
+  }
+}
+
+/** Render a label with matched character runs wrapped in <mark>. */
+function highlightedLabel(label: string, indices: number[] | null): HTMLElement {
+  const span = el("span", {});
+  if (indices === null || indices.length === 0) {
+    span.textContent = label;
+    return span;
+  }
+  const hits = new Set(indices);
+  let run = "";
+  const flush = (marked: boolean): void => {
+    if (run === "") return;
+    span.appendChild(marked ? el("mark", { class: "palette__match", text: run }) : document.createTextNode(run));
+    run = "";
+  };
+  let inRun = false;
+  for (let i = 0; i < label.length; i++) {
+    const hit = hits.has(i);
+    if (hit !== inRun) {
+      flush(inRun);
+      inRun = hit;
+    }
+    run += label[i];
+  }
+  flush(inRun);
+  return span;
 }
 
 export function openPalette(opts: { onNewNode: () => void; onPair: () => void }): void {
@@ -88,31 +139,61 @@ export function openPalette(opts: { onNewNode: () => void; onPair: () => void })
     spellcheck: "false",
   }) as HTMLInputElement;
   const list = el("div", { class: "palette__list", role: "listbox", id: "palette-list" });
-  replace(dialog, el("div", { class: "palette" }, input, list));
+  const footer = el(
+    "div",
+    { class: "palette__footer", "aria-hidden": "true" },
+    el("span", {}, el("kbd", { text: "↑↓" }), " Navigate"),
+    el("span", {}, el("kbd", { text: "↵" }), " Run"),
+    el("span", {}, el("kbd", { text: "esc" }), " Dismiss"),
+  );
+  replace(dialog, el("div", { class: "palette" }, input, list, footer));
   document.body.appendChild(dialog);
 
+  const byId = new Map(items.map((item) => [item.id, item]));
   let active = 0;
-  let visible: PaletteItem[] = items;
+  let visible: { item: PaletteItem; indices: number[] | null }[] = items.map((item) => ({ item, indices: null }));
+
+  const runItem = (entry: { item: PaletteItem }): void => {
+    recordRecent(entry.item.id);
+    dismiss();
+    entry.item.run();
+  };
 
   function paint(): void {
     const q = input.value.trim();
-    visible =
-      q === ""
-        ? items
-        : items
-            .map((item) => ({ item, score: fuzzyScore(q, item.label) }))
-            .filter((s) => s.score >= 0)
-            .sort((a, b) => b.score - a.score)
-            .map((s) => s.item);
+    let recentFlags: boolean[];
+    if (q === "") {
+      // Empty query: recents first (deduped), then everything else in order.
+      const recents = loadRecents()
+        .map((id) => byId.get(id))
+        .filter((x): x is PaletteItem => x !== undefined)
+        .map((item) => ({ item, indices: null as number[] | null, recent: true }));
+      const recentIds = new Set(recents.map((r) => r.item.id));
+      const rest = items.filter((item) => !recentIds.has(item.id)).map((item) => ({ item, indices: null as number[] | null, recent: false }));
+      const ordered = [...recents, ...rest];
+      visible = ordered.map(({ item, indices }) => ({ item, indices }));
+      recentFlags = ordered.map((o) => o.recent);
+    } else {
+      visible = items
+        .map((item) => {
+          const m = fuzzyMatch(q, item.label);
+          return m === null ? null : { item, indices: m.indices as number[] | null, score: m.score };
+        })
+        .filter((s): s is { item: PaletteItem; indices: number[] | null; score: number } => s !== null)
+        .sort((a, b) => b.score - a.score)
+        .map((s) => ({ item: s.item, indices: s.indices }));
+      recentFlags = visible.map(() => false);
+    }
     active = Math.max(0, Math.min(active, Math.max(0, visible.length - 1)));
     if (visible.length === 0) active = -1;
 
     const children: (Node | string)[] = [];
     let lastGroup = "";
-    visible.forEach((item, i) => {
-      if (item.group !== lastGroup) {
-        lastGroup = item.group;
-        children.push(el("p", { class: "palette__group", text: item.group }));
+    visible.forEach((entry, i) => {
+      const group = q === "" && recentFlags[i] ? "Recent" : entry.item.group;
+      if (group !== lastGroup) {
+        lastGroup = group;
+        children.push(el("p", { class: "palette__group", text: group }));
       }
       const opt = el(
         "div",
@@ -122,13 +203,10 @@ export function openPalette(opts: { onNewNode: () => void; onPair: () => void })
           id: `palette-opt-${i}`,
           "aria-selected": String(i === active),
         },
-        el("span", { text: item.label }),
-        el("span", { class: "palette__hint", text: item.hint }),
+        highlightedLabel(entry.item.label, q === "" ? null : entry.indices),
+        el("span", { class: "palette__hint", text: entry.item.hint }),
       );
-      on(opt, "click", () => {
-        dismiss();
-        item.run();
-      });
+      on(opt, "click", () => runItem(entry));
       on(opt, "mousemove", () => {
         if (active !== i) {
           active = i;
@@ -163,11 +241,8 @@ export function openPalette(opts: { onNewNode: () => void; onPair: () => void })
       paint();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const item = visible[active];
-      if (item) {
-        dismiss();
-        item.run();
-      }
+      const entry = visible[active];
+      if (entry) runItem(entry);
     } else if (e.key === "Escape") {
       dismiss();
     }

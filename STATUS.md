@@ -907,3 +907,115 @@ only — live instrument above is untouched).
 light-dismiss, arrow-key walk, palette, glass readability at sizes);
 older-webkit fallbacks (`showModal`/`showPopover` guards are in place but
 untested); 4K/50-node frame budget for the boosted chrome blur.
+
+---
+
+## 9. History: Slice 1 — Atmosphere Engine (2026-09-17)
+
+App-only change (no engine, no sidecar, no protocol). The Vanta-style
+plexus backdrop (`util/meshGlobe.ts`, deleted) was replaced in place by
+`util/atmosphere.ts`: same fullscreen Canvas2D host, now on zero-GC
+`Float32Array` pools, with a 300ms biome cross-fade (`abyss` live;
+`nebula`/`river`/`phosphor` as wash-tinted stubs with correct plumbing,
+full set-pieces deferred to Slice 3; `calm` for overlays), click
+shockwaves, cursor attract / hold-to-repel, honest replication packets
+fired from real ledger-tip diffs in `main.ts` (max 4/render, never
+timers), health weather (`aurora`/`gust`/`storm` from the convergence
+rollup), and DPR ≤1.5 + battery + FPS + `prefers-reduced-motion`
+governors. Offline/diverged gravity touches backdrop dust only — DOM
+cards and popovers are never displaced.
+
+Also: `canvas.ts` zoom clamped to 0.35–2.2 with galaxy compact mode
+(meta fades below 0.6x), double-click fit, `meshLinks()` export,
+`Ctrl/⌘+0` / `+` / `-` keyboard parity; `tokens.css` gains glass tiers
+(`--chrome-blur-thick/thin`), `--motion-bounce`, `--radius-float`,
+`--backdrop-packets/shock/storm` (only file with literals, per
+`DESIGN.md` §7); header/sidebar move to thick glass with
+`translateZ(0)` compositor hints and a Webview2 legibility floor
+(`--chrome-fill` 0.72); overlays (palette, node popover, ctx-menu) move
+to thin glass.
+
+**Verified:** `npm run typecheck`, `check:css`, `check:qr`,
+`check:a11y`, `vite build` — all green (before and after deleting
+`meshGlobe.ts`). `ctest` not run (no C++ touched).
+
+**NOT verified:** manual mesh pass (shockwave on card click, storm on
+node kill, aurora on heal, biome fade across views, packet pulses under
+write load); 50-node / 4K frame budget for the new engine; reduced-motion
+poster and `?calm=1` fallback on a weak GPU.
+
+---
+
+## 10. History: Slices 1b–3 + rituals — living UI (2026-09-17)
+
+App-only change (no engine, no sidecar, no protocol), on top of §9.
+
+**1b — palette (Raycast/Linear grade):** subsequence matcher now returns
+match indices; labels render `<mark class="palette__match">` runs;
+Linear-style footer (`↑↓` Navigate · `↵` Run · `esc` Dismiss); recents in
+`localStorage desentry:palette:recent` (cap 3, pinned Recent group on
+empty query). Still actions+views only — no untrusted content.
+
+**2 — dive-zoom + starmap:** semantic tiers (`--compact` <0.6x hides
+meta, `--surface` >1.6x lifts cards), frosted corner minimap with live
+status dots + viewport rect, click-to-center, arrow-key pan, `+/−` /
+`Ctrl/⌘+0` parity (cheatsheet updated). Zoom clamped 0.35–2.2.
+
+**3a — Ledger Time-River:** Table ⇄ River segmented toggle; river maps
+`x = entry_id`, one lane per operation, CHECKPOINT dams, selectable
+keyboard-focusable logs with detail card. Table stays the audit surface;
+filters/pager shared.
+
+**3b — Dropbox vortex + Console reactor:** intake disc spins on swallow
+(speed ∝ payload bytes), backdrop breathes, clean ingest releases a
+shockwave (`commitIngestion` now returns success); console keystrokes
+shed throttled phosphor sparks and action buttons discharge bursts
+(reduced-motion aware, delegated listeners, zero per-tab surgery).
+
+**Rituals:** boot wormhole (3 staggered ripples), pairing-QR
+constellation reveal, recovery-key constellation visual + *optional*
+verify mini-game (Done still gated only on export + checkbox; Save/Print/
+Copy always one click away; constellation hidden in print), empty canvas
+rewritten as "This sector is dark / Ignite first node".
+
+**Verified:** `npm run typecheck`, `check:css`, `check:qr`,
+`check:a11y`, `vite build` — all green. `ctest --test-dir build
+--output-on-failure` — **11/11 green** (run 2026-09-17 against the
+prebuilt binaries; no C++ was touched by this change).
+
+**NOT verified:** manual pass over every slice (palette recents across
+restarts, minimap centering at extreme pan, river on 5000-entry pages
+and diverged chains, vortex on 100MB drops, reactor under fast typing,
+verify game with duplicate key groups, boot ripple on cold start);
+50-node / 4K frame budget with all layers live; screen-reader walk of
+river dots and minimap.
+
+---
+
+## 11. History: background revert — meshGlobe restored (2026-09-17)
+
+The Atmosphere Engine did not match the original feel, so all moving-
+background work was reverted: `app/src/util/atmosphere.ts` deleted, and every
+ambient hook removed (`main.ts` host/biome/weather/packets/wormhole,
+`canvas.ts` shock/meshLinks/handle, dropbox vortex, console reactor +
+vortex CSS). `dropbox.ts` and `console.ts` reverted byte-identical to
+HEAD.
+
+Furthermore, `app/src/util/meshGlobe.ts` was reverted from the sparse
+decluttered backdrop back to its full Vanta-NET plexus configuration
+(commit `532e1bb`):
+- Connection distance: restored from 96 to 172 px.
+- Particle density: restored from 25–50 sparse dots (`/24000`) back to 150–300 dots (`/4800`).
+- Particle drift velocities: restored from 0.22 to 0.46.
+- Connection links: removed the artificial 2-link cap per particle.
+- Line and glow opacity: restored line alpha to 0.44 (from 0.16), core alpha to 0.85 (from 0.55), glow alpha to 0.22 (from 0.08).
+- Particle radii: restored to 1.7–4.1 px (from 1.2–2.8 px).
+
+Kept (not background animation): zoom clamp/compact/surface tiers,
+starmap minimap, `+/−`/`Ctrl+0` parity, palette 1b, Ledger River, QR
+constellation reveal, recovery-key ceremony, empty-sector copy, glass
+tier tokens.
+
+**Verified:** `npm run typecheck`, `check:css`, `check:qr`,
+`check:a11y`, `vite build` — all green after the revert.
+

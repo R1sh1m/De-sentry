@@ -14,7 +14,7 @@ import {
   shortHash,
   shortNode,
 } from "../util/format.js";
-import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
 import { store, type NodeView } from "../state.js";
 
@@ -51,6 +51,16 @@ const OPERATION_TONES: Record<string, string> = {
   TRANSIT_INTENT: "lagging",
   TRANSIT_CLAIMED: "converged",
 };
+
+/** Badge tone → status color var (same mapping the table badges use). */
+const RIVER_TONE_VAR: Record<string, string> = {
+  converged: "var(--color-status-converged)",
+  lagging: "var(--color-status-lagging)",
+  offline: "var(--color-status-offline)",
+  supervisor: "var(--color-status-supervisor)",
+};
+
+const RIVER_LANE_ORDER = ["PUT", "DEL", "CHECKPOINT", "TRANSIT_INTENT", "TRANSIT_CLAIMED"];
 
 function parseHLC(hlc: string): { date: Date | null; logical: number; nodeId: string } {
   if (!hlc) return { date: null, logical: 0, nodeId: "" };
@@ -155,6 +165,10 @@ export function createLedger(): LedgerHandles {
   let loading = false;
   let filter: FilterState = { operation: "", collection: "", key: "", originNode: "" };
   let showHiddenCols = false;
+  /** Table ⇄ River view toggle; the table stays the audit surface. */
+  let riverMode: "table" | "river" = "table";
+  /** Entry selected in the river (detail card below the flow). */
+  let selectedRiverId: number | null = null;
   // Debounce text filters so typing does not reset pagination + refetch per keystroke.
   let filterTimer = 0;
 
@@ -299,8 +313,142 @@ export function createLedger(): LedgerHandles {
     );
   }
 
-  function buildPager(_node: NodeView, from: number, to: number, tip: number | null, entries: LedgerEntry[], _totalCount: number): HTMLElement {
-    const isFirstPage = from === 0;
+  /** Shared filter so table and river always agree on what is shown. */
+  function applyEntryFilter(entries: LedgerEntry[]): LedgerEntry[] {
+    return entries.filter((entry) => {
+      if (filter.operation && entry.operation !== filter.operation) return false;
+      if (filter.collection && !entry.collection.toLowerCase().includes(filter.collection.toLowerCase())) return false;
+      if (filter.key && !entry.key.toLowerCase().includes(filter.key.toLowerCase())) return false;
+      if (filter.originNode && entry.origin_node_id !== filter.originNode) return false;
+      return true;
+    });
+  }
+
+  function buildViewToggle(): HTMLElement {
+    const tableBtn = el("button", { type: "button", "aria-pressed": String(riverMode === "table"), text: "Table" });
+    const riverBtn = el("button", { type: "button", "aria-pressed": String(riverMode === "river"), text: "River" });
+    on(tableBtn, "click", () => {
+      riverMode = "table";
+      render();
+    });
+    on(riverBtn, "click", () => {
+      riverMode = "river";
+      render();
+    });
+    return el("div", { class: "segmented", role: "group", "aria-label": "Ledger view" }, tableBtn, riverBtn);
+  }
+
+  /**
+   * Time-river: entries drift downstream left→right (x = entry_id), one lane
+   * per operation, checkpoints drawn as dams across all lanes. Selecting a
+   * log opens its detail card below. The table stays the audit surface.
+   */
+  function buildRiver(node: NodeView, entries: LedgerEntry[], from: number, to: number): HTMLElement {
+    void node;
+    const filtered = applyEntryFilter(entries);
+    if (filtered.length === 0) {
+      return el("div", { class: "empty" },
+        el("p", { class: "empty__title", text: "No entries match on this page" }),
+        el("p", { class: "empty__body", text: "Adjust the filters or load an earlier page." }),
+      );
+    }
+    const lanes = RIVER_LANE_ORDER.filter((op) => filtered.some((e) => e.operation === op));
+    const laneOf = new Map(lanes.map((op, i) => [op, i]));
+    const laneCount = Math.max(1, lanes.length);
+    const laneY = (i: number): number => 36 + i * 46;
+    const height = laneY(laneCount - 1) + 40;
+    const X0 = 150;
+    const X1 = 980;
+    const xOf = (id: number): number => (to <= from ? (X0 + X1) / 2 : X0 + ((id - from) / (to - from)) * (X1 - X0));
+
+    const flow = svg("svg", {
+      class: "river",
+      viewBox: `0 0 1000 ${height}`,
+      role: "img",
+      "aria-label": `Ledger river, ${filtered.length} entries`,
+      style: "width: 100%; height: auto; display: block; min-height: 220px;",
+    });
+    lanes.forEach((op, i) => {
+      const y = laneY(i);
+      flow.appendChild(svg("line", { x1: X0, y1: y, x2: X1, y2: y, class: "river__lane" }));
+      flow.appendChild(svg("text", { x: 8, y: y + 4, class: "river__lane-label" }, OPERATION_LABELS[op] || op));
+    });
+    for (const entry of filtered) {
+      if (entry.operation !== "CHECKPOINT") continue;
+      const x = xOf(entry.entry_id);
+      flow.appendChild(
+        svg("line", { x1: x, y1: 14, x2: x, y2: laneY(laneCount - 1) + 14, class: "river__dam" }),
+      );
+    }
+    for (const entry of filtered) {
+      const tone = OPERATION_TONES[entry.operation] || "converged";
+      const dot = svg("circle", {
+        cx: Math.round(xOf(entry.entry_id) * 10) / 10,
+        cy: laneY(laneOf.get(entry.operation) ?? 0),
+        r: 6,
+        class: "river__dot",
+        "data-selected": String(selectedRiverId === entry.entry_id),
+        fill: RIVER_TONE_VAR[tone] ?? RIVER_TONE_VAR.converged,
+        tabindex: "0",
+        role: "button",
+        "aria-label": `Entry ${entry.entry_id}, ${OPERATION_LABELS[entry.operation] || entry.operation}, ${entry.collection}`,
+      });
+      const tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      tip.textContent = `#${entry.entry_id} · ${entry.collection} · ${entry.key || "—"}`;
+      dot.appendChild(tip);
+      dot.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        selectedRiverId = entry.entry_id;
+        render();
+      });
+      dot.addEventListener("keydown", (ev) => {
+        const key = (ev as KeyboardEvent).key;
+        if (key === "Enter" || key === " ") {
+          ev.preventDefault();
+          selectedRiverId = entry.entry_id;
+          render();
+        }
+      });
+      flow.appendChild(dot);
+    }
+
+    const wrap = el("div", { class: "river__wrap" }, flow);
+    const selected = filtered.find((e) => e.entry_id === selectedRiverId) ?? null;
+    if (selected !== null) {
+      const close = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Close" });
+      on(close, "click", () => {
+        selectedRiverId = null;
+        render();
+      });
+      wrap.appendChild(
+        el("div", { class: "card", style: "margin-top: var(--space-sm);" },
+          el("h3", { class: "card__title", text: `Entry #${selected.entry_id}` }),
+          el("dl", { class: "kv" },
+            el("dt", { text: "Operation" }),
+            el("dd", {}, el("span", { class: "badge", "data-tone": OPERATION_TONES[selected.operation] || "converged", text: OPERATION_LABELS[selected.operation] || selected.operation })),
+            el("dt", { text: "Collection" }),
+            el("dd", { class: "mono", text: selected.collection }),
+            el("dt", { text: "Key" }),
+            el("dd", { class: "mono", text: selected.key || "—" }),
+            el("dt", { text: "HLC" }),
+            el("dd", { class: "mono", text: formatHLC(selected.hlc), title: selected.hlc }),
+            el("dt", { text: "Origin" }),
+            el("dd", { class: "mono", text: shortNode(selected.origin_node_id), title: selected.origin_node_id }),
+            el("dt", { text: "Entry hash" }),
+            el("dd", { class: "mono", text: shortHash(selected.entry_hash, 8, 4), title: selected.entry_hash }),
+          ),
+          el("div", { class: "row", style: "justify-content: flex-end; margin-top: var(--space-xs);" }, close),
+        ),
+      );
+    } else {
+      wrap.appendChild(
+        el("p", { class: "muted", style: "font: var(--text-fine);", text: "Select a log to inspect it. The table view stays the audit surface." }),
+      );
+    }
+    return wrap;
+  }
+
+  function buildPager(_node: NodeView, from: number, to: number, tip: number | null, entries: LedgerEntry[], _totalCount: number): HTMLElement {    const isFirstPage = from === 0;
     const hasPrev = !isFirstPage;
     const hasNext = tip !== null && to < tip;
 
@@ -371,8 +519,14 @@ export function createLedger(): LedgerHandles {
 
       replace(body,
         buildFilterBar(node),
+        el("div", { class: "row row--between", style: "margin-bottom: var(--space-sm);" },
+          el("span", { class: "tree__group-label", text: "View" }),
+          buildViewToggle(),
+        ),
         card("Ledger",
-          buildTable(node, page.entries, page.from, page.to, currentTip),
+          riverMode === "river"
+            ? buildRiver(node, page.entries, page.from, page.to)
+            : buildTable(node, page.entries, page.from, page.to, currentTip),
           buildPager(node, page.from, page.to, currentTip, page.entries, page.count),
         ),
       );
