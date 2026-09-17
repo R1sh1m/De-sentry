@@ -331,26 +331,7 @@ pub fn run() {
             commands::notify,
             commands::scan_for_nodes,
             commands::trigger_discovery_scan,
-            // architecture-v3: adaptive advisor
-            advisor::advisor_start,
-            advisor::advisor_answer,
-            advisor::advisor_refine,
-            advisor::advisor_set_engines,
-            // architecture-v3: assistant
-            assistant::assistant_send,
-            assistant::assistant_confirm,
-            assistant::assistant_status,
-            assistant::assistant_reset,
-            // architecture-v3: unified logs
-            applog::app_logs,
-            applog::log_sources,
-            applog::export_logs,
-            // architecture-v3: per-node passwords
-            password::node_security,
-            password::set_node_password,
-            // architecture-v3: pairing and joining a mesh
-            pairing::pairing_code,
-            pairing::join_mesh,
+            commands::sync_storage_reservation,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -385,6 +366,11 @@ pub fn run() {
             power::start(handle.clone(), Arc::clone(&state));
             start_tray_updater(handle.clone(), Arc::clone(&state));
             tray::build(&handle, Arc::clone(&state))?;
+
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(false);
+            }
 
             Ok(())
         })

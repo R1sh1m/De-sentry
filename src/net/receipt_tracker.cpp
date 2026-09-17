@@ -9,9 +9,6 @@ namespace desentry {
 
 void ReceiptTracker::EvictIfNeeded() {
   if (waits_.size() < capacity_) return;
-  // Drop the oldest waiting entry that has already been satisfied or
-  // timed out (stopped == true for shutdown). An active wait is never
-  // evicted -- it would wake with an error, which is worse than a timeout.
   while (waits_.size() >= capacity_ && !order_.empty()) {
     const std::string& front = order_.front();
     auto it = waits_.find(front);
@@ -29,29 +26,27 @@ StatusOr<std::vector<MergeReceipt>> ReceiptTracker::WaitFor(
   if (wanted == 0) return std::vector<MergeReceipt>{};
   if (timeout_ms == 0) timeout_ms = 1;  // clamp to at least 1ms
 
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = waits_.find(message_id);
-    if (it != waits_.end()) {
-      if (wanted > it->second->wanted) it->second->wanted = wanted;
-    } else {
-      EvictIfNeeded();
-      auto state = std::make_unique<WaitState>();
-      state->wanted = wanted;
-      waits_.emplace(message_id, std::move(state));
-      order_.push_back(message_id);
-    }
-  }
-
-  auto wait_state = waits_.find(message_id);
-  if (wait_state == waits_.end()) {
-    return Status::Internal("wait state disappeared after creation");
-  }
-  WaitState* ws = wait_state->second.get();
-
   std::unique_lock<std::mutex> lock(mu_);
+  
+  auto it = waits_.find(message_id);
+  if (it != waits_.end()) {
+    if (wanted > it->second->wanted) it->second->wanted = wanted;
+  } else {
+    EvictIfNeeded();
+    auto state = std::make_unique<WaitState>();
+    state->wanted = wanted;
+    waits_.emplace(message_id, std::move(state));
+    order_.push_back(message_id);
+  }
+  WaitState* ws = waits_[message_id].get();
+
+  DSN_LOG_DEBUG("network", "ReceiptTracker::WaitFor: waiting for message_id=" << message_id
+      << " wanted=" << wanted << " timeout_ms=" << timeout_ms);
+
   if (ws->receipts.size() >= wanted) {
     auto result = ws->receipts;
+    waits_.erase(message_id);
+    if (!order_.empty() && order_.front() == message_id) order_.pop_front();
     return result;
   }
 
@@ -63,29 +58,21 @@ StatusOr<std::vector<MergeReceipt>> ReceiptTracker::WaitFor(
   }
 
   if (ws->stopped) {
+    waits_.erase(message_id);
+    if (!order_.empty() && order_.front() == message_id) order_.pop_front();
     return Status::NetworkError("receipt tracker stopped");
   }
   if (ws->receipts.size() >= wanted) {
     ws->satisfied = true;
     auto result = ws->receipts;
-    // Mark satisfied so the entry can be evicted later.
-    ws->satisfied = true;
-    lock.unlock();
-    {
-      std::lock_guard<std::mutex> l(mu_);
-      waits_.erase(message_id);
-      if (!order_.empty() && order_.front() == message_id) order_.pop_front();
-    }
+    waits_.erase(message_id);
+    if (!order_.empty() && order_.front() == message_id) order_.pop_front();
     return result;
   }
   // Timeout: return what we have.
   auto result = ws->receipts;
-  lock.unlock();
-  {
-    std::lock_guard<std::mutex> l(mu_);
-    waits_.erase(message_id);
-    if (!order_.empty() && order_.front() == message_id) order_.pop_front();
-  }
+  waits_.erase(message_id);
+  if (!order_.empty() && order_.front() == message_id) order_.pop_front();
   return result;
 }
 

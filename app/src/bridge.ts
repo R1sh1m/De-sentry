@@ -139,10 +139,13 @@ export interface CreateNodeRequest {
   quota_mb: number;
   spec: NodeSpec;
   encrypt_at_rest: boolean;
+  /** Store the at-rest key in the OS keychain for automatic restarts. */
+  store_key_in_keychain: boolean;
   supervisor: boolean;
   removable: boolean;
   bootstrap_peers: string[];
   description: string;
+  preallocate?: boolean;
 }
 
 export interface CreateNodeResult {
@@ -150,7 +153,8 @@ export interface CreateNodeResult {
   /**
    * The recovery key, in plain text, exactly once. It is not stored anywhere
    * the app can read back: this response is the only time it exists outside
-   * the OS keychain. The wizard cannot advance until the user has exported it.
+   * the OS keychain when selected. The wizard cannot advance until the user
+   * has exported it.
    */
   recovery_key: string | null;
   /** Keychain entry name, so the node config can reference it. */
@@ -187,6 +191,8 @@ export interface DiscoveredCandidate {
   path: string;
   node_id: string;
   node_name: string;
+  /** Wizard purpose when the Rust scan surfaces one; optional for compat. */
+  description?: string;
   existing_node: boolean;
   adoptable: boolean;
   removable: boolean;
@@ -417,6 +423,11 @@ export const sidecar = {
     return invoke<CreateNodeResult>("create_node", { request });
   },
 
+  /** Dynamically resizes the reservation file as user data grows. */
+  syncStorageReservation(dataDir: string, usedBytes: number, quotaMb: number): Promise<boolean> {
+    return invoke<boolean>("sync_storage_reservation", { dataDir, usedBytes, quotaMb }).catch(() => false);
+  },
+
   /** Adopts an existing data directory: reads its config, allocates a free port, spawns. */
   startExistingNode(dataDir: string): Promise<SupervisedNode> {
     return invoke<SupervisedNode>("start_existing_node", { dataDir });
@@ -486,13 +497,9 @@ export const sidecar = {
     return invoke<void>("export_recovery_key", { nodeId, path });
   },
 
-  /**
-   * Unlocks a password-protected node with its password or its recovery key.
-   * `remember` stores the password in this machine's keychain so the node
-   * starts automatically here from then on.
-   */
-  unlockNode(nodeId: string, secret: string, remember = false): Promise<SupervisedNode> {
-    return invoke<SupervisedNode>("unlock_node", { nodeId, secret, remember });
+  /** Unlocks an encrypted node with a password or recovery key. */
+  unlockNode(nodeId: string, password: string, dataDir?: string): Promise<SupervisedNode> {
+    return invoke<SupervisedNode>("unlock_node", { nodeId, password, dataDir });
   },
 
   /** Locks an encrypted node: stops process and clears in-memory keys. */

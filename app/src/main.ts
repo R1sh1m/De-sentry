@@ -9,53 +9,115 @@
  */
 
 import { apiFor } from "./api.js";
-import { sidecar } from "./bridge.js";
+import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
-import { createMeshGlobe, type GlobeHandle, type GlobeNodePoint } from "./util/meshGlobe.js";
-import { createCanvas } from "./views/canvas.js";
+import { createMeshGlobe, type GlobeHandle, type GlobeLink, type GlobeNodePoint } from "./util/meshGlobe.js";
+import { canvasZoomFit, canvasZoomStep, createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
 import { createHealthAlerts } from "./views/healthAlerts.js";
-import { createInspector } from "./views/inspector.js";
 import { createLedger } from "./views/ledger.js";
 import { createSidebar } from "./views/sidebar.js";
 import { createWizard } from "./views/wizard.js";
 import { createConsole } from "./views/console.js";
 import { createDropbox } from "./views/dropbox.js";
-
-const THEME_KEY = "desentry.theme";
+import { openPalette } from "./views/palette.js";
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 // -- theme -------------------------------------------------------------------
+// Locked to dark mode: the mesh control room ships one palette. The explicit
+// data-theme attribute is set once so every token, canvas and backdrop reads
+// the dark ramp without a prefers-color-scheme branch.
 
-type Theme = "system" | "light" | "dark";
-
-function applyTheme(theme: Theme): void {
-  const root = document.documentElement;
-  if (theme === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
+function lockDarkTheme(): void {
+  document.documentElement.setAttribute("data-theme", "dark");
   try {
-    localStorage.setItem(THEME_KEY, theme);
+    localStorage.removeItem("desentry.theme");
   } catch {
-    // Private windows and locked-down profiles refuse storage. The theme still
-    // applies for this session; only the memory of it is lost.
+    // Private windows refuse storage; the attribute above is what matters.
   }
 }
 
-function storedTheme(): Theme {
+// -- shortcuts cheatsheet ------------------------------------------------------
+
+function openShortcutsCheatsheet(): void {
+  const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
+  const body = el("div", { class: "macos-modal about-macos" });
+  const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "Keyboard Shortcuts" }, body);
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
+  const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
+    if (sheet.open) sheet.close();
+    sheet.remove();
+  };
+  window.addEventListener("keydown", onKey);
+
+  const shortcuts: [string, string][] = [
+    ["N", "New node"],
+    ["1", "Tree view"],
+    ["2", "Mesh view"],
+    ["3", "Open ledger for selected node"],
+    ["4", "Open console for selected node"],
+    ["5", "Open Dropbox"],
+    ["+", "Zoom mesh in"],
+    ["-", "Zoom mesh out"],
+    ["Ctrl/Cmd + 0", "Fit mesh view"],
+    ["Esc", "Close panel / deselect node"],
+    ["Ctrl/Cmd + K", "Command palette"],
+    ["Ctrl/Cmd + R", "Refresh node list"],
+    ["?", "Show this cheatsheet"],
+  ];
+
+  const content = el(
+    "div",
+    { class: "macos-modal__content about-macos__content" },
+    el("div", { class: "about-macos__emblem" }, sentryLogoSvg({ size: 64, animated: false })),
+    el(
+      "div",
+      { class: "about-macos__names" },
+      el("h2", { class: "macos-modal__heading", text: "Keyboard Shortcuts" }),
+    ),
+    el(
+      "div",
+      { class: "shortcuts-grid", style: "display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin-top: 16px; max-width: 400px;" },
+      ...shortcuts.map(([key, desc]) =>
+        el("div", { class: "shortcut-row" },
+          el("kbd", { class: "shortcut-key", style: "background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-xs); padding: 2px 8px; font: var(--text-mono); font-size: 11px; white-space: nowrap;", text: key }),
+          el("span", { class: "shortcut-desc", style: "font: var(--text-caption); color: var(--color-ink-muted-80);", text: desc }),
+        ),
+      ),
+    ),
+    done,
+  );
+  replace(body, content);
+
+  on(done, "click", dismiss);
+  on(sheet, "click", (event) => {
+    if (event.target === sheet) dismiss();
+  });
+  on(sheet, "keydown", (event) => {
+    if (event.key === "Escape") dismiss();
+  });
+  on(sheet, "close", () => sheet.remove());
+  document.body.appendChild(sheet);
   try {
-    const value = localStorage.getItem(THEME_KEY);
-    if (value === "light" || value === "dark" || value === "system") return value;
+    sheet.showModal();
   } catch {
-    // fall through
+    sheet.setAttribute("open", "");
   }
-  return "system";
+  done.focus();
 }
 
 // -- pairing sheet -----------------------------------------------------------
@@ -74,12 +136,20 @@ function openPairingSheet(): void {
 
   const body = el("div", { class: "wizard" });
   const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
-  const dismiss = () => sheet.remove();
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
+  const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
+    sheet.remove();
+  };
+  window.addEventListener("keydown", onKey);
   on(sheet, "click", (event) => {
     if (event.target === sheet) dismiss();
-  });
-  on(sheet, "keydown", (event) => {
-    if (event.key === "Escape") dismiss();
   });
   document.body.appendChild(sheet);
   sheet.focus();
@@ -101,8 +171,6 @@ function openPairingSheet(): void {
   void apiFor(port)
     .pairing()
     .then((pairing) => {
-      const close = el("button", { class: "btn btn--ghost", type: "button", text: "Close" });
-      on(close, "click", dismiss);
       const payload = JSON.stringify(pairing);
 
       replace(
@@ -112,7 +180,7 @@ function openPairingSheet(): void {
           class: "wizard__lead",
           text: "Scan this from De-Sentry on the other machine. It carries addresses and a public key — no secret is in the code, so a photograph of it grants nothing on its own.",
         }),
-        el("div", { class: "qr" }, qrSvg(payload, { scale: 4, title: "Pairing code" })),
+        el("div", { class: "qr qr--constellation" }, qrSvg(payload, { scale: 4, title: "Pairing code" })),
         el(
           "dl",
           { class: "kv" },
@@ -130,7 +198,7 @@ function openPairingSheet(): void {
           }),
         ),
       );
-      replace(body, titleBar, content, el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close));
+      replace(body, titleBar, content);
     })
     .catch((error) => {
       replace(
@@ -147,69 +215,52 @@ function openAboutSheet(): void {
   const reachable = nodes.filter((n) => n.reachable).length;
   const port = store.state.supervisorPort;
 
-  const close = el("button", { class: "btn btn--primary", type: "button", text: "Done" });
-  const body = el("div", { class: "wizard about-sheet" });
-  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
-  const dismiss = () => sheet.remove();
-
-  const closeButton = el("button", { class: "sheet-close", type: "button", title: "Close", "aria-label": "Close" }, icon(Icons.close, 16));
-  on(closeButton, "click", dismiss);
-  const titleBar = el(
-    "div",
-    { class: "wizard__titlebar" },
-    el("span", { style: "width: 28px;" }),
-    el("span", { class: "wizard__titlebar-title", text: "About De-Sentry" }),
-    closeButton,
-  );
+  // macOS-style About: one centred card, no titlebar/footer bands. The old
+  // .wizard titlebar + footer painted darker rectangles behind the title and
+  // Done button in dark mode; this layout has neither.
+  const done = el("button", { class: "btn btn--primary about-macos__done", type: "button", text: "Done" });
+  const body = el("div", { class: "macos-modal about-macos" });
+  const sheet = el("dialog", { class: "modal-dialog sheet-dialog sheet--about", "aria-label": "About De-Sentry" }, body);
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  };
+  const dismiss = () => {
+    window.removeEventListener("keydown", onKey);
+    if (sheet.open) sheet.close();
+    sheet.remove();
+  };
+  window.addEventListener("keydown", onKey);
 
   const content = el(
     "div",
-    { class: "wizard__body" },
-    el("div", { class: "about-sheet__emblem" }, sentryLogoSvg({ size: 72, animated: true })),
-    el("h2", { class: "about-sheet__title", text: "De-Sentry" }),
+    { class: "macos-modal__content about-macos__content" },
+    el("div", { class: "about-macos__emblem" }, sentryLogoSvg({ size: 76, animated: true })),
     el(
-      "p",
-      { class: "about-sheet__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" },
+      "div",
+      { class: "about-macos__names" },
+      el("h2", { class: "macos-modal__heading", text: "De-Sentry" }),
+      el("span", { class: "brand-badge", text: "v2.0" }),
     ),
+    el("p", { class: "about-macos__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" }),
     el(
       "p",
-      {
-        class: "muted",
-        style: "font: var(--text-caption); max-width: 44ch; margin: 0 auto var(--space-md);",
-        text: "A decentralized database mesh with zero fetched runtime dependencies, cryptographic verification, and conflict-free replication.",
-      },
+      { class: "about-macos__blurb", text: "A decentralized database mesh with zero fetched runtime dependencies, cryptographic verification, and conflict-free replication." },
     ),
     el(
       "div",
-      { class: "about-sheet__grid" },
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Cryptographic Aegis" }),
-        el("span", { text: "Ed25519 · X25519 · AES-256-GCM" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Tamper-Evident Ledger" }),
-        el("span", { text: "Hash-chained feed · Quorum GC" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Data Plane" }),
-        el("span", { text: "CRDTs · Hybrid Logical Clocks" }),
-      ),
-      el(
-        "div",
-        { class: "about-sheet__card" },
-        el("strong", { text: "Storage Router" }),
-        el("span", { text: "B+Tree · SQLite · Vector · DuckDB" }),
-      ),
+      { class: "about-macos__grid" },
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Cryptographic Aegis" }), el("span", { text: "Ed25519 · X25519 · AES-256-GCM" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Tamper-Evident Ledger" }), el("span", { text: "Hash-chained feed · Quorum GC" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Data Plane" }), el("span", { text: "CRDTs · Hybrid Logical Clocks" })),
+      el("div", { class: "about-macos__card" }, el("strong", { text: "Storage Router" }), el("span", { text: "B+Tree · SQLite · Vector · DuckDB" })),
     ),
     el(
       "dl",
-      { class: "kv", style: "width: 100%; margin-top: var(--space-md); text-align: left;" },
+      { class: "kv about-macos__kv" },
       el("dt", { text: "Supervisor" }),
       el("dd", { class: "mono", text: port !== null ? `127.0.0.1:${port}` : "offline" }),
       el("dt", { text: "Active Mesh" }),
@@ -217,20 +268,22 @@ function openAboutSheet(): void {
       el("dt", { text: "Shortcuts" }),
       el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · 3 (ledger) · Ctrl+R" }),
     ),
+    done,
   );
+  replace(body, content);
 
-  const footer = el("div", { class: "wizard__footer" }, el("span", { class: "header__spacer" }), close);
-  replace(body, titleBar, content, footer);
-
-  on(close, "click", dismiss);
-  on(sheet, "click", (event) => {
-    if (event.target === sheet) dismiss();
-  });
+  on(done, "click", dismiss);
   on(sheet, "keydown", (event) => {
     if (event.key === "Escape") dismiss();
   });
+  on(sheet, "close", () => sheet.remove());
   document.body.appendChild(sheet);
-  sheet.focus();
+  try {
+    sheet.showModal();
+  } catch {
+    sheet.setAttribute("open", "");
+  }
+  done.focus();
 }
 
 // -- shell -------------------------------------------------------------------
@@ -249,10 +302,12 @@ function build(): void {
     wizard.open({ bootstrapPeer: peerNodeId });
   };
 
+  lockDarkTheme();
+
   const sidebar = createSidebar(() => wizard.open(), onAddAsPeer);
   const canvas = createCanvas(() => wizard.open());
   const explorer = createExplorer();
-  const inspector = createInspector();
+  const explorerMain = el("main", { class: "canvas" }, explorer.element);
   const ledger = createLedger();
   const consoleView = createConsole();
   const dropbox = createDropbox();
@@ -288,35 +343,8 @@ function build(): void {
   );
   on(title, "click", openAboutSheet);
 
-  // Tree ⇄ Mesh Segmented View Switcher in Header
-  const treeModeBtn = el("button", { type: "button", "aria-pressed": "true" }, icon(Icons.tree, 13), "Tree");
-  const meshModeBtn = el("button", { type: "button", "aria-pressed": "false" }, icon(Icons.mesh, 13), "Mesh");
-  on(treeModeBtn, "click", () => store.setCanvasMode("tree"));
-  on(meshModeBtn, "click", () => store.setCanvasMode("mesh"));
-  const viewSegmented = el("div", { class: "segmented", role: "group", "aria-label": "Canvas view" }, treeModeBtn, meshModeBtn);
-
-  const themeButton = el("button", {
-    class: "btn btn--sm btn--ghost btn--icon-only",
-    type: "button",
-    title: "Toggle appearance",
-    "aria-label": "Toggle appearance",
-  });
-  const themes: Theme[] = ["system", "light", "dark"];
-  let theme = storedTheme();
-  const paintTheme = () => {
-    replace(
-      themeButton,
-      theme === "light" ? icon(Icons.sun, 14) : theme === "dark" ? icon(Icons.moon, 14) : icon(Icons.refresh, 14),
-    );
-    themeButton.title = `Appearance: ${theme} (click to cycle)`;
-    applyTheme(theme);
-  };
-  on(themeButton, "click", () => {
-    theme = themes[(themes.indexOf(theme) + 1) % themes.length];
-    paintTheme();
-  });
-  paintTheme();
-
+  // Pairing uses a QR glyph now: the sheet shows a scannable code that links
+  // another device. The old shield conflated pairing with security status.
   const pairButton = el(
     "button",
     {
@@ -325,66 +353,196 @@ function build(): void {
       title: "Pair another device (QR code)",
       "aria-label": "Pair another device",
     },
-    icon(Icons.shield, 14),
+    icon(Icons.qr, 15),
   );
   on(pairButton, "click", openPairingSheet);
+
+  const openCommandPalette = () =>
+    openPalette({ onNewNode: () => wizard.open(), onPair: openPairingSheet });
+  const paletteButton = el(
+    "button",
+    {
+      class: "btn btn--sm btn--ghost btn--icon-only",
+      type: "button",
+      title: "Command palette (Ctrl+K)",
+      "aria-label": "Command palette",
+    },
+    icon(Icons.search, 14),
+  );
+  on(paletteButton, "click", openCommandPalette);
 
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
 
-  let inspectorCollapsed = false;
-  const inspectorToggle = el(
-    "button",
-    { class: "btn btn--sm btn--ghost btn--icon-only", type: "button", title: "Toggle Inspector (Ctrl+I)", "aria-label": "Toggle Inspector" },
-    icon(Icons.inspector, 14),
-  );
-  const toggleInspector = () => {
-    inspectorCollapsed = !inspectorCollapsed;
-    if (inspectorCollapsed) root.setAttribute("data-inspector", "collapsed");
-    else root.removeAttribute("data-inspector");
-    inspectorToggle.setAttribute("aria-pressed", String(!inspectorCollapsed));
-  };
-  on(inspectorToggle, "click", toggleInspector);
+  // Windows custom window controls (integrated in header on Windows/non-macOS desktop)
+  const isWindowsDesktop = isTauri() && !/Macintosh|Mac OS X/.test(navigator.userAgent);
+  let winControls: HTMLElement | null = null;
+  if (isWindowsDesktop) {
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const appWindow = getCurrentWindow();
+      appWindow.setDecorations(false).catch(() => {});
+    }).catch(() => {});
+
+    const minBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--min",
+        type: "button",
+        title: "Minimize",
+        "aria-label": "Minimize",
+        tabIndex: -1,
+      },
+      icon(Icons.minus, 10),
+    );
+    on(minBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().minimize().catch(() => {});
+      }).catch(() => {});
+    });
+
+    const maxBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--max",
+        type: "button",
+        title: "Maximize",
+        "aria-label": "Maximize",
+        tabIndex: -1,
+      },
+      icon(Icons.square, 10),
+    );
+    const updateMaxIcon = () => {
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().isMaximized().then((maximized) => {
+          replace(maxBtn, icon(maximized ? Icons.restoreWindow : Icons.square, 10));
+          maxBtn.title = maximized ? "Restore" : "Maximize";
+          maxBtn.setAttribute("aria-label", maxBtn.title);
+        }).catch(() => {});
+      }).catch(() => {});
+    };
+    on(maxBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().toggleMaximize().then(updateMaxIcon).catch(() => {});
+      }).catch(() => {});
+    });
+
+    const closeBtn = el(
+      "button",
+      {
+        class: "header__win-btn header__win-btn--close",
+        type: "button",
+        title: "Close",
+        "aria-label": "Close",
+        tabIndex: -1,
+      },
+      icon(Icons.close, 10),
+    );
+    on(closeBtn, "click", (e) => {
+      e.stopPropagation();
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().close().catch(() => {});
+      }).catch(() => {});
+    });
+
+    winControls = el(
+      "div",
+      { class: "header__win-controls", "aria-label": "Window controls" },
+      minBtn,
+      maxBtn,
+      closeBtn,
+    );
+
+    window.addEventListener("resize", updateMaxIcon);
+  }
+
+  const headerChildren: HTMLElement[] = [
+    title,
+    el("span", { class: "header__spacer" }),
+    paletteButton,
+    pairButton,
+    newButton,
+  ];
+  if (winControls !== null) {
+    headerChildren.push(winControls);
+  }
 
   const header = el(
     "header",
-    { class: "header" },
-    title,
-    el("span", { class: "header__spacer" }),
-    viewSegmented,
-    el("span", { class: "header__spacer" }),
-    themeButton,
-    pairButton,
-    inspectorToggle,
-    newButton,
+    {
+      class: `header${isTauri() && /Macintosh|Mac OS X/.test(navigator.userAgent) ? " header--macos-overlay" : ""}${isWindowsDesktop ? " header--windows" : ""}`,
+      "data-tauri-drag-region": true,
+    },
+    ...headerChildren,
   );
 
-  const centre = el("div", {});
+  if (isWindowsDesktop) {
+    on(header, "dblclick", (e) => {
+      const target = e.target as HTMLElement | null;
+      if (target === header || target?.classList.contains("header__spacer")) {
+        import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+          getCurrentWindow().toggleMaximize().catch(() => {});
+        }).catch(() => {});
+      }
+    });
+  }
+
+  const centre = el("div", { class: "centre" });
   root.removeAttribute("data-loading");
-  replace(root, backdrop, header, sidebar.element, healthAlerts.element, centre, inspector.element);
+  replace(root, backdrop, header, sidebar.element, healthAlerts.element, centre);
   document.body.appendChild(wizard.element);
 
   // Toasts ------------------------------------------------------------------
   const toastHost = document.getElementById("toasts");
+  const expandedToasts = new Set<number>();
 
   function renderToasts(): void {
     if (toastHost === null) return;
     replace(
       toastHost,
       ...store.state.toasts.map((toast) => {
-        const close = el("button", { class: "btn btn--sm btn--ghost", type: "button", "aria-label": "Dismiss" }, icon(Icons.close, 12));
-        on(close, "click", () => store.dismissToast(toast.id));
-        return el(
+        const isExpanded = expandedToasts.has(toast.id);
+        const dot = el("span", { class: "toast__dot", "aria-hidden": "true" });
+        const titleEl = el("span", { class: "toast__title", text: toast.title });
+        const contentChildren = [titleEl];
+        if (toast.detail) {
+          contentChildren.push(el("span", { class: "toast__detail", text: toast.detail }));
+        }
+        const content = el("div", { class: "toast__content" }, ...contentChildren);
+        const close = el(
+          "button",
+          { class: "toast__close", type: "button", "aria-label": "Dismiss", title: "Dismiss" },
+          icon(Icons.close, 10),
+        );
+        on(close, "click", (e) => {
+          e.stopPropagation();
+          expandedToasts.delete(toast.id);
+          store.dismissToast(toast.id);
+        });
+        const toastEl = el(
           "div",
-          { class: "toast", "data-tone": toast.tone, role: "status" },
-          el(
-            "div",
-            {},
-            el("strong", { text: toast.title }),
-            toast.detail ? el("p", { class: "muted", text: toast.detail }) : null,
-          ),
+          {
+            class: isExpanded ? "toast toast--expanded" : "toast",
+            "data-tone": toast.tone,
+            "data-expanded": String(isExpanded),
+            role: "status",
+            title: isExpanded ? "Click to collapse" : (toast.detail ? "Click to expand" : undefined),
+          },
+          dot,
+          content,
           close,
         );
+        on(toastEl, "click", () => {
+          if (expandedToasts.has(toast.id)) {
+            expandedToasts.delete(toast.id);
+          } else {
+            expandedToasts.add(toast.id);
+            store.freezeToast(toast.id);
+          }
+          renderToasts();
+        });
+        return toastEl;
       }),
     );
   }
@@ -416,12 +574,31 @@ function build(): void {
       id: n.process.node_id,
       status: convergenceOf(n, tip),
     }));
-    activeGlobe?.setData(globePoints, []);
+    // Authentic backdrop: same peer edges the mesh view draws, so the
+    // background constellation forms/breaks with the actual hierarchy.
+    const knownIds = new Set(nodes.map((n) => n.process.node_id));
+    const seenLinks = new Set<string>();
+    const globeLinks: GlobeLink[] = [];
+    for (const n of nodes) {
+      for (const peer of n.peers) {
+        if (!knownIds.has(peer.node_id)) continue;
+        const key = [n.process.node_id, peer.node_id].sort().join("|");
+        if (seenLinks.has(key)) continue;
+        seenLinks.add(key);
+        globeLinks.push({
+          a: n.process.node_id,
+          b: peer.node_id,
+          live: peer.state === "running" && Date.now() - peer.last_seen_ms < 30_000,
+          fitness: peer.fitness?.score ?? 0.5,
+        });
+      }
+    }
+    activeGlobe?.setData(globePoints, globeLinks);
     activeGlobe?.setOnBattery(info?.on_battery ?? false);
 
     const subtitle = [
       state.busy !== "" ? state.busy : state.supervisorPort === null ? "supervisor starting…" : "supervisor active",
-      `${reachable}/${nodes.length} answering`,
+      `${reachable}/${nodes.length} online`,
       info?.on_battery ? "on battery" : null,
       info?.background_mode ? "background sync" : null,
     ]
@@ -431,30 +608,32 @@ function build(): void {
     if (sub !== null) sub.textContent = subtitle;
 
     sidebar.render();
-    inspector.render();
     healthAlerts.render();
-
-    treeModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "tree"));
-    meshModeBtn.setAttribute("aria-pressed", String(state.canvasMode === "mesh"));
 
     // The explorer replaces the canvas when a collection is open; the ledger
     // viewer replaces it when a ledger is open; console replaces it for engine
     // interaction; dropbox replaces it for smart data intake.
+    const mountInCentre = (viewEl: HTMLElement) => {
+      if (centre.firstElementChild !== viewEl || centre.childElementCount !== 1) {
+        replace(centre, viewEl);
+      }
+    };
+
     if (state.selection.kind === "collection") {
       explorer.render();
-      replace(centre, el("main", { class: "canvas" }, explorer.element));
+      mountInCentre(explorerMain);
     } else if (state.selection.kind === "ledger") {
       ledger.render();
-      replace(centre, ledger.element);
+      mountInCentre(ledger.element);
     } else if (state.selection.kind === "console") {
       consoleView.render();
-      replace(centre, consoleView.element);
+      mountInCentre(consoleView.element);
     } else if (state.selection.kind === "dropbox") {
       dropbox.render();
-      replace(centre, dropbox.element);
+      mountInCentre(dropbox.element);
     } else {
       canvas.render();
-      replace(centre, canvas.element);
+      mountInCentre(canvas.element);
     }
 
     renderToasts();
@@ -465,11 +644,27 @@ function build(): void {
 
   // Keyboard ---------------------------------------------------------------
   on(document.body, "keydown", (event) => {
+    // The palette manages its own keys once open; the global handler must
+    // not steal them (its input is a typing target, but check explicitly so
+    // a future handler reorder cannot break it).
+    const inPalette =
+      (event.target as HTMLElement | null)?.closest?.(".palette") != null;
+    if (inPalette) return;
     const target = event.target as HTMLElement | null;
     const typing = target !== null && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
     if (typing) return;
 
-    if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
+    if (event.key === "Escape") {
+      if (wizard.isOpen()) return;
+    }
+
+    if (event.key === "?" && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      openShortcutsCheatsheet();
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommandPalette();
+    } else if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       wizard.open();
     } else if (event.key === "r" && (event.metaKey || event.ctrlKey)) {
@@ -483,16 +678,29 @@ function build(): void {
     } else if (event.key === "2") {
       store.setCanvasMode("mesh");
     } else if (event.key === "3") {
-      const node = store.selectedNode();
-      if (node) store.select({ kind: "ledger", nodeId: node.process.node_id });
+      const node = store.selectedNode() ?? store.dataNodes()[0];
+      if (node) {
+        store.select({ kind: "ledger", nodeId: node.process.node_id });
+      } else {
+        store.select({ kind: "ledger" });
+        store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
+      }
     } else if (event.key === "4") {
       const node = store.selectedNode() ?? store.dataNodes()[0];
       if (node) store.select({ kind: "console", nodeId: node.process.node_id });
     } else if (event.key === "5") {
       store.select({ kind: "dropbox" });
-    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
+    } else if ((event.metaKey || event.ctrlKey) && event.key === "0") {
       event.preventDefault();
-      toggleInspector();
+      canvasZoomFit();
+    } else if ((event.key === "+" || event.key === "=") && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      canvasZoomStep(1.25);
+    } else if (event.key === "-" && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      canvasZoomStep(0.8);
+    } else if (event.key === "Escape" && store.state.selection.kind === "node") {
+      store.select({ kind: "none" });
     }
   });
 

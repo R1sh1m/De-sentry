@@ -104,6 +104,7 @@ class NodeEngine {
   TransitStore& transit() { return *transit_; }
   OutboxStore& outbox() { return *outbox_; }
   ChangeFeed& changes() { return *changes_; }
+  ReceiptTracker& receipt_tracker() { return *receipt_tracker_; }
   bool is_supervisor() const { return options_.supervisor; }
   uint32_t replication_factor() const { return options_.replication_factor; }
   Requestor SelfRequestor() const { return Requestor::Local(identity_->node_id()); }

@@ -10,20 +10,49 @@
 
 import type { MountPoint, TopologyPeer } from "../api.js";
 import { convergenceOf, meshTip, refreshDiscovered, refreshNodeList, store, type Convergence, type NodeView } from "../state.js";
-import { bytes, engineLabel, shortNode } from "../util/format.js";
+import { bytes, displayNodeName, engineLabel, shortNode } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
 
-/** Collapsed groups, remembered for the session only. */
-const collapsed = new Set<string>();
+const STORAGE_KEY = "desentry.sidebar.collapsed";
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {
+    // private window or quota exceeded
+  }
+  return new Set<string>();
+}
+
+function saveCollapsed(set: Set<string>): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...set]));
+  } catch {
+    // ignore
+  }
+}
+
+/** Collapsed groups, persisted to localStorage. */
+const collapsed = loadCollapsed();
 /** Expanded nodes showing their collections. */
 const expandedNodes = new Set<string>();
 /** Current search query for filtering sidebar items. */
 let filterQuery = "";
 /** Previous status per node id - used to detect changes for dot pulse. */
 const prevStatus = new Map<string, Convergence>();
+/**
+ * Roving tabindex state (APG treeview pattern): exactly one tree row carries
+ * tabindex 0; the rest are -1 and reachable via ArrowUp/Down/Home/End.
+ * Survives re-renders as a stable focus id; null means "first visible row".
+ */
+let rovingId: string | null = null;
+/** Set before a notify-triggered re-render so render() can restore focus. */
+let pendingFocusId: string | null = null;
 
 interface Group {
   id: string;
@@ -111,8 +140,16 @@ let activeCtxMenu: HTMLElement | null = null;
 
 function closeCtxMenu(): void {
   if (activeCtxMenu) {
-    activeCtxMenu.remove();
+    const menu = activeCtxMenu;
     activeCtxMenu = null;
+    // hidePopover is a no-op when the menu never entered the top layer
+    // (unsupported webview fallback) or is already hidden.
+    try {
+      menu.hidePopover();
+    } catch {
+      // Fallback path never showed a popover; removal below suffices.
+    }
+    menu.remove();
   }
 }
 
@@ -123,7 +160,10 @@ type CtxMenuItem =
 function showCtxMenu(anchor: HTMLElement, items: CtxMenuItem[]): void {
   closeCtxMenu();
 
-  const menu = el("div", { class: "ctx-menu", role: "menu" });
+  // Native popover="auto": light-dismiss (outside click / Esc) and top-layer
+  // stacking come from the browser. Unsupported webviews fall back to the
+  // manual capture listeners below.
+  const menu = el("div", { class: "ctx-menu", role: "menu", popover: "auto" });
   for (const item of items) {
     if (item === "separator") {
       menu.appendChild(el("div", { class: "ctx-menu__sep", role: "separator" }));
@@ -154,6 +194,17 @@ function showCtxMenu(anchor: HTMLElement, items: CtxMenuItem[]): void {
   const left = Math.min(rect.left, window.innerWidth - mRect.width - 8);
   menu.style.top = `${top}px`;
   menu.style.left = `${left}px`;
+
+  // A natively dismissed popover fires `toggle` with newState "closed" while
+  // staying in the DOM; mirror that into removal so state never leaks.
+  on(menu, "toggle", (e) => {
+    if ((e as ToggleEvent).newState === "closed") closeCtxMenu();
+  });
+
+  if (typeof menu.showPopover === "function") {
+    menu.showPopover();
+    return;
+  }
 
   const dismiss = (e: MouseEvent | KeyboardEvent) => {
     if (e instanceof KeyboardEvent && e.key !== "Escape") return;
@@ -242,6 +293,8 @@ function discoveredCandidateRow(
       class: "tree__row discovered-row",
       "data-depth": "1",
       role: "treeitem",
+      "data-focus-id": `d:${candidate.path}`,
+      tabindex: "-1",
       "aria-selected": "false",
       title: candidate.path || candidate.node_id,
     },
@@ -328,7 +381,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
   const selection = store.state.selection;
   const isNodeSelected = selection.kind === "node" && selection.nodeId === node.process.node_id;
   const status = convergenceOf(node, tip);
-  const name = node.process.node_name || shortNode(node.process.node_id);
+  const name = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
   const collections = node.brain?.collections ?? [];
   const isExpanded = expandedNodes.has(node.process.node_id) || (filterQuery !== "" && collections.length > 0);
 
@@ -434,7 +487,8 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       class: "tree__row",
       "data-depth": "2",
       role: "treeitem",
-      tabindex: "0",
+      "data-focus-id": `n:${node.process.node_id}`,
+      tabindex: "-1",
       "aria-selected": String(isNodeSelected),
       title: `${name} — ${node.process.data_dir}`,
     },
@@ -452,6 +506,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
 
   const toggleOrSelect = (e: MouseEvent | KeyboardEvent) => {
     const target = e.target as HTMLElement;
+    pendingFocusId = `n:${node.process.node_id}`;
     if (target.closest(".tree__chevron") && collections.length > 0) {
       e.stopPropagation();
       if (expandedNodes.has(node.process.node_id)) expandedNodes.delete(node.process.node_id);
@@ -532,7 +587,8 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
           class: "tree__row",
           "data-depth": "3",
           role: "treeitem",
-          tabindex: "0",
+          "data-focus-id": `c:${node.process.node_id}::${c.name}`,
+          tabindex: "-1",
           "aria-selected": String(isColSelected),
           title: `${c.name} (${engineLabel(c.engine)}) — ${c.document_count} documents`,
         },
@@ -546,6 +602,7 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
       );
 
       const openCol = () => {
+        pendingFocusId = `c:${node.process.node_id}::${c.name}`;
         store.select({ kind: "collection", nodeId: node.process.node_id, collection: c.name });
       };
       on(colRow, "click", openCol);
@@ -612,7 +669,8 @@ function groupRow(group: Group): HTMLElement {
       class: "tree__row",
       "data-depth": "1",
       role: "treeitem",
-      tabindex: "0",
+      "data-focus-id": `g:${group.id}`,
+      tabindex: "-1",
       "aria-expanded": String(!isCollapsed),
       title: group.sublabel,
     },
@@ -623,8 +681,10 @@ function groupRow(group: Group): HTMLElement {
   );
 
   const toggle = () => {
+    pendingFocusId = `g:${group.id}`;
     if (collapsed.has(group.id)) collapsed.delete(group.id);
     else collapsed.add(group.id);
+    saveCollapsed(collapsed);
     if (group.kind === "mount" && group.mount) {
       store.select({ kind: "mount", mountPath: group.mount.path });
     } else {
@@ -652,7 +712,7 @@ function emptyMountRow(): HTMLElement {
 // -- pinned navigation -------------------------------------------------------
 
 const PINNED_NAV = [
-  { id: "mesh",    label: "Mesh Map",    iconName: "mesh"     as keyof typeof Icons },
+  { id: "view",    label: "View",        iconName: "mesh"     as keyof typeof Icons },
   { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons },
   { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons },
   { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons },
@@ -676,11 +736,88 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     "aria-label": "Devices and nodes",
   });
 
+  // -- roving tabindex (APG treeview): one tab stop for the whole tree ------
+  const focusableRows = (): HTMLElement[] =>
+    [...tree.querySelectorAll<HTMLElement>("[data-focus-id]")];
+
+  function applyRoving(): void {
+    const rows = focusableRows();
+    if (rows.length === 0) return;
+    let target = rows.find((r) => r.dataset.focusId === rovingId) ?? rows[0];
+    if (pendingFocusId !== null) {
+      const wanted = rows.find((r) => r.dataset.focusId === pendingFocusId);
+      pendingFocusId = null;
+      if (wanted) {
+        target = wanted;
+        // Focus was inside the tree before the re-render; put it back so
+        // keyboard users are not dropped to <body> on every refresh.
+        target.focus();
+      }
+    }
+    rovingId = target.dataset.focusId ?? null;
+    for (const r of rows) r.tabIndex = r === target ? 0 : -1;
+  }
+
+  on(tree, "focusin", (e) => {
+    const row = (e.target as HTMLElement).closest?.("[data-focus-id]") as HTMLElement | null;
+    if (row === null || !tree.contains(row)) return;
+    rovingId = row.dataset.focusId ?? rovingId;
+    for (const r of focusableRows()) r.tabIndex = r === row ? 0 : -1;
+  });
+
+  on(tree, "keydown", (e) => {
+    const row = (e.target as HTMLElement).closest?.("[data-focus-id]") as HTMLElement | null;
+    // Inner action buttons keep their own keys; arrows still move between rows.
+    if (row === null || !tree.contains(row)) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End" && e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const rows = focusableRows();
+    const i = rows.indexOf(row);
+    if (i < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const focusRow = (j: number): void => {
+      rows[j]?.focus();
+    };
+    switch (e.key) {
+      case "ArrowDown": focusRow(Math.min(rows.length - 1, i + 1)); break;
+      case "ArrowUp": focusRow(Math.max(0, i - 1)); break;
+      case "Home": focusRow(0); break;
+      case "End": focusRow(rows.length - 1); break;
+      case "ArrowRight":
+      case "ArrowLeft": {
+        // Expandable rows (groups, nodes with collections) toggle exactly
+        // once; leaves and already-correct rows step to the adjacent row.
+        const wantExpand = e.key === "ArrowRight";
+        const chevron = row.querySelector(".tree__chevron");
+        const expandedAttr =
+          chevron?.getAttribute("data-expanded") ?? row.getAttribute("aria-expanded");
+        if (expandedAttr === null) {
+          focusRow(wantExpand ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1));
+          break;
+        }
+        if ((expandedAttr === "true") === wantExpand) {
+          focusRow(wantExpand ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1));
+          break;
+        }
+        // Node rows toggle only via their chevron; group rows toggle on any
+        // click, so click the row directly (a chevron dispatch would bubble
+        // and toggle twice). dispatchEvent — not .click() — because the
+        // chevron is an SVG element and .click() is HTMLElement-only.
+        if (chevron !== null && !row.hasAttribute("aria-expanded")) {
+          chevron.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        } else {
+          row.click();
+        }
+        break;
+      }
+    }
+  });
+
   const searchInput = el("input", {
     class: "sidebar__search-input",
     type: "search",
-    placeholder: "Search\u2026",
-    "aria-label": "Filter storage",
+    placeholder: "Filter nodes\u2026",
+    "aria-label": "Filter nodes and collections",
   }) as HTMLInputElement;
 
   on(searchInput, "input", () => {
@@ -697,13 +834,167 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
   const pinnedNav = el("nav", { class: "sidebar__pinned-nav", "aria-label": "Primary views" });
 
+  const resizer = el("div", {
+    class: "sidebar__resizer",
+    title: "Drag to resize sidebar · Double-click to reset",
+    role: "separator",
+    "aria-orientation": "vertical",
+  });
+
   const element = el(
     "aside",
     { class: "sidebar", "data-open": "false", "data-collapsed": "false" },
     pinnedNav,
     searchBox,
     tree,
+    resizer,
   );
+
+  // Load saved sidebar width
+  try {
+    const savedWidth = localStorage.getItem("desentry.sidebar.width");
+    if (savedWidth) {
+      const w = parseInt(savedWidth, 10);
+      if (!isNaN(w) && w >= 220 && w <= 550) {
+        document.documentElement.style.setProperty("--sidebar-width", `${w}px`);
+      }
+    }
+  } catch {
+    // private window
+  }
+
+  const SIDEBAR_MIN_W = 220;
+  const SIDEBAR_MAX_W = 550;
+  const SIDEBAR_DEFAULT_W = 280;
+  const clampSidebarWidth = (w: number): number => Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, Math.round(w)));
+  const applySidebarWidth = (w: number): void => {
+    document.documentElement.style.setProperty("--sidebar-width", `${clampSidebarWidth(w)}px`);
+  };
+  const persistSidebarWidth = (w: number): void => {
+    try {
+      localStorage.setItem("desentry.sidebar.width", String(clampSidebarWidth(w)));
+    } catch {
+      // private window or quota exceeded
+    }
+  };
+
+  let isResizing = false;
+  let dragStartWidth = SIDEBAR_DEFAULT_W;
+  const currentSidebarWidth = (): number => {
+    try {
+      const raw = getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width").trim();
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed)) return clampSidebarWidth(parsed);
+    } catch {
+      // fall through to default
+    }
+    return SIDEBAR_DEFAULT_W;
+  };
+  const endResize = (persist: boolean, finalWidth?: number): void => {
+    if (!isResizing) return;
+    isResizing = false;
+    if (persist && finalWidth !== undefined) persistSidebarWidth(finalWidth);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    try {
+      if (resizer.hasPointerCapture?.(0)) {
+        // no-op: capture released per-pointer below
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  // Pointer Events + capture: mouseup outside the window, touch release, and
+  // pointercancel all settle the drag instead of leaving isResizing stuck on
+  // (the "sidebar follows the mouse forever / frozen sliver" bug).
+  resizer.setAttribute("tabindex", "0");
+  on(resizer, "pointerdown", (e: PointerEvent) => {
+    e.preventDefault();
+    isResizing = true;
+    dragStartWidth = currentSidebarWidth();
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    try {
+      resizer.setPointerCapture(e.pointerId);
+    } catch {
+      // Older webviews without capture fall back to window listeners below.
+      const onMoveFallback = (moveEvent: MouseEvent) => {
+        if (!isResizing) return;
+        applySidebarWidth(moveEvent.clientX);
+      };
+      const onUpFallback = () => {
+        const w = currentSidebarWidth();
+        endResize(true, w);
+        window.removeEventListener("mousemove", onMoveFallback);
+        window.removeEventListener("mouseup", onUpFallback);
+      };
+      window.addEventListener("mousemove", onMoveFallback);
+      window.addEventListener("mouseup", onUpFallback);
+    }
+  });
+  on(resizer, "pointermove", (e: PointerEvent) => {
+    if (!isResizing) return;
+    // clientX is viewport-relative and the sidebar starts at x=0 in the
+    // default grid; clamp so a fast fling left can never park a sliver.
+    applySidebarWidth(e.clientX);
+  });
+  const finishPointerResize = (e: PointerEvent, persist: boolean): void => {
+    if (!isResizing) return;
+    const w = clampSidebarWidth(e.clientX);
+    // Re-apply from the event so the persisted value matches what is shown.
+    if (persist) applySidebarWidth(w);
+    else applySidebarWidth(dragStartWidth);
+    try {
+      if (resizer.hasPointerCapture(e.pointerId)) resizer.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    endResize(persist, persist ? w : undefined);
+    if (!persist) persistSidebarWidth(dragStartWidth);
+  };
+  on(resizer, "pointerup", (e: PointerEvent) => finishPointerResize(e, true));
+  on(resizer, "pointercancel", (e: PointerEvent) => finishPointerResize(e, false));
+  // Release outside the window (dragged off-screen) still settles the drag.
+  on(resizer, "lostpointercapture", () => {
+    if (isResizing) endResize(true, currentSidebarWidth());
+  });
+  window.addEventListener("blur", () => {
+    if (isResizing) endResize(true, currentSidebarWidth());
+  });
+  on(resizer, "keydown", (e: KeyboardEvent) => {
+    if (e.key === "Escape" && isResizing) {
+      e.preventDefault();
+      applySidebarWidth(dragStartWidth);
+      endResize(false);
+      return;
+    }
+    const step = e.shiftKey ? 24 : 8;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const delta = e.key === "ArrowRight" ? step : -step;
+      const next = clampSidebarWidth(currentSidebarWidth() + delta);
+      applySidebarWidth(next);
+      persistSidebarWidth(next);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      applySidebarWidth(SIDEBAR_MIN_W);
+      persistSidebarWidth(SIDEBAR_MIN_W);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      applySidebarWidth(SIDEBAR_MAX_W);
+      persistSidebarWidth(SIDEBAR_MAX_W);
+    }
+  });
+
+  on(resizer, "dblclick", () => {
+    document.documentElement.style.setProperty("--sidebar-width", "280px");
+    try {
+      localStorage.removeItem("desentry.sidebar.width");
+    } catch {
+      // ignore
+    }
+  });
 
   // Sidebar collapse button (H2) — caller inserts into header toolbar
   const collapseBtn = el(
@@ -723,10 +1014,12 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     collapseBtn.setAttribute("aria-expanded", String(!sidebarCollapsed));
   });
 
+  let viewToggleRevealed = false;
+
   function isNavActive(id: string): boolean {
     const sel = store.state.selection;
     switch (id) {
-      case "mesh":    return sel.kind === "none" || sel.kind === "node";
+      case "view":    return sel.kind === "none" || sel.kind === "node";
       case "dropbox": return sel.kind === "dropbox";
       case "console": return sel.kind === "console";
       case "ledger":  return sel.kind === "ledger";
@@ -736,9 +1029,16 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
   function navAction(id: string): void {
     switch (id) {
-      case "mesh": {
-        const first = store.selectedNode() ?? store.dataNodes()[0];
-        store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+      case "view": {
+        const isCurrent = isNavActive("view");
+        if (isCurrent) {
+          viewToggleRevealed = !viewToggleRevealed;
+        } else {
+          viewToggleRevealed = true;
+          const first = store.selectedNode() ?? store.dataNodes()[0];
+          store.select(first ? { kind: "node", nodeId: first.process.node_id } : { kind: "none" });
+        }
+        render();
         break;
       }
       case "dropbox":
@@ -750,8 +1050,19 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
         break;
       }
       case "ledger": {
+        const isCurrent = store.state.selection.kind === "ledger";
         const node = store.selectedNode()?.process.node_id ?? store.dataNodes()[0]?.process.node_id;
-        if (node) store.select({ kind: "ledger", nodeId: node });
+        if (node) {
+          store.select({ kind: "ledger", nodeId: node });
+          if (isCurrent) {
+            const nodeObj = store.state.nodes.get(node);
+            const nodeName = nodeObj?.status?.node_name || node.slice(0, 8);
+            store.toast("info", "Ledger Feed", `Feed synced for ${nodeName}`, 2500);
+          }
+        } else {
+          store.select({ kind: "ledger" });
+          store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
+        }
         break;
       }
     }
@@ -761,28 +1072,95 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
   function matchesPinnedNav(q: string): string | undefined {
     if (!q) return undefined;
     const lower = q.toLowerCase();
+    if (lower.includes("view") || lower.includes("mesh") || lower.includes("tree")) return "view";
     return PINNED_NAV.find((item) => item.label.toLowerCase().includes(lower))?.id;
   }
 
   function renderPinnedNav(): HTMLElement {
     const highlightedId = matchesPinnedNav(filterQuery);
-    const items = PINNED_NAV.map((item) => {
+    const canvasMode = store.state.canvasMode;
+    const elements: HTMLElement[] = [];
+
+    for (const item of PINNED_NAV) {
       const isActive = isNavActive(item.id);
       const isHighlighted = highlightedId === item.id;
-      const btn = el(
-        "button",
-        {
-          class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
-          type: "button",
-          "aria-selected": String(isActive),
-        },
-        icon(Icons[item.iconName], 14),
-        el("span", { class: "nav-item__label", text: item.label }),
-      );
-      on(btn, "click", () => navAction(item.id));
-      return btn;
-    });
-    return el("div", { class: "stack", style: "gap: 2px;" }, ...items);
+
+      if (item.id === "view") {
+        const modeIcon = canvasMode === "tree" ? Icons.tree : Icons.mesh;
+        const btn = el(
+          "button",
+          {
+            class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
+            type: "button",
+            "aria-selected": String(isActive),
+            "aria-expanded": String(viewToggleRevealed),
+            title: "Switch canvas view (Tree / Mesh)",
+          },
+          icon(modeIcon, 14),
+          el("span", { class: "nav-item__label", text: "View" }),
+          el("span", { class: "nav-item__badge-view", text: canvasMode === "tree" ? "Tree" : "Mesh" }),
+          el("span", { class: "nav-item__chevron-view", "data-open": String(viewToggleRevealed), text: "▾" }),
+        );
+        on(btn, "click", () => navAction("view"));
+        elements.push(btn);
+
+        if (viewToggleRevealed) {
+          const treeBtn = el(
+            "button",
+            {
+              class: "sidebar__view-btn",
+              type: "button",
+              "aria-pressed": String(canvasMode === "tree"),
+              title: "Tree inventory view (1)",
+            },
+            icon(Icons.tree, 13),
+            el("span", { text: "Tree" }),
+            el("kbd", { text: "1" }),
+          );
+          on(treeBtn, "click", (e) => {
+            e.stopPropagation();
+            store.setCanvasMode("tree");
+            render();
+          });
+
+          const meshBtn = el(
+            "button",
+            {
+              class: "sidebar__view-btn",
+              type: "button",
+              "aria-pressed": String(canvasMode === "mesh"),
+              title: "Mesh topology view (2)",
+            },
+            icon(Icons.mesh, 13),
+            el("span", { text: "Mesh" }),
+            el("kbd", { text: "2" }),
+          );
+          on(meshBtn, "click", (e) => {
+            e.stopPropagation();
+            store.setCanvasMode("mesh");
+            render();
+          });
+
+          const toggleRow = el("div", { class: "sidebar__view-toggle", role: "group", "aria-label": "Canvas view mode" }, treeBtn, meshBtn);
+          elements.push(toggleRow);
+        }
+      } else {
+        const btn = el(
+          "button",
+          {
+            class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
+            type: "button",
+            "aria-selected": String(isActive),
+          },
+          icon(Icons[item.iconName], 14),
+          el("span", { class: "nav-item__label", text: item.label }),
+        );
+        on(btn, "click", () => navAction(item.id));
+        elements.push(btn);
+      }
+    }
+
+    return el("div", { class: "stack", style: "gap: 2px;" }, ...elements);
   }
 
   function render(): void {
@@ -796,15 +1174,11 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
 
     if (groups.length === 0 && store.state.discoveredCandidates.length === 0) {
       children.push(
-        el(
-          "div",
-          { class: "empty" },
-          el("p", { class: "empty__title", text: "No storage yet" }),
-          el("p", {
-            class: "empty__body",
-            text: "Create a node to give this device somewhere to keep data, or plug in a drive to provision a portable one.",
-          }),
-        ),
+        emptyState({
+          title: "No storage yet",
+          body: "Create a node to give this device somewhere to keep data, or plug in a drive to provision a portable one.",
+          watermarkSize: 72,
+        }),
       );
     }
 
@@ -813,7 +1187,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
       const filteredNodes = group.nodes.filter((node) => {
         if (!filterQuery) return true;
         const q = filterQuery.toLowerCase();
-        const name = (node.process.node_name || node.process.node_id).toLowerCase();
+        const name = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id).toLowerCase();
         const hasMatchingCol = (node.brain?.collections ?? []).some((c) =>
           c.name.toLowerCase().includes(q),
         );
@@ -853,6 +1227,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     }
 
     replace(tree, ...children);
+    applyRoving();
   }
 
   return { render, element, collapseBtn };

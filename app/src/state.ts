@@ -184,14 +184,33 @@ class Store {
     });
   }
 
-  toast(tone: Toast["tone"], title: string, detail = "", ms = 5000): void {
+  private toastTimers = new Map<number, number>();
+
+  toast(tone: Toast["tone"], title: string, detail = "", ms = 3500): void {
     const toast: Toast = { id: this.nextToastId++, tone, title, detail, ms };
-    this.state.toasts = [...this.state.toasts, toast];
+    const recent = this.state.toasts.slice(-2);
+    this.state.toasts = [...recent, toast];
     this.notify();
-    if (ms > 0) window.setTimeout(() => this.dismissToast(toast.id), ms);
+    if (ms > 0) {
+      const timer = window.setTimeout(() => this.dismissToast(toast.id), ms);
+      this.toastTimers.set(toast.id, timer);
+    }
+  }
+
+  freezeToast(id: number): void {
+    const timer = this.toastTimers.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.toastTimers.delete(id);
+    }
   }
 
   dismissToast(id: number): void {
+    const timer = this.toastTimers.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.toastTimers.delete(id);
+    }
     this.state.toasts = this.state.toasts.filter((t) => t.id !== id);
     this.notify();
   }
@@ -314,7 +333,7 @@ function blankView(process: SupervisedNode): NodeView {
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof UnreachableError) return "not answering";
+  if (error instanceof UnreachableError) return "not reachable";
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return String(error);
@@ -355,6 +374,10 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
       // Per-engine quota is a separate call and only the inspector shows it,
       // so it is refreshed with the rest rather than on its own timer.
       view.quota = await api.quota().catch(() => view.quota);
+      if (view.quota && !view.process.supervisor) {
+        const quotaMb = view.brain?.free_quota_mb ?? Math.round(view.quota.limit_bytes / (1024 * 1024));
+        sidecar.syncStorageReservation(view.process.data_dir, view.quota.used_bytes, quotaMb).catch(() => {});
+      }
     }
     view.reachable = true;
     view.unreachableReason = "";

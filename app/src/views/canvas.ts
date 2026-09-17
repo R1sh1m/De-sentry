@@ -7,14 +7,38 @@
  * `/_peers`.
  *
  * Features pan & zoom navigation, edge telemetry hover tooltips (latency,
- * fitness, packet loss), and live node card indicators.
+ * fitness, packet loss), and live node card indicators. Node details appear
+ * in a small popover anchored just above the selected node -- there is no
+ * longer a right-hand inspector column.
  */
 
-import { convergenceOf, meshTip, store, type Convergence, type NodeView } from "../state.js";
-import { count, engineLabel, percent, shortHash, shortNode } from "../util/format.js";
+import { convergenceOf, meshTip, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
+import { sidecar, type DiscoveredCandidate } from "../bridge.js";
+import { openUnlockModal } from "./unlockModal.js";
+import { apiFor } from "../api.js";
+import { bytes, count, displayNodeName, duration, engineLabel, percent, shortHash, shortNode, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
-import { sentryWatermarkSvg } from "../util/logo.js";
-import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
+import { emptyState } from "../util/empty.js";
+
+/** Node purpose cache (wizard description in manifest.json), keyed by node id. */
+const purposeCache = new Map<string, string | null>();
+
+/** Node physical folder size on disk cache (bytes), keyed by node id. */
+const diskUsageCache = new Map<string, number>();
+
+/** Node allocation mode cache (reserved vs dynamic), keyed by node id. */
+const allocationModeCache = new Map<string, "reserved" | "dynamic">();
+
+/** Best human name for a card: explicit name first, then folder, then id. */
+function displayNameOf(node: NodeView): string {
+  return displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
+}
+
+/** The unmodified stored name, for tooltips alongside the display name. */
+function rawNameOf(node: NodeView): string {
+  const raw = (node.process.node_name || "").trim();
+  return raw !== "" ? raw : node.process.data_dir || shortNode(node.process.node_id, 8);
+}
 
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
@@ -66,6 +90,41 @@ let panX = 0;
 let panY = 0;
 let zoomScale = 1.0;
 
+/** Upper zoom bound (Slice 1 guardrail): past 2.2x SVG text raster blurs. */
+const ZOOM_MIN = 0.35;
+const ZOOM_MAX = 2.2;
+
+/** Single document-level outside-click dismiss, registered once (not per render). */
+let popoverOutsideArmed = false;
+
+function armPopoverOutsideClick(): void {
+  if (popoverOutsideArmed) return;
+  popoverOutsideArmed = true;
+  document.addEventListener("pointerdown", (e) => {
+    try {
+      const sel = store.state.selection;
+      if (sel.kind !== "node") return;
+      const target = e.target as HTMLElement | null;
+      if (target === null || target.closest === undefined) return;
+      // Chrome (zoom controls, starmap) and cards/popover itself never dismiss.
+      if (
+        target.closest(".mesh__popover")
+        || target.closest(".mesh__node")
+        || target.closest(".canvas__controls")
+        || target.closest(".mesh-minimap")
+      ) {
+        return;
+      }
+      store.select({ kind: "none" });
+    } catch {
+      // Dismissal is a nicety; never break the event that triggered it.
+    }
+  }, true);
+}
+
+
+let meshPlacementMode: "concentric" | "hierarchical" = "concentric";
+
 function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   const tip = meshTip();
   const cx = width / 2;
@@ -76,6 +135,49 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   const ordered = [...nodes].sort((a, b) => a.process.node_id.localeCompare(b.process.node_id));
   if (ordered.length === 1) {
     return [{ node: ordered[0], status: convergenceOf(ordered[0], tip), x: cx, y: cy }];
+  }
+
+  if (meshPlacementMode === "hierarchical") {
+    const levels: NodeView[][] = [];
+    const assigned = new Set<string>();
+
+    const primary = ordered.find((n) => n.process.supervisor) || ordered[0];
+    levels.push([primary]);
+    assigned.add(primary.process.node_id);
+
+    const directPeerIds = new Set(primary.peers.map((p) => p.node_id));
+    const level1 = ordered.filter((n) => !assigned.has(n.process.node_id) && directPeerIds.has(n.process.node_id));
+    if (level1.length > 0) {
+      levels.push(level1);
+      for (const n of level1) assigned.add(n.process.node_id);
+    }
+
+    const remaining = ordered.filter((n) => !assigned.has(n.process.node_id));
+    if (remaining.length > 0) {
+      for (let i = 0; i < remaining.length; i += 4) {
+        levels.push(remaining.slice(i, i + 4));
+      }
+    }
+
+    const startY = 90;
+    const availH = height - 180;
+    const rowStep = levels.length > 1 ? availH / (levels.length - 1) : 0;
+
+    levels.forEach((row, rowIdx) => {
+      const y = levels.length === 1 ? cy : startY + rowIdx * rowStep;
+      const colStep = width / (row.length + 1);
+      row.forEach((node, colIdx) => {
+        const x = colStep * (colIdx + 1);
+        placed.push({
+          node,
+          status: convergenceOf(node, tip),
+          x,
+          y,
+        });
+      });
+    });
+
+    return placed;
   }
 
   const rings: NodeView[][] = [];
@@ -126,15 +228,18 @@ function edgesOf(placed: Placed[]): EdgeData[] {
   return edges;
 }
 
-const CARD_W = 156;
-const CARD_H = 58;
+const CARD_W = 200;
+const CARD_H = 60;
 
-function meshView(nodes: NodeView[], width: number, height: number, container: HTMLElement): HTMLElement {
+function meshView(nodes: NodeView[], width: number, height: number, _container: HTMLElement): HTMLElement {
   const placed = layout(nodes, width, height);
   const edges = edgesOf(placed);
   const selectedId = store.state.selection.nodeId;
 
-  const wrapper = el("div", { style: "position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;" });
+  const wrapper = el("div", {
+    class: zoomScale < 0.6 ? "mesh-zoom-host mesh-canvas--compact" : "mesh-zoom-host",
+    style: "position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;",
+  });
 
   const vignette = el("div", { class: "mesh__vignette", "aria-hidden": "true" });
   wrapper.appendChild(vignette);
@@ -158,43 +263,387 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
   });
   root.appendChild(viewport);
 
-  // Pan & Zoom interaction
+  // Pan & Zoom interaction (mouse drag + wheel + multi-touch pinch + trackpad).
   let isDragging = false;
   let startX = 0;
   let startY = 0;
+  let downX = 0;
+  let downY = 0;
+  let draggedFar = false;
+
+  const popover = el("div", { class: "mesh__popover", hidden: true });
+  wrapper.appendChild(popover);
+
+  const positionPopover = (): void => {
+    try {
+      const selected = wrapper.querySelector(".mesh__node[data-selected=\"true\"]");
+      if (!selected || store.state.selection.kind !== "node") {
+        popover.hidden = true;
+        return;
+      }
+      const nodeRect = (selected as SVGGElement).getBoundingClientRect();
+      const hostRect = wrapper.getBoundingClientRect();
+      if (nodeRect.width === 0 && nodeRect.height === 0) {
+        popover.hidden = true;
+        // Schedule retry once mounted and laid out in the DOM
+        requestAnimationFrame(positionPopover);
+        window.setTimeout(positionPopover, 20);
+        return;
+      }
+      // Scale proportionally with zoom level (matches zoomScale down to ZOOM_MIN 0.35x, up to 1.25x max)
+      const popScale = Math.max(0.35, Math.min(1.25, zoomScale));
+      popover.style.setProperty("--popover-scale", String(popScale));
+      const halfPopover = 118 * popScale;
+      const left = nodeRect.left - hostRect.left + nodeRect.width / 2;
+      const top = nodeRect.top - hostRect.top;
+      const clampedX = Math.max(halfPopover + 8, Math.min(hostRect.width - halfPopover - 8, left));
+
+      const flipToBottom = top < (180 * popScale) && hostRect.height - (top + nodeRect.height) > (180 * popScale);
+      if (flipToBottom) {
+        popover.setAttribute("data-placement", "bottom");
+        popover.style.top = `${Math.round(top + nodeRect.height)}px`;
+      } else {
+        popover.removeAttribute("data-placement");
+        popover.style.top = `${Math.round(Math.max(8, top))}px`;
+      }
+      popover.style.left = `${Math.round(clampedX)}px`;
+      popover.hidden = false;
+    } catch {
+      // Geometry unavailable: popover stays hidden rather than misplaced.
+      popover.hidden = true;
+    }
+  };
+
+  const schedulePositionPopover = (): void => {
+    positionPopover();
+    requestAnimationFrame(positionPopover);
+    window.setTimeout(positionPopover, 0);
+    window.setTimeout(positionPopover, 60);
+  };
 
   const updateTransform = () => {
     viewport.setAttribute("transform", `translate(${panX} ${panY}) scale(${zoomScale})`);
+    wrapper.classList.toggle("mesh-canvas--compact", zoomScale < 0.6);
+    wrapper.classList.toggle("mesh-canvas--surface", zoomScale > 1.6);
+    minimapRect?.setAttribute("x", String(centerX() - viewW() / 2));
+    minimapRect?.setAttribute("y", String(centerY() - viewH() / 2));
+    minimapRect?.setAttribute("width", String(viewW()));
+    minimapRect?.setAttribute("height", String(viewH()));
+    try {
+      const zoomPct = Math.round(zoomScale * 100);
+      const label = `${zoomPct}%`;
+      if (zoomPill.textContent !== label) zoomPill.textContent = label;
+      zoomPill.setAttribute("aria-label", `Zoom level ${label}. Activate to reset.`);
+      if (zoomSlider && zoomSlider.value !== String(zoomPct)) {
+        zoomSlider.value = String(zoomPct);
+      }
+    } catch {
+      // Controls not yet mounted (first updateTransform runs before controls).
+    }
+    positionPopover();
   };
 
-  root.addEventListener("mousedown", (e) => {
-    const target = e.target as SVGElement;
-    if (target.closest(".mesh__node")) return;
-    isDragging = true;
-    startX = e.clientX - panX;
-    startY = e.clientY - panY;
-    root.style.cursor = "grabbing";
+  // Viewport geometry in layout coords (screen S = P*z + pan).
+  const centerX = (): number => (width / 2 - panX) / zoomScale;
+  const centerY = (): number => (height / 2 - panY) / zoomScale;
+  const viewW = (): number => width / zoomScale;
+  const viewH = (): number => height / zoomScale;
+
+  // Starmap minimap: a static miniature of the same map — real peer edges
+  // first (accuracy), then status dots, then the viewport rect. In
+  // hierarchical mode the dots already sit on tree rows, so the miniature
+  // reads as a tree map; in radial mode it reads as the mesh.
+  const MM_W = 96;
+  const MM_H = 64;
+  const mmSvg = svg("svg", {
+    class: "mesh-minimap__svg",
+    viewBox: `0 0 ${width} ${height}`,
+    width: MM_W,
+    height: MM_H,
+    "aria-hidden": "true",
+  });
+  for (const edge of edges) {
+    mmSvg.appendChild(
+      svg("line", {
+        x1: edge.a.x,
+        y1: edge.a.y,
+        x2: edge.b.x,
+        y2: edge.b.y,
+        class: edge.live ? "mesh-minimap__edge" : "mesh-minimap__edge--stale",
+      }),
+    );
+  }
+  for (const p of placed) {
+    const isSelected = selectedId === p.node.process.node_id;
+    mmSvg.appendChild(
+      svg("circle", {
+        cx: p.x,
+        cy: p.y,
+        r: isSelected ? 11 : 8,
+        fill: STATUS_VAR[p.status],
+        class: isSelected ? "mesh-minimap__dot--selected" : "mesh-minimap__dot",
+      }),
+    );
+  }
+  const minimapRect = svg("rect", {
+    class: "mesh-minimap__viewport",
+    x: centerX() - viewW() / 2,
+    y: centerY() - viewH() / 2,
+    width: viewW(),
+    height: viewH(),
+    rx: 24,
+  });
+  mmSvg.appendChild(minimapRect);
+  const minimap = el(
+    "button",
+    { class: "mesh-minimap", type: "button", title: "Starmap — click to center", "aria-label": "Starmap overview. Activate, then use arrow keys to pan." },
+    mmSvg as unknown as HTMLElement,
+  );
+  // Click-to-center: clicking a point centers it in the main view.
+  mmSvg.addEventListener("click", (e: MouseEvent) => {
+    try {
+      const r = (mmSvg as unknown as SVGSVGElement).getBoundingClientRect();
+      const lx = ((e.clientX - r.left) / Math.max(1, r.width)) * width;
+      const ly = ((e.clientY - r.top) / Math.max(1, r.height)) * height;
+      panX = width / 2 - lx * zoomScale;
+      panY = height / 2 - ly * zoomScale;
+      updateTransform();
+    } catch {
+      // Geometry unavailable: minimap stays informational.
+    }
+  });
+  // Keyboard: arrows pan the main view when the minimap is focused.
+  minimap.addEventListener("keydown", (e: KeyboardEvent) => {
+    const step = 40;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      panX += step;
+      updateTransform();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      panX -= step;
+      updateTransform();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      panY += step;
+      updateTransform();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      panY -= step;
+      updateTransform();
+    }
+  });
+  updateTransform();
+
+  // Single-pointer drag pans; two pointers pinch-zoom + pan together.
+  // Pointer Events unify mouse / pen / touch; touch-action:none (CSS) stops
+  // the webview from stealing the gesture for scroll.
+  const activePointers = new Map<number, { x: number; y: number; onNode: boolean }>();
+  let pinchPrevDist = 0;
+  let pinchPrevMidX = 0;
+  let pinchPrevMidY = 0;
+
+  const pinchSnapshot = (): void => {
+    const pts = [...activePointers.values()];
+    if (pts.length !== 2) return;
+    const dx = pts[0].x - pts[1].x;
+    const dy = pts[0].y - pts[1].y;
+    pinchPrevDist = Math.max(1, Math.hypot(dx, dy));
+    pinchPrevMidX = (pts[0].x + pts[1].x) / 2;
+    pinchPrevMidY = (pts[0].y + pts[1].y) / 2;
+  };
+
+  // Every pointer is tracked — even ones starting on a node card — so a
+  // two-finger pinch engages wherever the fingers land. Only drag-panning
+  // and tap-to-deselect stay gated on "not on a node".
+  const onNode = (target: EventTarget | null): boolean => {
+    try {
+      return (target as SVGElement | null)?.closest?.(".mesh__node") != null;
+    } catch {
+      return false;
+    }
+  };
+
+  root.addEventListener("pointerdown", (e) => {
+    const startedOnNode = onNode(e.target);
+    if (!startedOnNode) {
+      try {
+        root.setPointerCapture(e.pointerId);
+      } catch {
+        // Older webviews: fall back to window-level move/up below.
+      }
+    }
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, onNode: startedOnNode });
+    downX = e.clientX;
+    downY = e.clientY;
+    draggedFar = false;
+    if (activePointers.size === 2) {
+      isDragging = false;
+      pinchSnapshot();
+    } else if (activePointers.size === 1 && !startedOnNode) {
+      isDragging = true;
+      startX = e.clientX - panX;
+      startY = e.clientY - panY;
+      root.style.cursor = "grabbing";
+    }
   });
 
-  window.addEventListener("mousemove", (e) => {
+  root.addEventListener("pointermove", (e) => {
+    const known = activePointers.get(e.pointerId);
+    if (!known) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, onNode: known.onNode });
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) draggedFar = true;
+    if (activePointers.size === 2) {
+      const pts = [...activePointers.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const dist = Math.max(1, Math.hypot(dx, dy));
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      if (pinchPrevDist > 0) {
+        const factor = dist / pinchPrevDist;
+        zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
+        // Pan with the midpoint so the map follows the fingers.
+        panX += midX - pinchPrevMidX;
+        panY += midY - pinchPrevMidY;
+        updateTransform();
+      }
+      pinchPrevDist = dist;
+      pinchPrevMidX = midX;
+      pinchPrevMidY = midY;
+      return;
+    }
     if (!isDragging) return;
     panX = e.clientX - startX;
     panY = e.clientY - startY;
     updateTransform();
   });
 
-  window.addEventListener("mouseup", () => {
-    if (isDragging) {
+  const endPointer = (e: PointerEvent): void => {
+    const ended = activePointers.get(e.pointerId);
+    activePointers.delete(e.pointerId);
+    try {
+      if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (activePointers.size === 1) {
+      // Pinch ended with one finger left: resume panning from it, unless
+      // that finger started on a node card (then it owns tap/click).
+      const remaining = [...activePointers.values()][0];
+      pinchPrevDist = 0;
+      if (remaining.onNode) {
+        isDragging = false;
+        root.style.cursor = "grab";
+      } else {
+        isDragging = true;
+        startX = remaining.x - panX;
+        startY = remaining.y - panY;
+      }
+    } else if (activePointers.size === 0) {
+      const wasTap = !draggedFar;
       isDragging = false;
+      pinchPrevDist = 0;
       root.style.cursor = "grab";
+      if (wasTap) {
+        if (ended?.onNode || onNode(e.target)) {
+          // Tap landed on a node: ensure it is selected
+          const nodeEl = (e.target as Element | null)?.closest?.(".mesh__node")
+            || document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".mesh__node");
+          const nodeId = nodeEl?.getAttribute("data-node-id");
+          if (nodeId) {
+            store.select({ kind: "node", nodeId });
+            return;
+          }
+        } else if (store.state.selection.kind === "node") {
+          // Tap on empty water: deselect
+          store.select({ kind: "none" });
+        }
+      }
+    }
+  };
+  root.addEventListener("pointerup", endPointer);
+  root.addEventListener("pointercancel", endPointer);
+
+  // Mouse fallback for webviews without pointer capture + legacy mousedown.
+  root.addEventListener("mousedown", (e) => {
+    if (activePointers.size > 0) return;
+    const target = e.target as SVGElement;
+    if (target.closest(".mesh__node")) return;
+    isDragging = true;
+    downX = e.clientX;
+    downY = e.clientY;
+    draggedFar = false;
+    startX = e.clientX - panX;
+    startY = e.clientY - panY;
+    root.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging || activePointers.size > 0) return;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) draggedFar = true;
+    panX = e.clientX - startX;
+    panY = e.clientY - startY;
+    updateTransform();
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!isDragging || activePointers.size > 0) return;
+    const wasTap = !draggedFar;
+    isDragging = false;
+    root.style.cursor = "grab";
+    if (wasTap) {
+      const target = e.target as SVGElement | null;
+      if (target && !target.closest(".mesh__node") && store.state.selection.kind === "node") {
+        store.select({ kind: "none" });
+      }
     }
   });
 
-  root.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.08 : 0.92;
-    zoomScale = Math.max(0.35, Math.min(2.8, zoomScale * factor));
-    updateTransform();
+  // Wheel zoom listens on both host and SVG root: handles mouse wheel,
+  // trackpad precision scroll, and trackpad pinch-to-zoom (ctrlKey).
+  const onWheel = (e: WheelEvent): void => {
+    try {
+      e.preventDefault();
+      let factor: number;
+      if (e.ctrlKey) {
+        // Trackpad pinch gesture (WebView2 / WKWebView emit wheel+ctrl).
+        factor = Math.exp(-e.deltaY * 0.015);
+      } else if (e.deltaMode === 1) {
+        // Line scrolling (standard mouse wheel notch)
+        factor = e.deltaY < 0 ? 1.1 : 0.9;
+      } else {
+        // Pixel scrolling (trackpad 2-finger scroll or continuous wheel)
+        const normalized = Math.max(-100, Math.min(100, e.deltaY));
+        factor = Math.exp(-normalized * 0.003);
+      }
+      factor = Math.max(0.75, Math.min(1.35, factor));
+      zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
+      updateTransform();
+    } catch {
+      // A zoom gesture must never break the canvas; buttons/keys remain.
+    }
+  };
+  wrapper.addEventListener("wheel", onWheel as EventListener, { passive: false });
+  root.addEventListener("wheel", onWheel as EventListener, { passive: false });
+
+  // Double-click empty water: spring-settle zoom-to-fit.
+  root.addEventListener("dblclick", (e) => {
+    const target = e.target as SVGElement;
+    if (target.closest(".mesh__node")) return;
+    try {
+      viewport.style.transition = "transform var(--motion-settle)";
+      panX = 0;
+      panY = 0;
+      zoomScale = 1.0;
+      updateTransform();
+      window.setTimeout(() => {
+        viewport.style.transition = "";
+      }, 300);
+    } catch {
+      panX = 0;
+      panY = 0;
+      zoomScale = 1.0;
+      updateTransform();
+    }
   });
 
   // Edge layer
@@ -211,7 +660,7 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
     });
 
     edgeLine.addEventListener("mouseenter", (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
+      const rect = wrapper.getBoundingClientRect();
       tooltip.style.left = `${e.clientX - rect.left}px`;
       tooltip.style.top = `${e.clientY - rect.top}px`;
       tooltip.textContent = `${edge.latencyMs.toFixed(1)}ms · ${percent(edge.successRate)} success · fitness ${edge.fitness.toFixed(2)}`;
@@ -229,17 +678,31 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
   // Nodes layer
   const nodesLayer = svg("g", { class: "mesh__nodes" });
   for (const p of placed) {
-    const tipId = p.node.tip?.entry_id ?? p.node.brain?.ledger_tip.entry_id ?? 0;
-    const name = p.node.process.node_name || shortNode(p.node.process.node_id, 8);
+    const rawTipId = p.node.tip?.entry_id ?? p.node.brain?.ledger_tip.entry_id ?? 0;
+    const tipId = rawTipId < 1 ? 1 : rawTipId;
+    const rawName = displayNameOf(p.node);
+    const fullName = rawNameOf(p.node);
+    const hoverName = fullName === rawName ? rawName : `${rawName} — ${fullName}`;
+    const displayName = truncate(rawName, 22);
+    const hash = p.node.tip?.entry_hash;
+    const isZeroOrEmptyHash = !hash || /^0+$/.test(hash);
+    const metaText = p.status === "offline"
+      ? STATUS_TEXT[p.status]
+      : isZeroOrEmptyHash
+        ? `#${tipId}`
+        : `#${tipId} · ${shortHash(hash, 6, 0)}`;
 
     const group = svg("g", {
       class: "mesh__node",
       "data-selected": String(selectedId === p.node.process.node_id),
+      "data-node-id": p.node.process.node_id,
       role: "button",
       tabindex: "0",
-      "aria-label": `${name}, ${STATUS_TEXT[p.status]}, ledger entry ${tipId}`,
+      "aria-label": `${rawName}, ${STATUS_TEXT[p.status]}, ledger entry ${tipId}`,
       transform: `translate(${p.x - CARD_W / 2} ${p.y - CARD_H / 2})`,
     });
+
+    group.appendChild(svg("title", {}, hoverName));
 
     group.appendChild(
       svg("rect", {
@@ -251,9 +714,16 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
       }),
     );
 
-    // 4px Health Strip
+    // Health strip sitting flush inside the rectangular box
     group.appendChild(
-      svg("rect", { width: 4.5, height: CARD_H, rx: 2, fill: STATUS_VAR[p.status] }),
+      svg("rect", {
+        x: 4.5,
+        y: 6,
+        width: 3.5,
+        height: CARD_H - 12,
+        rx: 1.75,
+        fill: STATUS_VAR[p.status],
+      }),
     );
 
     // Pulse dot
@@ -262,19 +732,26 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
     );
 
     group.appendChild(
-      svg("text", { class: "mesh__node-label", x: 26, y: 26 }, name),
+      svg("text", { class: "mesh__node-label", x: 26, y: 26 }, displayName),
     );
 
     group.appendChild(
       svg(
         "text",
         { class: "mesh__node-meta", x: 16, y: 45 },
-        p.status === "offline" ? STATUS_TEXT[p.status] : `#${tipId} · ${shortHash(p.node.tip?.entry_hash, 6, 0)}`,
+        metaText,
       ),
     );
 
-    const select = () => store.select({ kind: "node", nodeId: p.node.process.node_id });
-    group.addEventListener("click", select);
+    const select = () => {
+      store.select({ kind: "node", nodeId: p.node.process.node_id });
+    };
+    group.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!draggedFar) {
+        select();
+      }
+    });
     group.addEventListener("keydown", (event) => {
       const key = (event as KeyboardEvent).key;
       if (key === "Enter" || key === " ") {
@@ -287,20 +764,206 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
   viewport.appendChild(nodesLayer);
   wrapper.appendChild(root);
 
-  // Floating Zoom Controls
-  const zoomInBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom in" }, icon(Icons.zoomIn, 14));
-  on(zoomInBtn, "click", () => {
-    zoomScale = Math.min(2.8, zoomScale * 1.25);
+  // Node details popover: full name, engine, location, size, purpose.
+  // All strings flow through el() text nodes so mesh-supplied names are
+  // escaped on render (AGENTS.md: never innerHTML with peer/user text).
+  // Node details popover: full name, engine, location, data size, on disk, quota ceiling, purpose.
+  // All strings flow through el() text nodes so mesh-supplied names are
+  // escaped on render (AGENTS.md: never innerHTML with peer/user text).
+  const renderPopover = (): void => {
+    const sel = store.state.selection;
+    if (sel.kind !== "node" || !sel.nodeId) {
+      popover.hidden = true;
+      replace(popover);
+      return;
+    }
+    const node = placed.find((q) => q.node.process.node_id === sel.nodeId)?.node;
+    if (!node) {
+      popover.hidden = true;
+      replace(popover);
+      return;
+    }
+    armPopoverOutsideClick();
+    const status = convergenceOf(node, meshTip());
+    const name = displayNameOf(node);
+    const collections = node.brain?.collections ?? [];
+    const defaultEngine = node.status?.default_engine
+      ?? collections[0]?.engine
+      ?? "—";
+    const engines = [...new Set(collections.map((c) => c.engine))];
+    const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
+    const diskBytes = diskUsageCache.get(node.process.node_id);
+    const allocMode = allocationModeCache.get(node.process.node_id);
+    const uptime = node.status ? duration(node.status.uptime_seconds) : "—";
+    const cached = purposeCache.get(node.process.node_id);
+    const purpose = cached === undefined ? "Loading…" : (cached || "No description given");
+
+    const closeBtn = el("button", { class: "mesh__popover-close", type: "button", title: "Close details", "aria-label": "Close node details" }, icon(Icons.close, 11));
+    on(closeBtn, "click", (e) => {
+      e.stopPropagation();
+      store.select({ kind: "none" });
+    });
+    const ledgerBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Ledger" });
+    on(ledgerBtn, "click", (e) => {
+      e.stopPropagation();
+      store.select({ kind: "ledger", nodeId: node.process.node_id });
+    });
+    const consoleBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Console" });
+    on(consoleBtn, "click", (e) => {
+      e.stopPropagation();
+      store.select({ kind: "console", nodeId: node.process.node_id });
+    });
+
+    replace(popover,
+      el("div", { class: "mesh__popover-head" },
+        el("span", { class: "dot", "data-status": status }),
+        el("strong", { class: "mesh__popover-title", title: name, text: truncate(name, 40) }),
+        el("span", { class: "badge", "data-tone": status, text: STATUS_TEXT[status] }),
+        closeBtn,
+      ),
+      el("dl", { class: "kv mesh__popover-kv" },
+        el("dt", { text: "Engine" }),
+        el("dd", { text: engines.length > 0 ? engines.map((e) => engineLabel(e)).join(", ") : engineLabel(defaultEngine) }),
+        el("dt", { text: "Location" }),
+        el("dd", { class: "mono mesh__popover-path", title: node.process.data_dir, text: truncate(node.process.data_dir, 42) }),
+        el("dt", { text: "Data" }),
+        el("dd", {
+          title: "User records stored across collections",
+          text: node.quota
+            ? `${bytes(node.quota.used_bytes)} (${count(totalDocs)} docs)`
+            : `${count(totalDocs)} docs`,
+        }),
+        el("dt", { text: "On Disk" }),
+        el("dd", {
+          title: "Physical folder size on disk (files, logs, and keys).",
+          text: diskBytes !== undefined ? bytes(diskBytes) : "Reading…",
+        }),
+        el("dt", { text: "Quota Cap" }),
+        el("dd", {
+          title: "Configured safety ceiling: writes are refused past this limit to protect disk space.",
+          text: node.quota ? bytes(node.quota.limit_bytes) : (node.brain ? `${node.brain.free_quota_mb} MiB` : "2.0 GiB"),
+        }),
+        el("dt", { text: "Allocation" }),
+        el("dd", {
+          title: allocMode === "reserved"
+            ? "Steam-style upfront reservation: quota space is physically allocated on disk with storage.reserved to guarantee headroom."
+            : "Dynamic allocation: disk space grows on demand as records are written up to quota cap.",
+          text: allocMode === "reserved" ? "Reserved" : (allocMode === "dynamic" ? "Dynamic" : "Detecting…"),
+        }),
+        el("dt", { text: "Purpose" }),
+        el("dd", {
+          class: ((cached ? "" : "muted ") + "mesh__popover-purpose").trim(),
+          title: purpose,
+          text: purpose,
+        }),
+        el("dt", { text: "Ledger" }),
+        el("dd", { class: "mono", text: `#${(node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 1)} · ${shortHash(node.tip?.entry_hash ?? node.brain?.ledger_tip.entry_hash, 6, 0)}` }),
+        el("dt", { text: "Uptime" }),
+        el("dd", { text: `${uptime} · ${node.peers.length} peer${node.peers.length === 1 ? "" : "s"}` }),
+      ),
+      collections.length > 0
+        ? el("div", { class: "mesh__popover-cols" },
+          ...collections.slice(0, 6).map((c) =>
+            el("span", { class: "chip", title: `${c.document_count} documents`, text: `${truncate(c.name, 18)} · ${engineLabel(c.engine)}` }),
+          ),
+        )
+        : null,
+      el("div", { class: "mesh__popover-actions" }, ledgerBtn, consoleBtn),
+    );
+    schedulePositionPopover();
+
+    // Lazy inspection: fetch manifest purpose, real directory size on disk, and allocation mode.
+    if (cached === undefined || diskBytes === undefined || allocMode === undefined) {
+      if (cached === undefined) purposeCache.set(node.process.node_id, null);
+      const port = store.state.supervisorPort;
+      if (port !== null) {
+        apiFor(port).inspect(node.process.data_dir).then((candidate) => {
+          const desc = candidate.description;
+          purposeCache.set(node.process.node_id, typeof desc === "string" && desc.trim() !== "" ? desc : null);
+          if (typeof candidate.used_bytes === "number") {
+            diskUsageCache.set(node.process.node_id, candidate.used_bytes);
+          }
+          if (typeof candidate.preallocated === "boolean") {
+            allocationModeCache.set(node.process.node_id, candidate.preallocated ? "reserved" : "dynamic");
+          } else {
+            allocationModeCache.set(node.process.node_id, "dynamic");
+          }
+          if (store.state.selection.kind === "node" && store.state.selection.nodeId === node.process.node_id) {
+            renderPopover();
+          }
+        }).catch(() => {
+          purposeCache.set(node.process.node_id, null);
+          allocationModeCache.set(node.process.node_id, "dynamic");
+        });
+      }
+    }
+  };
+  renderPopover();
+  // Escape dismisses without a full re-render round-trip.
+  popover.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Escape") {
+      e.stopPropagation();
+      store.select({ kind: "none" });
+    }
+  });
+
+  // Floating Controls (zoom slider flanked by magnifying - / +, zoom pill, reset, layout toggle)
+  const zoomPill = el("button", {
+    class: "btn btn--sm btn--ghost mesh__zoom-pill",
+    type: "button",
+    title: "Zoom level — click to reset to 100%",
+    "aria-label": `Zoom level ${Math.round(zoomScale * 100)} percent. Activate to reset.`,
+    "aria-live": "polite",
+    text: `${Math.round(zoomScale * 100)}%`,
+  });
+  on(zoomPill, "click", () => {
+    panX = 0;
+    panY = 0;
+    zoomScale = 1.0;
     updateTransform();
   });
 
-  const zoomOutBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Zoom out" }, icon(Icons.zoomOut, 14));
+  const zoomSlider = el("input", {
+    type: "range",
+    class: "mesh__zoom-slider",
+    min: String(Math.round(ZOOM_MIN * 100)),
+    max: String(Math.round(ZOOM_MAX * 100)),
+    value: String(Math.round(zoomScale * 100)),
+    title: "Zoom slider",
+    "aria-label": "Mesh zoom slider",
+  }) as HTMLInputElement;
+
+  on(zoomSlider, "input", () => {
+    const val = Number(zoomSlider.value);
+    if (Number.isFinite(val) && val > 0) {
+      zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, val / 100));
+      updateTransform();
+    }
+  });
+
+  const zoomOutBtn = el(
+    "button",
+    { class: "mesh__zoom-btn", type: "button", title: "Zoom out", "aria-label": "Zoom out" },
+    icon(Icons.zoomOut, 14),
+  );
   on(zoomOutBtn, "click", () => {
-    zoomScale = Math.max(0.35, zoomScale * 0.8);
+    zoomScale = Math.max(ZOOM_MIN, zoomScale * 0.85);
     updateTransform();
   });
 
-  const resetBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Reset View" }, icon(Icons.zoomReset, 14));
+  const zoomInBtn = el(
+    "button",
+    { class: "mesh__zoom-btn", type: "button", title: "Zoom in", "aria-label": "Zoom in" },
+    icon(Icons.zoomIn, 14),
+  );
+  on(zoomInBtn, "click", () => {
+    zoomScale = Math.min(ZOOM_MAX, zoomScale * 1.15);
+    updateTransform();
+  });
+
+  const zoomGroup = el("div", { class: "mesh__zoom-group" }, zoomOutBtn, zoomSlider, zoomInBtn);
+
+  const resetBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Reset View", "aria-label": "Reset View" }, icon(Icons.zoomReset, 14));
   on(resetBtn, "click", () => {
     panX = 0;
     panY = 0;
@@ -308,110 +971,297 @@ function meshView(nodes: NodeView[], width: number, height: number, container: H
     updateTransform();
   });
 
-  const controls = el("div", { class: "canvas__controls" }, zoomInBtn, zoomOutBtn, resetBtn);
+  const layoutBtn = el(
+    "button",
+    {
+      class: "btn btn--sm " + (meshPlacementMode === "hierarchical" ? "btn--primary" : "btn--ghost"),
+      type: "button",
+      title: meshPlacementMode === "hierarchical" ? "Hierarchical layout active (click for radial)" : "Radial layout active (click for hierarchical)",
+    },
+    icon(meshPlacementMode === "hierarchical" ? Icons.tree : Icons.mesh, 13),
+    el("span", { style: "font-size: 11px; margin-left: 4px;", text: meshPlacementMode === "hierarchical" ? "Hierarchy" : "Radial" }),
+  );
+  on(layoutBtn, "click", () => {
+    meshPlacementMode = meshPlacementMode === "hierarchical" ? "concentric" : "hierarchical";
+    store.notify();
+  });
+
+  const controls = el("div", { class: "canvas__controls" }, layoutBtn, zoomGroup, zoomPill, resetBtn);
+
   wrapper.appendChild(controls);
+  wrapper.appendChild(minimap);
+
+  (wrapper as HTMLElement & { __positionPopover?: () => void }).__positionPopover = schedulePositionPopover;
+
+  try {
+    const ro = new ResizeObserver(() => {
+      positionPopover();
+    });
+    ro.observe(wrapper);
+  } catch {
+    // ResizeObserver unavailable
+  }
 
   return wrapper;
 }
 
 function treeView(nodes: NodeView[]): HTMLElement {
   const tip = meshTip();
-  const container = el("div", { class: "tree-canvas" });
+  const selectedId = store.state.selection.nodeId;
+  const wrapper = el("div", { class: "tree-canvas-wrapper", style: "position: relative; height: 100%; overflow-y: auto; padding: var(--space-md);" });
 
+  const treeRoot = el("div", { class: "hierarchy-tree", style: "max-width: 980px; margin: 0 auto;" });
+
+  const rootHeader = el(
+    "div",
+    { class: "hierarchy-root-header", style: "display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--color-hairline); margin-bottom: 16px;" },
+    el("div", { class: "row", style: "gap: 8px; align-items: center;" },
+      icon(Icons.mesh, 16),
+      el("strong", { style: "font-size: 15px;", text: "De-Sentry Hierarchical Topology" }),
+      el("span", { class: "badge", text: `${nodes.length} node${nodes.length === 1 ? "" : "s"} online` }),
+    ),
+    el("span", { class: "muted", style: "font-size: 12px;", text: "Tiered View: Root → Storage Media → Nodes → Collections" }),
+  );
+  treeRoot.appendChild(rootHeader);
+
+  // Group nodes by Medium: Local Machine vs Removable Storage
+  const byGroup = new Map<string, { label: string; kind: string; nodes: NodeView[] }>();
   for (const node of nodes) {
-    const status = convergenceOf(node, tip);
-    const selected = store.state.selection.nodeId === node.process.node_id;
-    const tipId = node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 0;
-    const behind = tip !== null ? tip.entry_id - tipId : 0;
+    const isRemovable = node.process.removable;
+    const key = isRemovable ? "Removable Media" : "Host Device";
+    let grp = byGroup.get(key);
+    if (!grp) {
+      grp = { label: key, kind: isRemovable ? "removable" : "local", nodes: [] };
+      byGroup.set(key, grp);
+    }
+    grp.nodes.push(node);
+  }
 
-    const collections = node.brain?.collections ?? [];
-    const deleteBtn = el(
-      "button",
-      { class: "btn btn--xs btn--ghost text-danger", type: "button", title: `Delete ${node.process.node_name || "node"}` },
-      icon(Icons.trash, 12),
+  const branches = el("div", { class: "hierarchy-branches", style: "margin-left: 8px; border-left: 2px solid var(--color-hairline); padding-left: 16px; display: flex; flex-direction: column; gap: 20px;" });
+
+  for (const [groupName, groupData] of byGroup.entries()) {
+    const groupBranch = el("div", { class: "hierarchy-group-branch" });
+    const groupLabel = el(
+      "div",
+      { class: "row", style: "gap: 8px; align-items: center; margin-bottom: 12px;" },
+      el("span", { style: "color: var(--color-ink-muted-48); font-family: var(--font-mono);" }, "├─"),
+      icon(groupData.kind === "removable" ? Icons.drive : Icons.folder, 14),
+      el("strong", { style: "font-size: 13px; color: var(--color-ink-muted-80);", text: groupName }),
+      el("span", { class: "badge", text: `${groupData.nodes.length} nodes` }),
     );
-    on(deleteBtn, "click", (e) => {
-      e.stopPropagation();
-      promptDeleteSupervisedNode(node);
-    });
+    groupBranch.appendChild(groupLabel);
 
-    const card = el(
-      "article",
-      { class: selected ? "card card--elevated" : "card", tabindex: "0", role: "button" },
-      el(
-        "div",
-        { class: "row row--between" },
+    const nodesGrid = el("div", { class: "hierarchy-nodes-grid", style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin-left: 20px; border-left: 1px dashed rgba(255,255,255,0.12); padding-left: 14px;" });
+
+    for (const node of groupData.nodes) {
+      const status = convergenceOf(node, tip);
+      const selected = selectedId === node.process.node_id;
+      const rawTipId = node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 0;
+      const tipId = rawTipId < 1 ? 1 : rawTipId;
+      const behind = tip !== null ? tip.entry_id - tipId : 0;
+
+      const collections = node.brain?.collections ?? [];
+      const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
+      const diskBytes = diskUsageCache.get(node.process.node_id);
+      const diskNote = diskBytes !== undefined ? ` · ${bytes(diskBytes)} on disk` : "";
+      const storageSummary = node.quota
+        ? `${count(totalDocs)} docs · ${bytes(node.quota.used_bytes)} stored of ${bytes(node.quota.limit_bytes)} limit${diskNote}`
+        : node.brain
+          ? `${count(totalDocs)} docs · ${node.brain.free_quota_mb} MiB free${diskNote}`
+          : `${count(totalDocs)} docs${diskNote}`;
+
+      const card = el(
+        "article",
+        {
+          class: selected ? "card card--elevated hierarchy-card" : "card hierarchy-card",
+          tabindex: "0",
+          role: "button",
+          style: "border: 1px solid " + (selected ? "var(--color-primary)" : "var(--color-hairline)") + "; background: var(--chrome-fill);",
+        },
         el(
           "div",
-          { class: "row" },
-          el("span", { class: "dot", "data-status": status }),
-          el("h3", { class: "card__title", text: node.process.node_name || shortNode(node.process.node_id) }),
+          { class: "row row--between", style: "align-items: center;" },
+          el(
+            "div",
+            { class: "row", style: "align-items: center; gap: 8px;" },
+            el("span", { class: "dot", "data-status": status }),
+            el("h3", { class: "card__title", style: "margin: 0;", text: displayNameOf(node), title: rawNameOf(node) }),
+          ),
+          el(
+            "div",
+            { class: "row" },
+            el("span", { class: "badge", "data-tone": status, text: STATUS_TEXT[status] }),
+          ),
         ),
         el(
-          "div",
-          { class: "row" },
-          el("span", { class: "badge", "data-tone": status, text: STATUS_TEXT[status] }),
-          deleteBtn,
+          "dl",
+          { class: "kv", style: "margin-top: 10px;" },
+          el("dt", { text: "Location" }),
+          el("dd", { class: "mono", style: "font-size: 11px; word-break: break-all;", text: truncate(node.process.data_dir, 38) }),
+          el("dt", { text: "Ledger" }),
+          el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
+          el("dt", { text: "Storage" }),
+          el("dd", { text: storageSummary }),
         ),
-      ),
-      el(
-        "dl",
-        { class: "kv" },
-        el("dt", { text: "Ledger" }),
-        el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
-        el("dt", { text: "Collections" }),
-        el("dd", { text: String(collections.length) }),
-        el("dt", { text: "Documents" }),
-        el("dd", { text: count(collections.reduce((sum, c) => sum + c.document_count, 0)) }),
-        el("dt", { text: "Free quota" }),
-        el("dd", { text: node.brain ? `${node.brain.free_quota_mb} MiB` : "—" }),
-        el("dt", { text: "Data directory" }),
-        el("dd", { class: "mono", text: node.process.data_dir }),
-      ),
-      collections.length > 0 &&
-        el(
-          "div",
-          { class: "row", style: "margin-top: var(--space-xs); flex-wrap: wrap;" },
-          ...collections
-            .slice(0, 6)
-            .map((c) =>
-              el("span", {
-                class: "chip",
-                title: `${c.document_count} documents · checksum ${shortHash(c.checksum)}`,
-                text: `${c.name} · ${engineLabel(c.engine)}`,
-              }),
+        collections.length > 0 &&
+          el(
+            "div",
+            { style: "margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--color-hairline);" },
+            el("span", { class: "muted", style: "font-size: 11px; display: block; margin-bottom: 6px;", text: "Collections:" }),
+            el(
+              "div",
+              { class: "row", style: "flex-wrap: wrap; gap: 6px;" },
+              ...collections.map((c) =>
+                el("span", {
+                  class: "chip",
+                  title: `${c.document_count} documents · checksum ${shortHash(c.checksum)}`,
+                  text: `${c.name} · ${engineLabel(c.engine)}`,
+                }),
+              ),
             ),
-          collections.length > 6 && el("span", { class: "muted", text: `+${collections.length - 6} more` }),
-        ),
+          ),
+      );
+
+      const select = () => {
+        store.select({ kind: "node", nodeId: node.process.node_id });
+      };
+      on(card, "click", (e) => {
+        e.stopPropagation();
+        select();
+      });
+      on(card, "keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          select();
+        }
+      });
+      nodesGrid.appendChild(card);
+    }
+
+    groupBranch.appendChild(nodesGrid);
+    branches.appendChild(groupBranch);
+  }
+
+  treeRoot.appendChild(branches);
+  wrapper.appendChild(treeRoot);
+  return wrapper;
+}
+
+function discoveredCanvas(candidates: DiscoveredCandidate[], onNewNode: () => void): HTMLElement {
+  const wrapper = el("div", {
+    style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: var(--space-lg); overflow-y: auto;",
+  });
+
+  const card = el("div", {
+    class: "card card--elevated",
+    style: "max-width: 580px; width: 100%; padding: var(--space-lg); background: var(--chrome-fill); border: 1px solid var(--color-hairline); box-shadow: var(--elev-popover);",
+  });
+
+  const header = el(
+    "div",
+    { style: "margin-bottom: var(--space-md);" },
+    el(
+      "div",
+      { class: "row", style: "gap: 10px; align-items: center; margin-bottom: 6px;" },
+      el("span", { style: "color: var(--color-primary); display: flex;" }, icon(Icons.folder, 22)),
+      el("h2", { style: "margin: 0; font-size: 18px;", text: "Discovered Nodes on this Device" }),
+      el("span", { class: "badge", "data-tone": "converged", text: `${candidates.length} found` }),
+    ),
+    el("p", {
+      class: "muted",
+      style: "font-size: 13px; line-height: 1.5; margin: 0;",
+      text: "Unmanaged or encrypted database directories were detected. Unlock or adopt a node to start the mesh, or ignite a brand new node.",
+    }),
+  );
+
+  const list = el("div", { class: "stack", style: "gap: 10px; margin-bottom: var(--space-md); max-height: 320px; overflow-y: auto;" });
+
+  for (const c of candidates) {
+    const isEncrypted = c.encrypted;
+    const name = c.path.split(/[\\/]/).filter(Boolean).pop() || "node";
+
+    const unlockBtn = el(
+      "button",
+      {
+        class: "btn btn--sm " + (isEncrypted ? "btn--primary" : "btn--secondary"),
+        type: "button",
+      },
+      icon(isEncrypted ? Icons.lock : Icons.plus, 12),
+      el("span", { style: "margin-left: 4px;", text: isEncrypted ? "Unlock Node" : "Adopt Node" }),
     );
 
-    const select = () => store.select({ kind: "node", nodeId: node.process.node_id });
-    on(card, "click", select);
-    on(card, "keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        select();
+    on(unlockBtn, "click", async (e) => {
+      e.stopPropagation();
+      if (isEncrypted) {
+        openUnlockModal({ node_id: c.node_id, node_name: name, data_dir: c.path });
+      } else {
+        unlockBtn.setAttribute("disabled", "true");
+        try {
+          await sidecar.startExistingNode(c.path);
+          store.dismissCandidate(c.path);
+          await refreshNodeList();
+          await refreshTopology();
+          store.toast("success", "Node adopted", name);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          store.toast("error", `Could not adopt ${name}`, msg);
+          unlockBtn.removeAttribute("disabled");
+        }
       }
     });
-    container.appendChild(card);
+
+    const item = el(
+      "div",
+      {
+        class: "card",
+        style: "display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline);",
+      },
+      el(
+        "div",
+        { class: "stack", style: "gap: 4px; min-width: 0;" },
+        el(
+          "div",
+          { class: "row", style: "gap: 8px; align-items: center;" },
+          el("strong", { style: "font-size: 13px;", text: name }),
+          isEncrypted ? el("span", { class: "badge", "data-tone": "lagging", text: "encrypted" }) : null,
+          c.removable ? el("span", { class: "badge", text: "removable" }) : null,
+        ),
+        el("span", { class: "mono muted", style: "font-size: 11px; word-break: break-all;", text: c.path }),
+      ),
+      el("div", { style: "margin-left: 12px; flex-shrink: 0;" }, unlockBtn),
+    );
+
+    list.appendChild(item);
   }
-  return container;
+
+  const newBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Ignite new node instead" });
+  on(newBtn, "click", onNewNode);
+
+  const footer = el(
+    "div",
+    {
+      class: "row row--between",
+      style: "align-items: center; border-top: 1px solid var(--color-hairline); padding-top: 14px;",
+    },
+    el("span", { class: "muted", style: "font-size: 12px;", text: "Need a new, empty storage location?" }),
+    newBtn,
+  );
+
+  card.appendChild(header);
+  card.appendChild(list);
+  card.appendChild(footer);
+  wrapper.appendChild(card);
+  return wrapper;
 }
 
 function emptyCanvas(onNewNode: () => void): HTMLElement {
-  const button = el("button", { class: "btn btn--primary", type: "button", text: "Create a node" });
+  const button = el("button", { class: "btn btn--primary", type: "button", text: "Ignite first node" });
   on(button, "click", onNewNode);
-  return el(
-    "div",
-    { class: "empty" },
-    el("div", { class: "empty__watermark" }, sentryWatermarkSvg(110)),
-    el("p", { class: "empty__title", text: "Nothing to chart yet" }),
-    el("p", {
-      class: "empty__body",
-      text: "A node is a place to keep data — a folder on this machine, or a drive you can carry. Create one and it will appear here, along with every peer it finds.",
-    }),
-    button,
-  );
+  return emptyState({
+    title: "This sector is dark",
+    body: "No nodes yet — a node is a place to keep data, a folder on this machine or a drive you can carry. Ignite one and its star appears here, along with every peer it finds.",
+    actions: [button],
+  });
 }
 
 export interface CanvasHandles {
@@ -421,29 +1271,27 @@ export interface CanvasHandles {
 
 export function createCanvas(onNewNode: () => void): CanvasHandles {
   const body = el("div", { style: "width: 100%; height: 100%; position: relative; z-index: 1;" });
-  const summary = el("span", { class: "muted", style: "font: var(--text-fine);" });
-  const toolbar = el("div", { class: "canvas__toolbar", style: "position: relative; z-index: 2;" }, summary);
-  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, toolbar, body);
+  const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, body);
 
   function render(): void {
     const nodes = store.dataNodes();
     const mode = store.state.canvasMode;
-
-    const reachable = nodes.filter((n) => n.reachable).length;
-    const held = nodes.reduce((sum, n) => sum + (n.brain?.transit_documents_held ?? 0), 0);
-    summary.textContent =
-      nodes.length === 0
-        ? ""
-        : `${reachable}/${nodes.length} answering${held > 0 ? ` · ${count(held)} documents held in transit` : ""}`;
+    const candidates = store.state.discoveredCandidates;
 
     if (nodes.length === 0) {
-      replace(body, emptyCanvas(onNewNode));
+      if (candidates.length > 0) {
+        replace(body, discoveredCanvas(candidates, onNewNode));
+      } else {
+        replace(body, emptyCanvas(onNewNode));
+      }
       return;
     }
 
     if (mode === "mesh") {
       const side = Math.max(760, 260 + Math.ceil(Math.sqrt(nodes.length)) * 200);
-      replace(body, meshView(nodes, side, Math.round(side * 0.65), element));
+      const view = meshView(nodes, side, Math.round(side * 0.65), element);
+      replace(body, view);
+      (view as HTMLElement & { __positionPopover?: () => void }).__positionPopover?.();
     } else {
       replace(body, treeView(nodes));
     }
@@ -454,4 +1302,34 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
 
 export function statusText(status: Convergence): string {
   return STATUS_TEXT[status];
+}
+
+/** Live-update the mounted viewport transform, if a mesh is on screen. */
+function pushZoomToDom(): void {
+  try {
+    const vp = document.querySelector(".mesh__viewport");
+    vp?.setAttribute("transform", `translate(${panX} ${panY}) scale(${zoomScale})`);
+    const host = document.querySelector(".mesh-zoom-host");
+    host?.classList.toggle("mesh-canvas--compact", zoomScale < 0.6);
+    host?.classList.toggle("mesh-canvas--surface", zoomScale > 1.6);
+    const slider = document.querySelector<HTMLInputElement>(".mesh__zoom-slider");
+    if (slider) slider.value = String(Math.round(zoomScale * 100));
+    const pill = document.querySelector(".mesh__zoom-pill");
+    if (pill) pill.textContent = `${Math.round(zoomScale * 100)}%`;
+  } catch {
+    // No mesh mounted: module vars still apply on next render.
+  }
+}
+
+/** Global keyboard parity: +/- step, Ctrl/⌘+0 fit (wired in main.ts). */
+export function canvasZoomStep(factor: number): void {
+  zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
+  pushZoomToDom();
+}
+
+export function canvasZoomFit(): void {
+  panX = 0;
+  panY = 0;
+  zoomScale = 1.0;
+  pushZoomToDom();
 }

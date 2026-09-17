@@ -1,10 +1,8 @@
 #include "desentry/net/wire_protocol.h"
 
-#include <cerrno>
 #include <cstring>
 
 #include "desentry/common/byte_buffer.h"
-#include "desentry/security/crypto.h"
 
 namespace desentry {
 
@@ -384,6 +382,7 @@ std::string HeartbeatPayload::Encode() const {
   w.U64(transit_bytes_held);
   w.U64(transit_budget_bytes);
   w.U8(lifecycle_state);
+  w.U8(is_supervisor ? 1 : 0);
   return w.TakeString();
 }
 HeartbeatPayload HeartbeatPayload::Decode(const std::string& bytes) {
@@ -401,6 +400,7 @@ HeartbeatPayload HeartbeatPayload::Decode(const std::string& bytes) {
   if (r.remaining() > 0) h.transit_bytes_held = r.U64();
   if (r.remaining() > 0) h.transit_budget_bytes = r.U64();
   if (r.remaining() > 0) h.lifecycle_state = r.U8();
+  if (r.remaining() > 0) h.is_supervisor = r.U8() != 0;
   return h;
 }
 
@@ -420,6 +420,7 @@ const char* MessageTypeName(MessageType type) {
     case MessageType::kLedgerDelta: return "LEDGER_DELTA";
     case MessageType::kHeartbeat: return "HEARTBEAT";
     case MessageType::kMergeReceipt: return "MERGE_RECEIPT";
+    case MessageType::kTransitHeld: return "TRANSIT_HELD";
   }
   return "UNKNOWN";
 }

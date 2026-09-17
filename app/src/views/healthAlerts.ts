@@ -59,16 +59,46 @@ export function createHealthAlerts(
   onSelectNode: (nodeId: string) => void,
 ): HealthAlertHandles {
   const element = el("div", { class: "health-alerts", role: "status", "aria-live": "polite" });
+  let expanded = false;
 
   function render(): void {
     const alerts = store.state.nodeAlerts.filter((a) => !a.dismissed);
     if (alerts.length === 0) {
       element.setAttribute("hidden", "");
       replace(element);
+      expanded = false;
       return;
     }
     element.removeAttribute("hidden");
-    replace(element, ...alerts.map((a) => alertBanner(a, onSelectNode)));
+    if (alerts.length === 1) {
+      replace(element, alertBanner(alerts[0], onSelectNode));
+      return;
+    }
+    // Multiple alerts collapse to one summary line so the canvas is not
+    // pushed down by a stack of banners; details expand on demand.
+    const worst: NodeAlert["kind"] = alerts.some((a) => a.kind !== "lagging") ? "offline" : "lagging";
+    const toggleBtn = el("button", {
+      class: "btn btn--sm btn--ghost",
+      type: "button",
+      "aria-expanded": String(expanded),
+      text: expanded ? "Hide" : "Review",
+    });
+    on(toggleBtn, "click", () => {
+      expanded = !expanded;
+      render();
+    });
+    const summary = el(
+      "div",
+      { class: "health-alert", "data-kind": worst, role: "alert" },
+      icon(Icons.warning, 13),
+      el("span", { class: "health-alert__msg", text: `${alerts.length} nodes need attention` }),
+      toggleBtn,
+    );
+    if (!expanded) {
+      replace(element, summary);
+      return;
+    }
+    replace(element, summary, ...alerts.map((a) => alertBanner(a, onSelectNode)));
   }
 
   return { render, element };

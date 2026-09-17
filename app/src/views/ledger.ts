@@ -9,11 +9,13 @@
 
 import { apiFor, type LedgerEntry, type LedgerEntriesPage } from "../api.js";
 import {
+  ago,
   count,
   shortHash,
   shortNode,
 } from "../util/format.js";
-import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 import { store, type NodeView } from "../state.js";
 
 const MAX_ENTRIES_PER_CALL = 5000;
@@ -37,9 +39,9 @@ function card(title: string, ...children: (Node | string | false | null | undefi
 const OPERATION_LABELS: Record<string, string> = {
   PUT: "Write",
   DEL: "Delete",
-  CHECKPOINT: "Checkpoint (GC)",
-  TRANSIT_INTENT: "Transit Intent (held for offline node)",
-  TRANSIT_CLAIMED: "Transit Claimed",
+  CHECKPOINT: "Checkpoint",
+  TRANSIT_INTENT: "Transit intent",
+  TRANSIT_CLAIMED: "Transit claimed",
 };
 
 const OPERATION_TONES: Record<string, string> = {
@@ -49,6 +51,16 @@ const OPERATION_TONES: Record<string, string> = {
   TRANSIT_INTENT: "lagging",
   TRANSIT_CLAIMED: "converged",
 };
+
+/** Badge tone → status color var (same mapping the table badges use). */
+const RIVER_TONE_VAR: Record<string, string> = {
+  converged: "var(--color-status-converged)",
+  lagging: "var(--color-status-lagging)",
+  offline: "var(--color-status-offline)",
+  supervisor: "var(--color-status-supervisor)",
+};
+
+const RIVER_LANE_ORDER = ["PUT", "DEL", "CHECKPOINT", "TRANSIT_INTENT", "TRANSIT_CLAIMED"];
 
 function parseHLC(hlc: string): { date: Date | null; logical: number; nodeId: string } {
   if (!hlc) return { date: null, logical: 0, nodeId: "" };
@@ -77,6 +89,13 @@ function formatHLC(hlc: string): string {
   })} · logical ${logical} · ${shortNode(nodeId)}`;
 }
 
+/** Relative timestamp for the table cell; full detail stays in `title`. */
+function formatHLCRelative(hlc: string): { text: string; title: string } {
+  const { date } = parseHLC(hlc);
+  if (!date) return { text: hlc || "—", title: hlc || "" };
+  return { text: ago(date.getTime()), title: formatHLC(hlc) };
+}
+
 function isTransitOp(op: string): boolean {
   return op === "TRANSIT_INTENT" || op === "TRANSIT_CLAIMED";
 }
@@ -99,12 +118,13 @@ function renderEntryRow(
     ? `held for ${shortNode(entry.collection)}`
     : entry.collection;
 
+  const hlc = formatHLCRelative(entry.hlc);
   const cells: HTMLElement[] = [
     el("td", { class: "mono", text: `#${entry.entry_id}` }),
     el("td", {}, el("span", { class: "badge", "data-tone": opTone, text: opLabel })),
     el("td", { class: "mono", text: collectionDisplay }),
     el("td", { class: "mono", text: entry.key || "—" }),
-    el("td", { class: "mono", text: formatHLC(entry.hlc) }),
+    el("td", { class: "mono", text: hlc.text, title: hlc.title }),
     el("td", { class: "mono", text: originNodeName, title: entry.origin_node_id }),
     el("td", { class: "mono", text: count(entry.document_bytes) }),
   ];
@@ -119,15 +139,6 @@ function renderEntryRow(
   }
 
   return el("tr", { tabindex: "0" }, ...cells);
-}
-
-function emptyState(message: string, sub?: string): HTMLElement {
-  return el(
-    "div",
-    { class: "empty" },
-    el("p", { class: "empty__title", text: message }),
-    sub ? el("p", { class: "empty__body", text: sub }) : null,
-  );
 }
 
 function skeletonRow(colCount: number): HTMLElement {
@@ -146,90 +157,402 @@ export interface LedgerHandles {
 }
 
 export function createLedger(): LedgerHandles {
-  const body = el("div", { class: "stack" });
-  const element = el("main", { class: "canvas" }, body);
+  // Outer element — the full-height main frame. Has padding so cards breathe.
+  const element = el("main", { class: "canvas ledger-view" });
+
+  // ── Stable header ───────────────────────────────────────────────────────────
+  // Filter bar and view-toggle live here and are NEVER destroyed/replaced.
+  // Only the input values are updated, preventing layout jumps from typing.
+  const filterAreaEl = el("div", { class: "ledger__filter-area" });
+  const viewToggleRow = el("div", {
+    class: "row row--between ledger__view-row",
+  });
+
+  // ── Scrollable data panel ────────────────────────────────────────────────────
+  // Only this part swaps out on each async load.
+  const dataPanel = el("div", { class: "ledger__data" });
+
+  const inner = el("div", { class: "ledger__inner" },
+    filterAreaEl,
+    viewToggleRow,
+    dataPanel,
+  );
+  element.appendChild(inner);
 
   let currentFrom = 0;
   let currentTip: number | null = null;
-  let loading = false;
   let filter: FilterState = { operation: "", collection: "", key: "", originNode: "" };
   let showHiddenCols = false;
+  let riverMode: "table" | "river" = "table";
+  let selectedRiverId: number | null = null;
+  let filterTimer = 0;
+
+  // Track which node the filter bar was last built for so we only rebuild
+  // it when the node changes (peers list could differ).
+  let filterBarNodeId = "";
+
+  function scheduleFilterApply(apply: () => void): void {
+    window.clearTimeout(filterTimer);
+    filterTimer = window.setTimeout(apply, 200);
+  }
+
+  /** Restore caret inside the still-mounted filter input after a filter change. */
+  function restoreFilterFocus(field: string): void {
+    try {
+      const input = filterAreaEl.querySelector<HTMLInputElement>(`input[data-filter-field="${field}"]`);
+      if (input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    } catch {
+      // Focus restore is a nicety; a missing field must never break render.
+    }
+  }
 
   async function loadEntries(node: NodeView, from: number, to?: number): Promise<LedgerEntriesPage> {
     return apiFor(node.process.api_port).ledgerEntries(from, to);
   }
 
-  function buildFilterBar(node: NodeView): HTMLElement {
+  /**
+   * Build or update the filter bar in-place.
+   * If node hasn't changed we only update `value` / `selected` on the existing
+   * inputs — this avoids focus loss and layout jumps while typing.
+   */
+  function ensureFilterBar(node: NodeView): void {
+    if (filterBarNodeId === node.process.node_id && filterAreaEl.firstChild) {
+      // Node unchanged — update existing inputs without DOM teardown.
+      const colInput = filterAreaEl.querySelector<HTMLInputElement>("input[data-filter-field=\"collection\"]");
+      const keyInput = filterAreaEl.querySelector<HTMLInputElement>("input[data-filter-field=\"key\"]");
+      if (colInput && colInput !== document.activeElement) colInput.value = filter.collection;
+      if (keyInput && keyInput !== document.activeElement) keyInput.value = filter.key;
+      return;
+    }
+
+    filterBarNodeId = node.process.node_id;
+
     const opOptions = ["", "PUT", "DEL", "CHECKPOINT", "TRANSIT_INTENT", "TRANSIT_CLAIMED"];
     const originOptions = ["", ...node.peers.map((p) => p.node_id)];
 
-    const opSelect = el("select", { class: "field", style: "flex: 1;" },
-      ...opOptions.map((op) => el("option", { value: op, selected: filter.operation === op }, op || "All operations")),
+interface CustomSelectOption {
+  value: string;
+  label: string;
+  title?: string;
+}
+
+interface CustomSelectControl {
+  element: HTMLElement;
+  trigger: HTMLButtonElement;
+  get value(): string;
+  set value(val: string);
+  set id(idStr: string);
+}
+
+function createCustomSelect(
+  options: CustomSelectOption[],
+  initialValue: string,
+  ariaLabel: string,
+  onChange: (value: string) => void,
+): CustomSelectControl {
+  let currentValue = initialValue;
+  let isOpen = false;
+
+  const container = el("div", { class: "custom-select" });
+
+  const labelSpan = el("span", {
+    class: "custom-select__label",
+    text: options.find((o) => o.value === currentValue)?.label ?? options[0]?.label ?? "",
+  });
+
+  const chevron = icon(Icons.chevronDown, 11);
+  chevron.classList.add("custom-select__chevron");
+
+  const trigger = el(
+    "button",
+    {
+      type: "button",
+      class: "ledger__filter-control custom-select__trigger",
+      "aria-label": ariaLabel,
+      "aria-haspopup": "listbox",
+      "aria-expanded": "false",
+    },
+    labelSpan,
+    chevron,
+  ) as HTMLButtonElement;
+
+  const menu = el("div", {
+    class: "custom-select__menu",
+    role: "listbox",
+    "aria-label": ariaLabel,
+    hidden: true,
+  });
+
+  const optionEls: HTMLElement[] = [];
+
+  const updateSelectedDisplay = () => {
+    const selectedOpt = options.find((o) => o.value === currentValue) ?? options[0];
+    labelSpan.textContent = selectedOpt?.label ?? "";
+    trigger.title = selectedOpt?.title ?? selectedOpt?.label ?? "";
+    for (const optEl of optionEls) {
+      const isSel = optEl.getAttribute("data-value") === currentValue;
+      optEl.setAttribute("aria-selected", String(isSel));
+    }
+  };
+
+  const openMenu = () => {
+    if (isOpen) return;
+    document.querySelectorAll<HTMLElement>(".custom-select__menu:not([hidden])").forEach((m) => {
+      m.hidden = true;
+      m.parentElement?.querySelector(".custom-select__trigger")?.setAttribute("aria-expanded", "false");
+    });
+    isOpen = true;
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    const activeEl = optionEls.find((o) => o.getAttribute("data-value") === currentValue) ?? optionEls[0];
+    activeEl?.focus();
+  };
+
+  const closeMenu = (focusTrigger = false) => {
+    if (!isOpen) return;
+    isOpen = false;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (focusTrigger) trigger.focus();
+  };
+
+  for (const opt of options) {
+    const optEl = el("button", {
+      type: "button",
+      class: "custom-select__option",
+      role: "option",
+      "data-value": opt.value,
+      "aria-selected": String(opt.value === currentValue),
+      title: opt.title ?? opt.label,
+      text: opt.label,
+    });
+    on(optEl, "click", (e) => {
+      e.stopPropagation();
+      currentValue = opt.value;
+      updateSelectedDisplay();
+      closeMenu(true);
+      onChange(currentValue);
+    });
+    on(optEl, "keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMenu(true);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = optionEls[optionEls.indexOf(optEl) + 1] ?? optionEls[0];
+        next?.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = optionEls[optionEls.indexOf(optEl) - 1] ?? optionEls[optionEls.length - 1];
+        prev?.focus();
+      }
+    });
+    optionEls.push(optEl);
+    menu.appendChild(optEl);
+  }
+
+  on(trigger, "click", (e) => {
+    e.stopPropagation();
+    if (isOpen) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  });
+
+  on(trigger, "keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openMenu();
+    } else if (e.key === "Escape") {
+      closeMenu();
+    }
+  });
+
+  const outsideHandler = (e: MouseEvent) => {
+    if (!isOpen) return;
+    if (!container.contains(e.target as Node)) {
+      closeMenu();
+    }
+  };
+  document.addEventListener("pointerdown", outsideHandler, true);
+
+  container.appendChild(trigger);
+  container.appendChild(menu);
+  updateSelectedDisplay();
+
+  return {
+    element: container,
+    trigger,
+    get value(): string {
+      return currentValue;
+    },
+    set value(val: string) {
+      currentValue = val;
+      updateSelectedDisplay();
+    },
+    set id(idStr: string) {
+      trigger.id = idStr;
+    },
+  };
+}
+
+    const peerLabel = (id: string): string => {
+      const peer = node.peers.find((p) => p.node_id === id)
+        ?? node.brain?.known_peers.find((p) => p.node_id === id);
+      const host = peer?.hostname || peer?.host || "";
+      return host ? `${host} · ${shortNode(id, 8)}` : shortNode(id, 12);
+    };
+    const opSelect = createCustomSelect(
+      opOptions.map((op) => ({
+        value: op,
+        label: op ? (OPERATION_LABELS[op] ?? op) : "All operations",
+      })),
+      filter.operation,
+      "Filter by operation",
+      (val) => { filter.operation = val; void render(); },
     );
-    on(opSelect, "change", () => { filter.operation = opSelect.value; currentFrom = 0; render(); });
 
     const collectionInput = el("input", {
       type: "text",
-      class: "field",
-      placeholder: "Collection (or owner node for transit)",
+      class: "ledger__filter-control",
+      placeholder: "Filter collection…",
       value: filter.collection,
-      style: "flex: 1;",
+      "aria-label": "Filter by collection",
+      "data-filter-field": "collection",
+    }) as HTMLInputElement;
+    on(collectionInput, "input", () => {
+      const value = collectionInput.value;
+      scheduleFilterApply(() => {
+        filter.collection = value;
+        void render().then(() => restoreFilterFocus("collection"));
+      });
     });
-    on(collectionInput, "input", () => { filter.collection = collectionInput.value; currentFrom = 0; render(); });
 
     const keyInput = el("input", {
       type: "text",
-      class: "field",
-      placeholder: "Key",
+      class: "ledger__filter-control",
+      placeholder: "Filter key…",
       value: filter.key,
-      style: "flex: 1;",
+      "aria-label": "Filter by key",
+      "data-filter-field": "key",
+    }) as HTMLInputElement;
+    on(keyInput, "input", () => {
+      const value = keyInput.value;
+      scheduleFilterApply(() => {
+        filter.key = value;
+        void render().then(() => restoreFilterFocus("key"));
+      });
     });
-    on(keyInput, "input", () => { filter.key = keyInput.value; currentFrom = 0; render(); });
 
-    const originSelect = el("select", { class: "field", style: "flex: 1;" },
-      ...originOptions.map((id) => el("option", { value: id, selected: filter.originNode === id }, id || "All origin nodes")),
+    const originSelect = createCustomSelect(
+      originOptions.map((id) => ({
+        value: id,
+        label: id ? peerLabel(id) : "All origin nodes",
+        title: id || undefined,
+      })),
+      filter.originNode,
+      "Filter by origin node",
+      (val) => { filter.originNode = val; void render(); },
     );
-    on(originSelect, "change", () => { filter.originNode = originSelect.value; currentFrom = 0; render(); });
 
     const toggleHidden = el("button", {
       class: "btn btn--sm btn--ghost", type: "button",
       "aria-pressed": String(showHiddenCols),
       title: "Toggle hidden columns (hashes, signatures)",
     }, icon(Icons.inspector, 13), " Hashes");
-    on(toggleHidden, "click", () => { showHiddenCols = !showHiddenCols; toggleHidden.setAttribute("aria-pressed", String(showHiddenCols)); render(); });
+    on(toggleHidden, "click", () => {
+      showHiddenCols = !showHiddenCols;
+      toggleHidden.setAttribute("aria-pressed", String(showHiddenCols));
+      void render();
+    });
 
     const clearFilters = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.refresh, 13), " Clear");
-    on(clearFilters, "click", () => { filter = { operation: "", collection: "", key: "", originNode: "" }; currentFrom = 0; render(); });
+    on(clearFilters, "click", () => {
+      filter = { operation: "", collection: "", key: "", originNode: "" };
+      if (collectionInput) collectionInput.value = "";
+      if (keyInput) keyInput.value = "";
+      if (opSelect) opSelect.value = "";
+      if (originSelect) originSelect.value = "";
+      void render();
+    });
 
-    return el("div", { class: "card", style: "margin-bottom: var(--space-sm);" },
+    const filterBar = el("div", { class: "card ledger__filter-card" },
       el("h3", { class: "card__title", text: "Filters" }),
-      el("div", { class: "row", style: "flex-wrap: wrap; gap: var(--space-xs);" },
-        el("div", { class: "row", style: "flex: 1; min-width: 180px; gap: var(--space-xxs);" }, el("span", { class: "tree__group-label", text: "Op" }), opSelect),
-        el("div", { class: "row", style: "flex: 1; min-width: 180px; gap: var(--space-xxs);" }, el("span", { class: "tree__group-label", text: "Collection" }), collectionInput),
-        el("div", { class: "row", style: "flex: 1; min-width: 140px; gap: var(--space-xxs);" }, el("span", { class: "tree__group-label", text: "Key" }), keyInput),
-        el("div", { class: "row", style: "flex: 1; min-width: 180px; gap: var(--space-xxs);" }, el("span", { class: "tree__group-label", text: "Origin" }), originSelect),
-        toggleHidden,
-        clearFilters,
+      el("div", { class: "ledger__filter-grid" },
+        el("div", { class: "ledger__filter-item" },
+          el("label", { class: "ledger__filter-label", for: "ledger-filter-op", text: "Operation" }),
+          opSelect.element,
+        ),
+        el("div", { class: "ledger__filter-item" },
+          el("label", { class: "ledger__filter-label", for: "ledger-filter-collection", text: "Collection" }),
+          collectionInput,
+        ),
+        el("div", { class: "ledger__filter-item" },
+          el("label", { class: "ledger__filter-label", for: "ledger-filter-key", text: "Key" }),
+          keyInput,
+        ),
+        el("div", { class: "ledger__filter-item" },
+          el("label", { class: "ledger__filter-label", for: "ledger-filter-origin", text: "Origin" }),
+          originSelect.element,
+        ),
+        el("div", { class: "ledger__filter-actions" },
+          toggleHidden,
+          clearFilters,
+        ),
       ),
+    );
+    opSelect.id = "ledger-filter-op";
+    collectionInput.id = "ledger-filter-collection";
+    keyInput.id = "ledger-filter-key";
+    originSelect.id = "ledger-filter-origin";
+    replace(filterAreaEl, filterBar);
+  }
+
+  function ensureViewToggle(): void {
+    const tableBtn = el("button", { type: "button", "aria-pressed": String(riverMode === "table"), text: "Table" });
+    const riverBtn = el("button", { type: "button", "aria-pressed": String(riverMode === "river"), text: "River" });
+    on(tableBtn, "click", () => {
+      if (riverMode !== "table") {
+        riverMode = "table";
+        void render();
+      }
+    });
+    on(riverBtn, "click", () => {
+      if (riverMode !== "river") {
+        riverMode = "river";
+        void render();
+      }
+    });
+    const segmented = el("div", { class: "segmented", role: "group", "aria-label": "Ledger view" }, tableBtn, riverBtn);
+
+    replace(viewToggleRow,
+      el("span", { class: "ledger__view-label", text: "Visualization" }),
+      segmented,
     );
   }
 
-  function buildTable(node: NodeView, entries: LedgerEntry[], _from: number, _to: number, _tip: number | null): HTMLElement {
-    const filtered = entries.filter((entry) => {
+  /** Shared filter so table and river always agree on what is shown. */
+  function applyEntryFilter(entries: LedgerEntry[]): LedgerEntry[] {
+    return entries.filter((entry) => {
       if (filter.operation && entry.operation !== filter.operation) return false;
-      if (filter.collection) {
-        const coll = isTransitOp(entry.operation) ? entry.collection : entry.collection;
-        if (!coll.toLowerCase().includes(filter.collection.toLowerCase())) return false;
-      }
+      if (filter.collection && !entry.collection.toLowerCase().includes(filter.collection.toLowerCase())) return false;
       if (filter.key && !entry.key.toLowerCase().includes(filter.key.toLowerCase())) return false;
       if (filter.originNode && entry.origin_node_id !== filter.originNode) return false;
       return true;
     });
+  }
+
+  function buildTable(node: NodeView, entries: LedgerEntry[], _from: number, _to: number, _tip: number | null): HTMLElement {
+    const filtered = applyEntryFilter(entries);
 
     if (filtered.length === 0) {
-      return el("div", { class: "empty" },
-        el("p", { class: "empty__title", text: "No entries match the filters" }),
-        el("p", { class: "empty__body", text: "Adjust the filters or load an earlier page." }),
+      return el("div", { class: "empty", style: "padding: var(--space-xl) var(--space-md);" },
+        el("p", { class: "empty__title", text: "No entries match on this page" }),
+        el("p", { class: "empty__body", text: "Adjust the filters or load another page." }),
       );
     }
 
@@ -255,9 +578,123 @@ export function createLedger(): LedgerHandles {
       tbody.appendChild(renderEntryRow(entry, node, filter, showHiddenCols));
     }
 
-    return el("div", { class: "table-container", style: "overflow-x: auto;" },
+    return el("div", { class: "table-container ledger__table-wrap" },
       el("table", { class: "table table--numeric" }, thead, tbody),
     );
+  }
+
+  /**
+   * Time-river: entries drift downstream left→right (x = entry_id), one lane
+   * per operation, checkpoints drawn as dams across all lanes. Selecting a
+   * log opens its detail card below. The table stays the audit surface.
+   */
+  function buildRiver(node: NodeView, entries: LedgerEntry[], from: number, to: number): HTMLElement {
+    void node;
+    const filtered = applyEntryFilter(entries);
+    if (filtered.length === 0) {
+      return el("div", { class: "empty", style: "padding: var(--space-xl) var(--space-md);" },
+        el("p", { class: "empty__title", text: "No entries match on this page" }),
+        el("p", { class: "empty__body", text: "Adjust the filters or load another page." }),
+      );
+    }
+    const lanes = RIVER_LANE_ORDER.filter((op) => filtered.some((e) => e.operation === op));
+    const laneOf = new Map(lanes.map((op, i) => [op, i]));
+    const laneCount = Math.max(1, lanes.length);
+    const laneY = (i: number): number => 36 + i * 46;
+    const height = laneY(laneCount - 1) + 40;
+    const X0 = 150;
+    const X1 = 980;
+    const xOf = (id: number): number => (to <= from ? (X0 + X1) / 2 : X0 + ((id - from) / (to - from)) * (X1 - X0));
+
+    const flow = svg("svg", {
+      class: "river",
+      viewBox: `0 0 1000 ${height}`,
+      role: "img",
+      "aria-label": `Ledger river, ${filtered.length} entries`,
+      style: "width: 100%; height: auto; display: block; min-height: 220px;",
+    });
+    lanes.forEach((op, i) => {
+      const y = laneY(i);
+      flow.appendChild(svg("line", { x1: X0, y1: y, x2: X1, y2: y, class: "river__lane" }));
+      flow.appendChild(svg("text", { x: 12, y: y + 4, class: "river__lane-label" }, OPERATION_LABELS[op] ?? op));
+    });
+
+    const checkpoints = filtered.filter((e) => e.operation === "CHECKPOINT");
+    checkpoints.forEach((cp) => {
+      const x = xOf(cp.entry_id);
+      flow.appendChild(svg("line", { x1: x, y1: 18, x2: x, y2: height - 12, class: "river__dam" }));
+    });
+
+    filtered.forEach((entry) => {
+      const lane = laneOf.get(entry.operation) ?? 0;
+      const x = xOf(entry.entry_id);
+      const y = laneY(lane);
+      const tone = OPERATION_TONES[entry.operation] ?? "converged";
+      const color = RIVER_TONE_VAR[tone] ?? "var(--color-primary)";
+      const isSelected = selectedRiverId === entry.entry_id;
+      const dot = svg("circle", {
+        cx: x,
+        cy: y,
+        r: isSelected ? 7 : 4.5,
+        fill: color,
+        class: "river__dot",
+        tabindex: "0",
+        role: "button",
+        "aria-label": `${entry.operation} #${entry.entry_id} on ${entry.collection}/${entry.key}`,
+        "data-selected": String(isSelected),
+      });
+      dot.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        selectedRiverId = entry.entry_id;
+        void render();
+      });
+      dot.addEventListener("keydown", (ev) => {
+        const key = (ev as KeyboardEvent).key;
+        if (key === "Enter" || key === " ") {
+          ev.preventDefault();
+          selectedRiverId = entry.entry_id;
+          void render();
+        }
+      });
+      flow.appendChild(dot);
+    });
+
+    const wrap = el("div", { class: "river__wrap" }, flow);
+
+    const selected = selectedRiverId !== null ? filtered.find((e) => e.entry_id === selectedRiverId) : null;
+    if (selected) {
+      const close = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Close" });
+      on(close, "click", () => {
+        selectedRiverId = null;
+        void render();
+      });
+      wrap.appendChild(
+        el("div", { class: "card", style: "margin-top: var(--space-sm); border: 1px solid var(--color-hairline);" },
+          el("div", { class: "row row--between" },
+            el("h4", { class: "card__title", text: `Entry #${selected.entry_id} — ${OPERATION_LABELS[selected.operation] ?? selected.operation}` }),
+            close,
+          ),
+          el("dl", { class: "kv" },
+            el("dt", { text: "Collection" }), el("dd", { class: "mono", text: selected.collection }),
+            el("dt", { text: "Key" }), el("dd", { class: "mono", text: selected.key }),
+            el("dt", { text: "Origin" }), el("dd", { class: "mono", text: selected.origin_node_id }),
+            el("dt", { text: "HLC" }), el("dd", { class: "mono", text: selected.hlc }),
+            el("dt", { text: "Bytes" }), el("dd", { class: "mono", text: `${selected.document_bytes} B` }),
+            selected.prev_hash ? el("dt", { text: "Prev Hash" }) : null,
+            selected.prev_hash ? el("dd", { class: "mono text-fine text-break", text: selected.prev_hash }) : null,
+            selected.entry_hash ? el("dt", { text: "Entry Hash" }) : null,
+            selected.entry_hash ? el("dd", { class: "mono text-fine text-break", text: selected.entry_hash }) : null,
+            selected.origin_signature ? el("dt", { text: "Signature" }) : null,
+            selected.origin_signature ? el("dd", { class: "mono text-fine text-break", text: selected.origin_signature }) : null,
+          ),
+        ),
+      );
+    } else {
+      wrap.appendChild(
+        el("p", { class: "muted", style: "font: var(--text-fine); padding-top: var(--space-xs);", text: "Select a log to inspect it. The table view stays the audit surface." }),
+      );
+    }
+    return wrap;
   }
 
   function buildPager(_node: NodeView, from: number, to: number, tip: number | null, entries: LedgerEntry[], _totalCount: number): HTMLElement {
@@ -265,85 +702,126 @@ export function createLedger(): LedgerHandles {
     const hasPrev = !isFirstPage;
     const hasNext = tip !== null && to < tip;
 
-    const prevBtn = el("button", { class: "btn btn--sm", type: "button", disabled: !hasPrev }, icon(Icons.chevronRight, 13), " Earlier");
+    const prevBtn = el("button", { class: "btn btn--sm", type: "button", disabled: !hasPrev }, icon(Icons.chevronLeft, 13), " Earlier");
     on(prevBtn, "click", () => {
       const newFrom = Math.max(0, from - MAX_ENTRIES_PER_CALL);
       currentFrom = newFrom;
-      render();
+      void render();
     });
 
     const nextBtn = el("button", { class: "btn btn--sm", type: "button", disabled: !hasNext }, "Later ", icon(Icons.chevronRight, 13));
     on(nextBtn, "click", () => {
       currentFrom = to + 1;
-      render();
+      void render();
     });
 
-    const info = el("span", { class: "muted", style: "flex: 1; text-align: center;" },
-      `Showing ${count(from + 1)}–${count(from + filteredCount(entries))} of ${tip !== null ? count(tip + 1) : "unknown"} entries`);
+    const filtered = applyEntryFilter(entries);
+    // Empty pages carry no range: the table's "No entries match" empty state
+    // speaks, and a "Showing 1–0 of 0 entries" line would contradict it.
+    if (filtered.length === 0) {
+      return el("div", { class: "row row--between ledger__pager" },
+        prevBtn,
+        el("span", { class: "muted", hidden: true }),
+        nextBtn,
+      );
+    }
+    const firstId = filtered[0].entry_id;
+    const lastId = filtered[filtered.length - 1].entry_id;
+    const info = el("span", { class: "muted", style: "flex: 1; text-align: center; font: var(--text-caption);" },
+      `Showing ${count(firstId)}–${count(lastId)} of ${tip !== null ? count(tip + 1) : "unknown"} entries`);
 
-    return el("div", { class: "row row--between", style: "margin-top: var(--space-sm); padding: var(--space-xs) var(--space-sm);" },
+    return el("div", { class: "row row--between ledger__pager" },
       prevBtn, info, nextBtn,
     );
   }
 
-  function filteredCount(entries: LedgerEntry[]): number {
-    return entries.filter((entry) => {
-      if (filter.operation && entry.operation !== filter.operation) return false;
-      if (filter.collection) {
-        const coll = isTransitOp(entry.operation) ? entry.collection : entry.collection;
-        if (!coll.toLowerCase().includes(filter.collection.toLowerCase())) return false;
-      }
-      if (filter.key && !entry.key.toLowerCase().includes(filter.key.toLowerCase())) return false;
-      if (filter.originNode && entry.origin_node_id !== filter.originNode) return false;
-      return true;
-    }).length;
+  // ── In-memory page cache to prevent re-fetching when filtering or toggling view modes ──
+  let cachedNodeId = "";
+  let cachedFrom = -1;
+  let cachedPage: LedgerEntriesPage | null = null;
+  let inFlightPromise: Promise<void> | null = null;
+
+  function renderDataPanel(node: NodeView, page: LedgerEntriesPage): void {
+    replace(dataPanel,
+      card("Ledger",
+        riverMode === "river"
+          ? buildRiver(node, page.entries, page.from, page.to)
+          : buildTable(node, page.entries, page.from, page.to, currentTip),
+        buildPager(node, page.from, page.to, currentTip, page.entries, page.count),
+      ),
+    );
   }
 
   async function render(): Promise<void> {
     const selection = store.state.selection;
     if (selection.kind !== "ledger" || !selection.nodeId) {
-      replace(body, emptyState("No ledger selected", "Select a node from the sidebar or canvas to view its ledger."));
+      replace(filterAreaEl);
+      replace(viewToggleRow);
+      replace(dataPanel, emptyState({ title: "No ledger selected", body: "Select a node from the sidebar or canvas to view its ledger." }));
+      filterBarNodeId = "";
+      cachedNodeId = "";
+      cachedPage = null;
       return;
     }
 
     const node = store.state.nodes.get(selection.nodeId);
     if (!node) {
-      replace(body, emptyState("Node not found", "The selected node is no longer available."));
+      replace(filterAreaEl);
+      replace(viewToggleRow);
+      replace(dataPanel, emptyState({ title: "Node not found", body: "The selected node is no longer available." }));
+      filterBarNodeId = "";
+      cachedNodeId = "";
+      cachedPage = null;
       return;
     }
 
-    if (loading) {
-      const visibleCols = showHiddenCols ? 12 : 8;
-      replace(body, buildFilterBar(node), card("Ledger", el("table", { class: "table" },
-        el("thead", {}, el("tr", {}, ...Array.from({ length: visibleCols }, () => el("th", { text: "…" })))),
-        el("tbody", {}, ...Array.from({ length: 5 }, () => skeletonRow(visibleCols))),
-      )));
+    // Always keep the filter bar + view toggle stable.
+    ensureFilterBar(node);
+    ensureViewToggle();
+
+    // If we have cached entries for this node and offset, render immediately (no flicker!)
+    if (cachedNodeId === node.process.node_id && cachedFrom === currentFrom && cachedPage) {
+      renderDataPanel(node, cachedPage);
       return;
     }
 
-    loading = true;
-    store.notify();
+    // Prevent duplicate concurrent loads
+    if (inFlightPromise) return;
 
-    try {
-      const to = currentFrom + MAX_ENTRIES_PER_CALL - 1;
-      const page = await loadEntries(node, currentFrom, to);
-      currentTip = page.to;
-
-      replace(body,
-        buildFilterBar(node),
-        card("Ledger",
-          buildTable(node, page.entries, page.from, page.to, currentTip),
-          buildPager(node, page.from, page.to, currentTip, page.entries, page.count),
+    // Show skeleton only during actual network fetch
+    const visibleCols = showHiddenCols ? 11 : 7;
+    replace(dataPanel, card("Ledger",
+      el("div", { class: "table-container ledger__table-wrap" },
+        el("table", { class: "table table--numeric" },
+          el("thead", {}, el("tr", {}, ...Array.from({ length: visibleCols }, () => el("th", { text: "…" })))),
+          el("tbody", {}, ...Array.from({ length: 5 }, () => skeletonRow(visibleCols))),
         ),
-      );
-    } catch (error) {
-      replace(body, buildFilterBar(node), card("Ledger",
-        el("p", { class: "error-note", text: `Could not load ledger: ${describeError(error)}` }),
-      ));
-    } finally {
-      loading = false;
-      store.notify();
-    }
+      ),
+    ));
+
+    const fetchNodeId = node.process.node_id;
+    const fetchFrom = currentFrom;
+
+    inFlightPromise = (async () => {
+      try {
+        const to = fetchFrom + MAX_ENTRIES_PER_CALL - 1;
+        const page = await loadEntries(node, fetchFrom, to);
+        currentTip = page.to;
+        cachedNodeId = fetchNodeId;
+        cachedFrom = fetchFrom;
+        cachedPage = page;
+
+        if (store.state.selection.kind === "ledger" && store.state.selection.nodeId === fetchNodeId && currentFrom === fetchFrom) {
+          renderDataPanel(node, page);
+        }
+      } catch (error) {
+        replace(dataPanel, card("Ledger",
+          el("p", { class: "error-note", text: `Could not load ledger: ${describeError(error)}` }),
+        ));
+      } finally {
+        inFlightPromise = null;
+      }
+    })();
   }
 
   return { render, element };

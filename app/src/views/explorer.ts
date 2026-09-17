@@ -12,6 +12,7 @@ import { apiFor, ApiError, type DocumentRow } from "../api.js";
 import { refreshNode, store } from "../state.js";
 import { count, documentPreview, engineLabel, json, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
+import { emptyState } from "../util/empty.js";
 
 const PAGE_SIZE = 200;
 
@@ -46,16 +47,27 @@ function showModalPrompt(title: string, message: string, defaultValue = ""): Pro
       ),
     );
 
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
     const close = (val: string | null) => {
+      window.removeEventListener("keydown", onKey);
       scrim.remove();
       resolve(val);
     };
 
+    on(scrim, "click", (e) => {
+      if (e.target === scrim) close(null);
+    });
     on(cancelBtn, "click", () => close(null));
     on(okBtn, "click", () => close(input.value.trim() || null));
     on(input, "keydown", (e) => {
       if (e.key === "Enter") close(input.value.trim() || null);
-      else if (e.key === "Escape") close(null);
     });
 
     document.body.appendChild(scrim);
@@ -84,16 +96,25 @@ function showModalConfirm(title: string, message: string, confirmLabel = "Delete
       ),
     );
 
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
     const close = (val: boolean) => {
+      window.removeEventListener("keydown", onKey);
       scrim.remove();
       resolve(val);
     };
 
+    on(scrim, "click", (e) => {
+      if (e.target === scrim) close(false);
+    });
     on(cancelBtn, "click", () => close(false));
     on(okBtn, "click", () => close(true));
-    on(scrim, "keydown", (e) => {
-      if (e.key === "Escape") close(false);
-    });
 
     document.body.appendChild(scrim);
     okBtn.focus();
@@ -323,13 +344,18 @@ export function createExplorer(): ExplorerHandles {
     const searchInput = el("input", {
       class: "explorer__search-input",
       type: "search",
-      placeholder: "Filter keys…",
+      placeholder: "Filter 200 loaded keys…",
       value: current.keyFilter,
     }) as HTMLInputElement;
 
+    // Debounced so fast typing does not re-filter the list per keystroke.
+    let filterTimer = 0;
     on(searchInput, "input", () => {
-      current.keyFilter = searchInput.value.trim().toLowerCase();
-      renderKeysOnly();
+      window.clearTimeout(filterTimer);
+      filterTimer = window.setTimeout(() => {
+        current.keyFilter = searchInput.value.trim().toLowerCase();
+        renderKeysOnly();
+      }, 200);
     });
 
     const searchBox = el(
@@ -352,7 +378,7 @@ export function createExplorer(): ExplorerHandles {
           el("p", {
             class: "muted",
             style: "padding: var(--space-xs); font: var(--text-caption);",
-            text: current.loading ? "Reading…" : current.keyFilter ? "No matching keys" : "No documents in this collection yet.",
+            text: current.loading ? "Reading…" : current.keyFilter ? "No matching keys on this page" : "No documents in this collection yet.",
           }),
         );
         return;
@@ -424,15 +450,7 @@ export function createExplorer(): ExplorerHandles {
     const engine = detail?.engine ?? node?.brain?.collections.find((c) => c.name === current.collection)?.engine;
 
     if (current.selectedKey === null) {
-      return el(
-        "div",
-        { class: "card", style: "display: grid; place-items: center; min-height: 280px;" },
-        el("p", { class: "empty__title", text: "No document selected" }),
-        el("p", {
-          class: "empty__body",
-          text: "Pick a key on the left, or create one with + New document.",
-        }),
-      );
+      return emptyState({ title: "No document selected", body: "Pick a key on the left, or create one with + New document." });
     }
 
     const modeBtn = el(

@@ -1,7 +1,7 @@
 import type { DataDirCandidate } from "../api.js";
 import { sidecar } from "../bridge.js";
 import { refreshNodeList, refreshTopology, store, type NodeView } from "../state.js";
-import { bytes, count, engineLabel } from "./format.js";
+import { bytes, count, displayNodeName, engineLabel } from "./format.js";
 import { openDeleteNodeModal } from "../views/deleteNodeModal.js";
 
 function describeError(error: unknown): string {
@@ -13,7 +13,7 @@ function describeError(error: unknown): string {
  * "The selected node {node name} has {amount of data} in it related to {its data description}, are you sure you want to delete this?"
  */
 export function promptDeleteSupervisedNode(node: NodeView): void {
-  const nodeName = node.process.node_name || node.process.node_id;
+  const nodeName = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
   const collections = node.brain?.collections ?? [];
   const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
   const usedBytes = node.quota?.used_bytes ?? 0;

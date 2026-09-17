@@ -167,7 +167,7 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
   auto self = [engine]() { return engine->SelfRequestor(); };
 
   // -- document CRUD --------------------------------------------------------
-  server->Put("/db/:collection/:key", [engine, self](const HttpRequest& req) -> HttpResponse {
+  server->Put("/db/:collection/:key", [engine, network, self](const HttpRequest& req) -> HttpResponse {
     const std::string& collection = req.params.at("collection");
     const std::string& key = req.params.at("key");
 
@@ -188,10 +188,13 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     const uint32_t durability = static_cast<uint32_t>(std::max<int64_t>(1, QueryInt(req, "durability", 1)));
     const uint32_t timeout_ms = static_cast<uint32_t>(std::max<int64_t>(0, QueryInt(req, "timeout_ms", 5000)));
 
+    // Generate message_id BEFORE the write so the broadcast and durability wait share it.
+    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
+    network->SetNextBroadcastMessageId(message_id);
+
     Status st = engine->PutDocument(collection, key, body, self());
     if (!st.ok()) return StatusError(st);
 
-    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
     auto durability_report = engine->WaitForDurability(message_id, durability, timeout_ms);
     if (!durability_report.ok()) return StatusError(durability_report.status());
 
@@ -220,17 +223,20 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     return JsonOk(doc_or.value());
   });
 
-  server->Del("/db/:collection/:key", [engine, self](const HttpRequest& req) -> HttpResponse {
+  server->Del("/db/:collection/:key", [engine, network, self](const HttpRequest& req) -> HttpResponse {
     const std::string& collection = req.params.at("collection");
     const std::string& key = req.params.at("key");
 
     const uint32_t durability = static_cast<uint32_t>(std::max<int64_t>(1, QueryInt(req, "durability", 1)));
     const uint32_t timeout_ms = static_cast<uint32_t>(std::max<int64_t>(0, QueryInt(req, "timeout_ms", 5000)));
 
+    // Generate message_id BEFORE the write so the broadcast and durability wait share it.
+    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
+    network->SetNextBroadcastMessageId(message_id);
+
     Status st = engine->DeleteDocument(collection, key, self());
     if (!st.ok()) return StatusError(st);
 
-    const std::string message_id = MessageDedup::NewMessageId(engine->identity().node_id());
     auto durability_report = engine->WaitForDurability(message_id, durability, timeout_ms);
     if (!durability_report.ok()) return StatusError(durability_report.status());
 

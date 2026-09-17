@@ -327,12 +327,16 @@ export interface DataDirCandidate {
   encrypted: boolean;
   node_name: string;
   node_id: string;
+  /** Wizard purpose from manifest.json; absent/empty on adopted legacy nodes. */
+  description?: string;
   free_bytes: number;
   used_bytes: number;
   /** Has an identity *and* config-or-data: a real node, not a lookalike folder. */
   existing_node: boolean;
   /** Empty enough to provision into without touching someone else's files. */
   adoptable: boolean;
+  /** Whether the full quota space was pre-allocated upfront on disk. */
+  preallocated?: boolean;
 }
 
 export interface MountPoint {

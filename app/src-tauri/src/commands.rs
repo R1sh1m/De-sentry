@@ -279,6 +279,8 @@ pub struct CreateNodeRequest {
     pub quota_mb: u64,
     pub spec: NodeSpec,
     pub encrypt_at_rest: bool,
+    #[serde(default = "default_store_key_in_keychain")]
+    pub store_key_in_keychain: bool,
     #[serde(default)]
     pub supervisor: bool,
     #[serde(default)]
@@ -287,12 +289,12 @@ pub struct CreateNodeRequest {
     pub bootstrap_peers: Vec<String>,
     #[serde(default)]
     pub description: String,
-    /// Optional per-node password (architecture-v3 section 6). None = unprotected.
     #[serde(default)]
-    pub password: Option<String>,
-    /// Store the password in this machine's keychain so the node auto-starts here.
-    #[serde(default)]
-    pub remember_password: bool,
+    pub preallocate: bool,
+}
+
+fn default_store_key_in_keychain() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,6 +352,18 @@ pub fn create_node(
         bootstrap_peers: request.bootstrap_peers.clone(),
         advertise_hostname: hostname(),
     };
+    // If upfront space reservation was requested, allocate storage.reserved now.
+    let reserved_path = if request.preallocate && request.quota_mb > 0 {
+        let path = data_dir.join("storage.reserved");
+        if let Err(error) = preallocate_reservation_file(&path, request.quota_mb * 1024 * 1024) {
+            state.release_ports(allocation);
+            return Err(format!("could not pre-allocate storage reservation file: {error}"));
+        }
+        Some(path)
+    } else {
+        None
+    };
+
     // Every step below can fail after earlier steps have already had effects
     // (reserved ports, a node.json on disk, a started child, a keychain
     // entry). There is exactly one rollback path for all of them --
@@ -360,7 +374,7 @@ pub fn create_node(
     let config_path = match config.write() {
         Ok(path) => path,
         Err(error) => {
-            state.release_ports(allocation);
+            rollback_create(&state, allocation, None, None, None, reserved_path.as_deref());
             return Err(format!("could not write {}: {error}", data_dir.join("node.json").display()));
         }
     };
@@ -381,7 +395,7 @@ pub fn create_node(
     let node = match state.start_node(spec) {
         Ok(node) => node,
         Err(error) => {
-            rollback_create(&state, allocation, None, None, Some(&config_path));
+            rollback_create(&state, allocation, None, None, Some(&config_path), reserved_path.as_deref());
             return Err(fail(error));
         }
     };
@@ -394,11 +408,11 @@ pub fn create_node(
     // the recovery key the user is about to export.
     let mut keychain_ref = String::new();
     if let Some(key) = recovery_key.as_ref() {
-        if !request.removable {
+        if !request.removable && request.store_key_in_keychain {
             keychain_ref = keychain::reference_for(&node.node_id);
             if let Err(error) = keychain::store(&keychain_ref, key) {
                 let message = fail(error);
-                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path));
+                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path), reserved_path.as_deref());
                 return Err(message);
             }
             let mut updated = config.clone();
@@ -411,6 +425,7 @@ pub fn create_node(
                     Some(&node.node_id),
                     Some(keychain_ref.as_str()),
                     Some(&config_path),
+                    reserved_path.as_deref(),
                 );
                 return Err(message);
             }
@@ -428,6 +443,7 @@ pub fn create_node(
         "encrypted": request.encrypt_at_rest,
         "removable": request.removable,
         "quota_mb": request.quota_mb,
+        "preallocate": request.preallocate,
         "engines": request.spec.engines,
         "default_engine": request.spec.default_engine,
         "replication_factor": request.spec.replication_factor,
@@ -453,6 +469,45 @@ fn normalise_split(split: QuotaSplit) -> QuotaSplit {
     split.normalised()
 }
 
+/// Creates and resizes a reservation file to guarantee space upfront.
+fn preallocate_reservation_file(path: &Path, bytes: u64) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    file.set_len(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Dynamically adjusts the reservation file so that
+/// `reserved_file_size + used_bytes == quota_bytes`.
+#[tauri::command]
+pub fn sync_storage_reservation(data_dir: String, used_bytes: u64, quota_mb: u64) -> Reply<bool> {
+    if quota_mb == 0 {
+        return Ok(false);
+    }
+    let path = PathBuf::from(data_dir).join("storage.reserved");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let quota_bytes = quota_mb * 1024 * 1024;
+    let target = quota_bytes.saturating_sub(used_bytes);
+    if target == 0 {
+        let _ = std::fs::remove_file(&path);
+        return Ok(true);
+    }
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) {
+        let _ = file.set_len(target);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Undoes a half-finished `create_node`: stops the child (if started),
 /// releases the port reservation, forgets a keychain entry this attempt
 /// stored, and removes the node.json this attempt wrote so a later directory
@@ -468,6 +523,7 @@ fn rollback_create(
     node_id: Option<&str>,
     keychain_ref: Option<&str>,
     config_path: Option<&Path>,
+    reserved_path: Option<&Path>,
 ) {
     if let Some(id) = node_id {
         // Stops the child, releases its ports, and drops its pending key.
@@ -486,6 +542,9 @@ fn rollback_create(
         if let Err(error) = std::fs::remove_file(path) {
             log::warn!("rollback: could not remove {}: {error}", path.display());
         }
+    }
+    if let Some(path) = reserved_path {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -597,8 +656,8 @@ pub fn unlock_node(
     app: AppHandle,
     state: State<'_, std::sync::Arc<AppState>>,
     node_id: String,
-    secret: String,
-    remember: Option<bool>,
+    password: String,
+    data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
     // TODO(platform): accept a password OR a recovery key, verified against the
     // node's security.json (architecture-v3 section 6); honour `remember`. Today
@@ -607,17 +666,86 @@ pub fn unlock_node(
     let password = secret;
     recovery::decode(&password).map_err(fail)?;
 
-    let mut handle_spec = {
+    let existing_spec = {
         let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
-        nodes
-            .get(&node_id)
-            .map(|handle| handle.spec.clone())
-            .ok_or_else(|| format!("there is no node with id {node_id}"))?
+        nodes.get(&node_id).map(|handle| handle.spec.clone())
     };
-    handle_spec.unlock_secret = Some(password);
 
-    state.forget_node(&node_id).map_err(fail)?;
-    let view = state.start_node(handle_spec).map_err(fail)?;
+    let spec = if let Some(mut handle_spec) = existing_spec {
+        handle_spec.unlock_secret = Some(password.clone());
+        let _ = state.forget_node(&node_id);
+        handle_spec
+    } else {
+        // Node is not currently supervised. Find its data directory.
+        let target_dir = if let Some(dir_str) = data_dir.filter(|s| !s.is_empty()) {
+            PathBuf::from(dir_str)
+        } else {
+            let candidates = appstate::scan_for_candidates(&state);
+            candidates
+                .into_iter()
+                .find(|c| c.node_id == node_id)
+                .map(|c| PathBuf::from(c.path))
+                .ok_or_else(|| format!("there is no node with id {node_id}"))?
+        };
+
+        let config_path = target_dir.join("node.json");
+        if !config_path.exists() {
+            return Err(format!("{} has no node.json to adopt or unlock", target_dir.display()));
+        }
+
+        let node_name = configgen::read_node_name(&target_dir).unwrap_or_else(|| {
+            target_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "node".to_owned())
+        });
+
+        let allocation = state.allocate_ports().map_err(fail)?;
+        let existing: serde_json::Value = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if let Err(error) = rewrite_ports(&config_path, &allocation) {
+            state.release_ports(allocation);
+            return Err(error);
+        }
+
+        LaunchSpec {
+            node_name,
+            data_dir: target_dir.clone(),
+            config_path,
+            api_port: allocation.api_port,
+            p2p_port: allocation.p2p_port,
+            discovery_port: allocation.discovery_port,
+            supervisor: existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false),
+            removable: false,
+            encrypted: true,
+            unlock_secret: Some(password.clone()),
+        }
+    };
+
+    let view = state.start_node(spec).map_err(fail)?;
+
+    let config_path = PathBuf::from(&view.data_dir).join("node.json");
+    // Preserve the node's storage choice. A node created without a keychain
+    // reference must continue requiring its recovery key after restarts.
+    let keychain_ref = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("keychain_ref")
+                .and_then(|reference| reference.as_str())
+                .filter(|reference| !reference.is_empty())
+                .map(str::to_owned)
+        });
+    if let Some(keychain_ref) = keychain_ref {
+        if let Err(error) = keychain::store(&keychain_ref, &password) {
+            log::warn!("could not refresh keychain entry {keychain_ref}: {error}");
+        }
+    }
+
     appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
     Ok(view)
 }
