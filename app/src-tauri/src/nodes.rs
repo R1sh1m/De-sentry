@@ -215,6 +215,12 @@ fn spawn_child(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Tells the engine a key is coming on stdin. Without the flag the engine
+    // never touches stdin (so hand runs never block); with it, an encrypted
+    // node without a key fails closed instead of booting plaintext.
+    if spec.unlock_secret.is_some() {
+        command.arg("--read-unlock-stdin");
+    }
 
     // Nodes inherit no environment surprises: the engine reads its config file
     // and nothing else, and an inherited variable that changed behaviour would

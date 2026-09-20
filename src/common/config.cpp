@@ -24,6 +24,14 @@ bool IsLoopback(const std::string& addr) {
   return addr == "127.0.0.1" || addr == "localhost" || addr == "::1";
 }
 
+// Vendored backends manage their own files outside the sealed-page layer, so
+// they cannot seal at rest. Kept here (not only in each backend's Open) so
+// the refusal happens at config-load time with a migration pointer, rather
+// than halfway through engine boot.
+bool IsVendoredEngine(const std::string& name) {
+  return name == "sqlite" || name == "duckdb" || name == "lmdb" || name == "sqlite_vec";
+}
+
 }  // namespace
 
 NodeConfig NodeConfig::LoadFromFile(const std::string& path) {
@@ -171,6 +179,16 @@ std::string NodeConfig::Validate() const {
   }
   if (liveness_threshold_ms == 0) return "liveness_threshold_ms must be > 0";
   if (fitness_probe_interval_ms == 0) return "fitness_probe_interval_ms must be > 0";
+  if (encrypt_at_rest) {
+    for (const std::string& e : engines) {
+      if (IsVendoredEngine(e)) {
+        return "engine '" + e +
+               "' does not support encrypt_at_rest (it manages its own files outside the "
+               "sealed-page layer): bind collections to a built-in engine (kv, columnar_lite, "
+               "ts_rollup, vector_hnsw_lite, graph_adj)";
+      }
+    }
+  }
   return std::string();
 }
 

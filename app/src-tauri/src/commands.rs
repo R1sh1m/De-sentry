@@ -20,6 +20,7 @@ use crate::appstate::{self, AppState, DiscoveredCandidate, SidecarEvent};
 use crate::configgen::{self, NodeConfigSpec, QuotaSplit};
 use crate::keychain;
 use crate::nodes::{LaunchSpec, LogLine, SupervisedNode};
+use crate::passphrase;
 use crate::ports::PortAllocation;
 use crate::recovery;
 
@@ -284,6 +285,8 @@ pub struct CreateNodeRequest {
     #[serde(default)]
     pub supervisor: bool,
     #[serde(default)]
+    pub discovery_enabled: Option<bool>,
+    #[serde(default)]
     pub removable: bool,
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
@@ -291,10 +294,23 @@ pub struct CreateNodeRequest {
     pub description: String,
     #[serde(default)]
     pub preallocate: bool,
+    /// "generated" (default) or "passphrase". Old frontends omit it.
+    #[serde(default = "default_key_mode")]
+    pub key_mode: String,
+    /// User-chosen passphrase when key_mode == "passphrase".
+    #[serde(default)]
+    pub passphrase: Option<String>,
+    /// Confirmation copy; must match `passphrase`.
+    #[serde(default)]
+    pub passphrase_confirm: Option<String>,
 }
 
 fn default_store_key_in_keychain() -> bool {
     true
+}
+
+fn default_key_mode() -> String {
+    "generated".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -302,6 +318,9 @@ pub struct CreateNodeResult {
     pub node: SupervisedNode,
     pub recovery_key: Option<String>,
     pub keychain_ref: String,
+    /// Echoes the key mode ("generated" or "passphrase") so the wizard can
+    /// render the matching step-5 screen.
+    pub key_mode: String,
 }
 
 #[tauri::command]
@@ -320,17 +339,91 @@ pub fn create_node(
                 node,
                 recovery_key: None,
                 keychain_ref: String::new(),
+                key_mode: "generated".to_owned(),
             });
     }
 
     let allocation = state.allocate_ports().map_err(fail)?;
 
-    // The key is generated before the node starts, so the node is encrypted
-    // from its first write rather than converted afterwards.
-    let recovery_key = if request.encrypt_at_rest {
-        Some(recovery::generate().map_err(fail)?)
+    // Key mode: "generated" (recovery key) or "passphrase" (custom passphrase).
+    // The node key exists from the first write rather than converted after.
+    let key_mode = if request.encrypt_at_rest
+        && request.key_mode.trim().eq_ignore_ascii_case("passphrase")
+    {
+        "passphrase"
     } else {
-        None
+        "generated"
+    };
+    let wants_passphrase = request.encrypt_at_rest && key_mode == "passphrase";
+
+    // For passphrase nodes: validate, derive KEK, mint a random DEK and wrap
+    // it. The DEK (encoded) is the node's unlock secret; the passphrase itself
+    // is never stored. For generated nodes: mint the recovery key directly.
+    let passphrase_salt: Option<[u8; passphrase::SALT_BYTES]>;
+    let passphrase_wrapped: Option<(String, String)>;
+    let recovery_key: Option<String>;
+    if wants_passphrase {
+        let pw = request.passphrase.clone().unwrap_or_default();
+        let confirm = request.passphrase_confirm.clone().unwrap_or_default();
+        // Trim only leading/trailing whitespace: interior spaces are significant.
+        let pw_trimmed = pw.trim().to_owned();
+        let confirm_trimmed = confirm.trim().to_owned();
+        passphrase::validate(&pw_trimmed, &confirm_trimmed).map_err(|e| match e {
+            passphrase::PassphraseError::TooShort(n) => {
+                format!("choose a passphrase with at least {n} characters, then confirm it matches")
+            }
+            passphrase::PassphraseError::Mismatch => {
+                "the two passphrases do not match — retype both".to_owned()
+            }
+            other => other.to_string(),
+        })?;
+        let (score, _) = passphrase::strength(&pw_trimmed);
+        if score <= 1 {
+            log::warn!("weak custom passphrase accepted with explicit user ack");
+        }
+        let salt = passphrase::generate_salt().map_err(fail)?;
+        let kek = passphrase::derive_kek(&pw_trimmed, &salt, passphrase::ITERS);
+        let dek = passphrase::generate_dek().map_err(fail)?;
+        let (wrapped, tag) = passphrase::wrap_dek(&dek, &kek, &salt);
+        // Zeroize copies on the stack promptly (best-effort, no crate).
+        let mut kek_zero = kek;
+        for b in kek_zero.iter_mut() {
+            *b = 0;
+        }
+        passphrase_salt = Some(salt);
+        passphrase_wrapped = Some((wrapped, tag));
+        // unlock_secret is the DEK in the same Crockford shape as a recovery
+        // key, so the engine / keychain plumbing is unchanged.
+        recovery_key = Some(recovery::encode(&dek));
+        let mut dek_zero = dek;
+        for b in dek_zero.iter_mut() {
+            *b = 0;
+        }
+    } else {
+        passphrase_salt = None;
+        passphrase_wrapped = None;
+        recovery_key = if request.encrypt_at_rest {
+            Some(recovery::generate().map_err(fail)?)
+        } else {
+            None
+        };
+    }
+
+    let (kdf_salt_hex, kdf_iters, dek_wrapped_hex, dek_tag_hex) = match (&passphrase_salt, &passphrase_wrapped) {
+        (Some(salt), Some((wrapped, tag))) => (
+            hex_of(salt),
+            passphrase::ITERS,
+            wrapped.clone(),
+            tag.clone(),
+        ),
+        _ => (String::new(), 0, String::new(), String::new()),
+    };
+
+    let discovery_enabled = request.discovery_enabled.unwrap_or(!request.supervisor);
+    let replication_factor = if !discovery_enabled {
+        1
+    } else {
+        request.spec.replication_factor.max(1)
     };
 
     let config = NodeConfigSpec {
@@ -338,11 +431,12 @@ pub fn create_node(
         node_name: request.node_name.trim().to_owned(),
         ports: allocation,
         supervisor: request.supervisor,
+        discovery_enabled,
         quota_mb: request.quota_mb,
         quota_split: normalise_split(request.spec.quota_split),
         engines: request.spec.engines.clone(),
         default_engine: request.spec.default_engine.clone(),
-        replication_factor: request.spec.replication_factor.max(1),
+        replication_factor,
         retention_days: request.spec.retention_days,
         encrypt_at_rest: request.encrypt_at_rest,
         // Filled in once the node reports its id: the keychain entry is named
@@ -351,6 +445,11 @@ pub fn create_node(
         keychain_ref: String::new(),
         bootstrap_peers: request.bootstrap_peers.clone(),
         advertise_hostname: hostname(),
+        key_mode: key_mode.to_owned(),
+        kdf_salt_hex,
+        kdf_iters,
+        dek_wrapped_hex,
+        dek_tag_hex,
     };
     // If upfront space reservation was requested, allocate storage.reserved now.
     let reserved_path = if request.preallocate && request.quota_mb > 0 {
@@ -405,7 +504,12 @@ pub fn create_node(
     // Removable nodes deliberately get none: a stick that unlocks from this
     // machine's keychain is a stick that cannot be read on any other machine,
     // which defeats the point of putting a node on a stick. Those unlock from
-    // the recovery key the user is about to export.
+    // the recovery key or passphrase the user keeps.
+    //
+    // Passphrase nodes return recovery_key: None — the user already knows the
+    // secret, and showing the wrapped DEK would present two secrets for one
+    // node. The DEK itself still reaches the child as unlock_secret and the
+    // keychain (when requested) exactly like a generated key.
     let mut keychain_ref = String::new();
     if let Some(key) = recovery_key.as_ref() {
         if !request.removable && request.store_key_in_keychain {
@@ -430,7 +534,12 @@ pub fn create_node(
                 return Err(message);
             }
         }
-        state.hold_recovery_key(&node.node_id, key.clone());
+        // Only generated keys are held for one-time export. A passphrase is
+        // already in the user's memory; holding the DEK for display would
+        // defeat the choice they just made.
+        if key_mode == "generated" {
+            state.hold_recovery_key(&node.node_id, key.clone());
+        }
     }
 
     // The sizing decision travels with the node, so a stick carried to another
@@ -441,6 +550,7 @@ pub fn create_node(
         "node_name": node.node_name,
         "created_ms": crate::nodes::now_ms(),
         "encrypted": request.encrypt_at_rest,
+        "key_mode": key_mode,
         "removable": request.removable,
         "quota_mb": request.quota_mb,
         "preallocate": request.preallocate,
@@ -458,15 +568,52 @@ pub fn create_node(
 
     appstate::emit(&app, SidecarEvent::NodeState { node: node.clone() });
 
+    // Passphrase mode: the DEK served as unlock_secret + keychain, but the
+    // wizard must not display it. Return None so step 5 renders the
+    // "passphrase set" screen instead of the recovery-key screen.
+    let shown_key = if key_mode == "passphrase" {
+        None
+    } else {
+        recovery_key
+    };
     Ok(CreateNodeResult {
         node,
-        recovery_key,
+        recovery_key: shown_key,
         keychain_ref,
+        key_mode: key_mode.to_owned(),
     })
 }
 
 fn normalise_split(split: QuotaSplit) -> QuotaSplit {
     split.normalised()
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    const H: &[u8] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(H[(b >> 4) as usize] as char);
+        s.push(H[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+fn hex_to_bytes(s: &str) -> Result<Vec<u8>, ()> {
+    if s.len() % 2 != 0 {
+        return Err(());
+    }
+    let bytes = s.as_bytes();
+    let val = |c: u8| match c {
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'a'..=b'f' => Ok(c - b'a' + 10),
+        b'A'..=b'F' => Ok(c - b'A' + 10),
+        _ => Err(()),
+    };
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        out.push((val(pair[0])? << 4) | val(pair[1])?);
+    }
+    Ok(out)
 }
 
 /// Creates and resizes a reservation file to guarantee space upfront.
@@ -649,8 +796,58 @@ pub fn export_recovery_key(
     Ok(())
 }
 
-/// Unlocks an encrypted node with a typed recovery key, for USB nodes and for
-/// nodes created on a different machine.
+/// Resolves a typed secret to the node's unlock secret (DEK-encoded).
+///
+/// Generated nodes: the typed text must decode as a recovery key and is used
+/// directly. Passphrase nodes: the typed text derives a KEK with the stored
+/// salt, which must unwrap the stored DEK (HMAC-verified). A single error is
+/// returned for both paths so a stranger learns nothing about which mode the
+/// node uses.
+fn resolve_unlock_secret(data_dir: &Path, typed: &str) -> Reply<String> {
+    let secret = typed.trim();
+    if secret.is_empty() {
+        return Err("enter the recovery key or passphrase for this node".to_owned());
+    }
+    // Envelope first: passphrase-mode nodes accept ONLY the passphrase. This
+    // is what makes rotation and generated→passphrase migration actually
+    // invalidate the old secret — a pasted DEK or old recovery key must not
+    // keep working after the wrap changes. Generated nodes (or legacy configs
+    // without an envelope) fall through to the decode path below.
+    if let Some(envelope) = configgen::read_envelope(data_dir) {
+        if envelope.key_mode == "passphrase" && !envelope.dek_wrapped_hex.is_empty() {
+            if envelope.kdf_salt_hex.is_empty() {
+                return Err("this node's key envelope is corrupt — restore from backup".to_owned());
+            }
+            let salt = hex_to_bytes(&envelope.kdf_salt_hex)
+                .map_err(|_| "that passphrase did not unlock this node".to_owned())?;
+            let iters = if envelope.kdf_iters > 0 {
+                envelope.kdf_iters
+            } else {
+                passphrase::ITERS
+            };
+            let kek = passphrase::derive_kek(secret, &salt, iters);
+            return match passphrase::unwrap_dek(
+                &envelope.dek_wrapped_hex,
+                &envelope.dek_tag_hex,
+                &kek,
+                &salt,
+            ) {
+                Ok(dek) => Ok(recovery::encode(&dek)),
+                Err(_) => Err(
+                    "that passphrase did not unlock this node — check for typos".to_owned(),
+                ),
+            };
+        }
+    }
+    // Generated-key path.
+    if recovery::decode(secret).is_ok() {
+        return Ok(secret.to_owned());
+    }
+    Err("that is not a valid recovery key for this node — check for typos".to_owned())
+}
+
+/// Unlocks an encrypted node with its recovery key or passphrase, for USB
+/// nodes and for nodes created on a different machine.
 #[tauri::command]
 pub fn unlock_node(
     app: AppHandle,
@@ -659,17 +856,22 @@ pub fn unlock_node(
     password: String,
     data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
-    // Parsed before anything is restarted, so a mistyped key produces "that is
-    // not a valid recovery key" rather than a node that fails to start.
-    recovery::decode(&password).map_err(fail)?;
-
-    let existing_spec = {
+    // Resolve the data directory first (no lock held across file IO): for a
+    // supervised node it comes from the registry, otherwise from the caller
+    // or the discovery scan. The secret is verified against the envelope
+    // before anything is restarted, so a mistype never produces a node that
+    // fails to start.
+    let (existing_spec, known_dir) = {
         let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
-        nodes.get(&node_id).map(|handle| handle.spec.clone())
+        let spec = nodes.get(&node_id).map(|handle| handle.spec.clone());
+        let dir = spec.as_ref().map(|s| s.data_dir.clone());
+        (spec, dir)
     };
 
     let spec = if let Some(mut handle_spec) = existing_spec {
-        handle_spec.unlock_secret = Some(password.clone());
+        let dir = known_dir.clone().unwrap_or_else(|| PathBuf::from(&handle_spec.data_dir));
+        let secret = resolve_unlock_secret(&dir, &password)?;
+        handle_spec.unlock_secret = Some(secret);
         let _ = state.forget_node(&node_id);
         handle_spec
     } else {
@@ -708,6 +910,9 @@ pub fn unlock_node(
             return Err(error);
         }
 
+        // Verify the typed secret against the envelope before binding ports.
+        let secret = resolve_unlock_secret(&target_dir, &password)?;
+
         LaunchSpec {
             node_name,
             data_dir: target_dir.clone(),
@@ -718,15 +923,18 @@ pub fn unlock_node(
             supervisor: existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false),
             removable: false,
             encrypted: true,
-            unlock_secret: Some(password.clone()),
+            unlock_secret: Some(secret.clone()),
         }
     };
 
+    let node_secret = spec.unlock_secret.clone().unwrap_or_default();
     let view = state.start_node(spec).map_err(fail)?;
 
     let config_path = PathBuf::from(&view.data_dir).join("node.json");
     // Preserve the node's storage choice. A node created without a keychain
-    // reference must continue requiring its recovery key after restarts.
+    // reference must continue requiring its secret after restarts. The stored
+    // value is always the DEK-encoded secret, never the raw passphrase, so a
+    // passphrase unlock and a recovery-key unlock converge on the same entry.
     let keychain_ref = std::fs::read_to_string(&config_path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -738,13 +946,136 @@ pub fn unlock_node(
                 .map(str::to_owned)
         });
     if let Some(keychain_ref) = keychain_ref {
-        if let Err(error) = keychain::store(&keychain_ref, &password) {
+        if let Err(error) = keychain::store(&keychain_ref, &node_secret) {
             log::warn!("could not refresh keychain entry {keychain_ref}: {error}");
         }
     }
 
     appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
     Ok(view)
+}
+
+/// Strength of a candidate passphrase for the wizard meter (no secret leaves
+/// the machine; this only scores what the window already holds).
+#[tauri::command]
+pub fn passphrase_strength(passphrase: String) -> Reply<PassphraseStrength> {
+    let (score, label) = passphrase::strength(&passphrase);
+    Ok(PassphraseStrength {
+        score,
+        label: label.to_owned(),
+        min_len: passphrase::MIN_LEN,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PassphraseStrength {
+    pub score: u8,
+    pub label: String,
+    pub min_len: usize,
+}
+
+/// Rotates a passphrase-wrapped DEK: verifies the old secret, re-wraps the
+/// same DEK under a fresh salt, updates node.json + keychain. The old secret
+/// stops working; no data is re-encrypted. Generated-key nodes can migrate to
+/// a passphrase this way (old = recovery key); passphrase nodes can rotate
+/// (old = previous passphrase).
+#[tauri::command]
+pub fn change_passphrase(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    old_secret: String,
+    new_passphrase: String,
+    new_confirm: String,
+) -> Reply<()> {
+    let data_dir = {
+        let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
+        nodes
+            .get(&node_id)
+            .map(|handle| handle.spec.data_dir.clone())
+            .or_else(|| {
+                appstate::scan_for_candidates(&state)
+                    .into_iter()
+                    .find(|c| c.node_id == node_id)
+                    .map(|c| PathBuf::from(c.path))
+            })
+            .ok_or_else(|| format!("there is no node with id {node_id}"))?
+    };
+
+    let new_trimmed = new_passphrase.trim().to_owned();
+    let confirm_trimmed = new_confirm.trim().to_owned();
+    passphrase::validate(&new_trimmed, &confirm_trimmed).map_err(|e| match e {
+        passphrase::PassphraseError::TooShort(n) => {
+            format!("choose a passphrase with at least {n} characters, then confirm it matches")
+        }
+        passphrase::PassphraseError::Mismatch => {
+            "the two new passphrases do not match — retype both".to_owned()
+        }
+        other => other.to_string(),
+    })?;
+
+    // Verify the old secret. Passphrase-mode nodes require the old *passphrase*
+    // (exclusively — a pasted DEK must not rotate the secret, which is what
+    // makes rotation actually invalidate the old value). Generated nodes
+    // migrating accept the old recovery key, which IS the DEK being wrapped.
+    let current_dek: [u8; passphrase::KEY_BYTES] = {
+        let typed = old_secret.trim();
+        if typed.is_empty() {
+            return Err("enter the current recovery key or passphrase first".to_owned());
+        }
+        let envelope = configgen::read_envelope(&data_dir);
+        let is_passphrase_node = envelope.as_ref().is_some_and(|env| {
+            env.key_mode == "passphrase" && !env.dek_wrapped_hex.is_empty()
+        });
+        if is_passphrase_node {
+            let env = envelope.expect("checked above");
+            let salt = hex_to_bytes(&env.kdf_salt_hex)
+                .map_err(|_| "that current passphrase is not valid for this node".to_owned())?;
+            let iters = if env.kdf_iters > 0 { env.kdf_iters } else { passphrase::ITERS };
+            let kek = passphrase::derive_kek(typed, &salt, iters);
+            passphrase::unwrap_dek(&env.dek_wrapped_hex, &env.dek_tag_hex, &kek, &salt)
+                .map_err(|_| "that current passphrase is not valid for this node".to_owned())?
+        } else if let Ok(bytes) = recovery::decode(typed) {
+            if bytes.len() != passphrase::KEY_BYTES {
+                return Err("that current secret is not valid for this node".to_owned());
+            }
+            let mut dek = [0u8; passphrase::KEY_BYTES];
+            dek.copy_from_slice(&bytes);
+            dek
+        } else {
+            return Err("that current secret is not valid for this node".to_owned());
+        }
+    };
+
+    // Re-wrap the same DEK under a fresh salt.
+    let new_salt = passphrase::generate_salt().map_err(fail)?;
+    let new_kek = passphrase::derive_kek(&new_trimmed, &new_salt, passphrase::ITERS);
+    let (wrapped, tag) = passphrase::wrap_dek(&current_dek, &new_kek, &new_salt);
+    let config_path = data_dir.join("node.json");
+    configgen::rewrite_envelope(
+        &config_path,
+        "passphrase",
+        passphrase::ITERS,
+        &hex_of(&new_salt),
+        &wrapped,
+        &tag,
+    )
+    .map_err(|e| format!("could not update {}: {e}", config_path.display()))?;
+
+    // Refresh the keychain entry to the same DEK (unchanged value, still the
+    // unlock secret) so auto-unlock keeps working after rotation.
+    if let Ok(text) = std::fs::read_to_string(&config_path) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(reference) = value
+                .get("keychain_ref")
+                .and_then(|r| r.as_str())
+                .filter(|r| !r.is_empty())
+            {
+                let _ = keychain::store(reference, &recovery::encode(&current_dek));
+            }
+        }
+    }
+    log::info!("passphrase rotated for node {node_id}");
+    Ok(())
 }
 
 // -- shell / OS --------------------------------------------------------------
@@ -942,8 +1273,10 @@ mod tests {
         std::fs::write(&reserved_path, "{}").expect("temp reserved writes");
         assert!(reserved_path.exists());
 
+        // Unique ref: the OS keychain is shared across test threads and
+        // processes — a fixed ref races with concurrent runs (see keychain.rs).
         let stored = if crate::keychain::available() {
-            let reference = crate::keychain::reference_for("rollback-test");
+            let reference = crate::keychain::unique_test_ref("rollback");
             if crate::keychain::store(&reference, "secret").is_ok() {
                 Some(reference)
             } else {
@@ -976,5 +1309,57 @@ mod tests {
         let again = state.allocate_ports().expect("ports were released by rollback");
         state.release_ports(again);
         let _ = std::fs::remove_dir_all(&state.data_root);
+    }
+
+    /// The exact production unlock dispatch, headless: generated-key nodes
+    /// resolve recovery text directly; passphrase nodes derive + unwrap to
+    /// the DEK and reject everything else (including a valid-shaped key that
+    /// is not the passphrase -- the fail-closed rotation semantics).
+    #[test]
+    fn unlock_resolution_accepts_passphrase_and_rejects_the_rest() {
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NONCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("desentry-unlock-{}-{n}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("node.json"), r#"{"node_name":"t"}"#).expect("node.json writes");
+
+        // Generated mode (no envelope): recovery-shaped text resolves as-is.
+        let key = crate::recovery::generate().expect("OS entropy");
+        assert_eq!(super::resolve_unlock_secret(&dir, &key).unwrap(), key);
+        assert!(super::resolve_unlock_secret(&dir, "not a valid key!!").is_err());
+        assert!(super::resolve_unlock_secret(&dir, "   ").is_err());
+
+        // Passphrase mode: wrap a DEK under a KDF salt, store the envelope.
+        // Reduced iterations: KDF correctness is iters-agnostic (covered in
+        // passphrase.rs) and debug-mode PBKDF2-210k costs ~15s per derive;
+        // the dispatch logic under test does not depend on the count.
+        let dek = crate::passphrase::generate_dek().expect("OS entropy");
+        let salt = crate::passphrase::generate_salt().expect("OS entropy");
+        let pw = "a long enough test phrase!";
+        let kek = crate::passphrase::derive_kek(pw, &salt, 2000);
+        let (wrapped, tag) = crate::passphrase::wrap_dek(&dek, &kek, &salt);
+        let salt_hex: String = salt.iter().map(|b| format!("{b:02x}")).collect();
+        crate::configgen::rewrite_envelope(
+            &dir.join("node.json"),
+            "passphrase",
+            2000,
+            &salt_hex,
+            &wrapped,
+            &tag,
+        )
+        .expect("envelope writes");
+
+        // The passphrase resolves to the DEK in recovery-key shape (what the
+        // engine receives on stdin); surrounding whitespace is tolerated.
+        assert_eq!(
+            super::resolve_unlock_secret(&dir, &format!("  {pw}  ")).unwrap(),
+            crate::recovery::encode(&dek)
+        );
+        // A valid-shaped recovery key is NOT the passphrase: rejected.
+        assert!(super::resolve_unlock_secret(&dir, &key).is_err());
+        // A wrong passphrase fails with no oracle detail.
+        assert!(super::resolve_unlock_secret(&dir, "a totally different phrase here").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

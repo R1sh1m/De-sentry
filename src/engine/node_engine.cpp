@@ -6,6 +6,7 @@
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/ledger/outbox_store.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/security/crypto.h"
 #include "desentry/storage/document_codec.h"
 
@@ -14,6 +15,7 @@ namespace desentry {
 StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   std::unique_ptr<NodeEngine> engine(new NodeEngine());
   engine->options_ = options;
+  engine->at_rest_sealed_ = !options.dek.empty();
 
   // The data directory has to exist before identity.key can be written into
   // it, and identity.key has to exist before anything else can be stamped
@@ -21,7 +23,10 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   if (!MakeDirs(options.data_dir)) {
     return Status::IOError("cannot create data directory: " + options.data_dir);
   }
-  auto id_or = NodeIdentity::LoadOrCreate(options.data_dir + "/identity.key");
+  if (!options.dek.empty() && options.dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  auto id_or = NodeIdentity::LoadOrCreate(options.data_dir + "/identity.key", options.dek);
   if (!id_or.ok()) return id_or.status();
   engine->identity_ = std::make_unique<NodeIdentity>(id_or.value());
   engine->clock_ = std::make_unique<HybridLogicalClock>(engine->identity_->node_id());
@@ -34,6 +39,7 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   storage_opts.engines = options.engines;
   storage_opts.default_engine = options.default_engine;
   storage_opts.node_id = engine->identity_->node_id();
+  storage_opts.dek = options.dek;
   auto storage_or = StorageEngine::Open(storage_opts);
   if (!storage_or.ok()) return storage_or.status();
   engine->storage_ = std::move(storage_or.value());
@@ -48,11 +54,12 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   });
 
   auto transit_or = TransitStore::Open(options.data_dir, options.transit_ttl_seconds,
-                                         engine->identity_->node_id());
+                                         engine->identity_->node_id(), options.dek);
   if (!transit_or.ok()) return transit_or.status();
   engine->transit_ = std::move(transit_or.value());
 
-  auto outbox_or = OutboxStore::Open(options.data_dir, engine->identity_->node_id());
+  auto outbox_or =
+      OutboxStore::Open(options.data_dir, engine->identity_->node_id(), options.dek);
   if (!outbox_or.ok()) return outbox_or.status();
   engine->outbox_ = std::move(outbox_or.value());
 
@@ -62,8 +69,15 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
 
   engine->receipt_tracker_ = std::make_unique<ReceiptTracker>();
 
+  // The DEK has been derived into per-file subkeys everywhere it is needed;
+  // drop the raw key from the retained options so memory holds subkeys only.
+  // (The sealed flag above preserves what /_status reports.)
+  at_rest::Zeroize(engine->options_.dek);
+  engine->options_.dek.clear();
+
   DSN_LOG_INFO("engine", "node engine ready, node_id=" << engine->identity_->node_id()
-                                                        << (options.supervisor ? " (supervisor)" : ""));
+                                                        << (options.supervisor ? " (supervisor)" : "")
+                                                        << (engine->at_rest_sealed_ ? " [sealed]" : ""));
   return engine;
 }
 
@@ -399,6 +413,8 @@ Status NodeEngine::HoldForOfflineOwner(const std::string& owner_node, const std:
 std::vector<TransitEnvelope> NodeEngine::PendingTransitFor(const std::string& owner_node) {
   return transit_->PendingFor(owner_node);
 }
+
+bool NodeEngine::TransitLoadCorrupt() const { return transit_->LoadCorrupt(); }
 
 Status NodeEngine::ApplyClaimedTransit(const std::string& collection, const std::string& key,
                                         const std::string& encoded_doc) {

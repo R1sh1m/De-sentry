@@ -55,6 +55,28 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Client-side passphrase meter mirroring passphrase.rs (server validates authoritatively). */
+function passphraseScore(passphrase: string): { score: number; label: string } {
+  const len = [...passphrase].length;
+  let classes = 0;
+  if (/[a-z]/.test(passphrase)) classes += 1;
+  if (/[A-Z]/.test(passphrase)) classes += 1;
+  if (/[0-9]/.test(passphrase)) classes += 1;
+  if (/[^A-Za-z0-9]/.test(passphrase)) classes += 1;
+  const blocklisted = ["password", "passw0rd", "123456", "qwerty", "letmein", "welcome", "admin", "desentry", "changeme", "iloveyou"].some((b) =>
+    passphrase.toLowerCase().includes(b),
+  );
+  let score = 0;
+  if (len >= 12) score += 1;
+  if (len >= 16) score += 1;
+  if (len >= 20) score += 1;
+  if (classes >= 3) score += 1;
+  if (blocklisted) score -= 2;
+  score = Math.max(0, Math.min(4, score));
+  const label = score <= 1 ? "weak" : score === 2 ? "fair" : score === 3 ? "strong" : "excellent";
+  return { score, label };
+}
+
 interface Draft {
   step: number;
   // 1 -- placement
@@ -66,10 +88,17 @@ interface Draft {
   adopt: boolean;
   // 2 -- shape
   nodeName: string;
+  standalone: boolean;
   quotaMb: number;
   preallocate: boolean;
   encrypt: boolean;
   storeKeyInKeychain: boolean;
+  /** "generated" (recovery key) or "passphrase" (custom passphrase). */
+  keyMode: string;
+  passphrase: string;
+  passphraseConfirm: string;
+  /** Explicit ack for a weak-but-long passphrase (score <= 1). */
+  passphraseAckWeak: boolean;
   description: string;
   // 3 -- sizing
   spec: NodeSpec | null;
@@ -114,10 +143,15 @@ function newDraft(): Draft {
     removable: false,
     adopt: false,
     nodeName: "",
+    standalone: true,
     quotaMb: 2048,
     preallocate: false,
     encrypt: true,
     storeKeyInKeychain: true,
+    keyMode: "generated",
+    passphrase: "",
+    passphraseConfirm: "",
+    passphraseAckWeak: false,
     description: "",
     spec: null,
     sizing: false,
@@ -255,6 +289,24 @@ export function createWizard(): WizardHandles {
       });
       return;
     }
+    // Passphrase nodes show no key to export; the loss mode is forgetting the
+    // passphrase before confirming it. Warn rather than trap, same trade as
+    // above — the node exists either way.
+    if (draft.created !== null && draft.keyMode === "passphrase" && !draft.recoveryConfirmed) {
+      openRecoveryKeyWarningModal(
+        () => {
+          store.toast(
+            "warning",
+            "Passphrase not confirmed",
+            "This node unlocks with a passphrase you have not confirmed keeping.",
+            0,
+          );
+          doClose();
+        },
+        true,
+      );
+      return;
+    }
     doClose();
   }
 
@@ -265,8 +317,11 @@ export function createWizard(): WizardHandles {
     store.notify();
   }
 
-  function openRecoveryKeyWarningModal(onConfirm: () => void): void {
-    const dialog = el("dialog", { class: "modal-dialog modal-dialog--warning", "aria-label": "Recovery key not exported" });
+  function openRecoveryKeyWarningModal(onConfirm: () => void, forPassphrase = false): void {
+    const dialog = el("dialog", {
+      class: "modal-dialog modal-dialog--warning",
+      "aria-label": forPassphrase ? "Passphrase not confirmed" : "Recovery key not exported",
+    });
     const dismiss = () => {
       if (dialog.open) dialog.close();
       dialog.remove();
@@ -283,9 +338,19 @@ export function createWizard(): WizardHandles {
         { class: "modal-box__icon-wrap modal-box__icon-wrap--danger" },
         icon(Icons.warning, 28),
       ),
-      el("h3", { class: "modal-box__heading", text: "Recovery key not exported" }),
-      el("p", { class: "modal-box__prompt-text", text: "The recovery key for this node has not been saved. There is no copy anywhere else — close anyway?" }),
-      el("p", { class: "modal-box__warning-note", text: "If the recovery key is lost, the data on this node cannot be read by anyone, including us." }),
+      el("h3", { class: "modal-box__heading", text: forPassphrase ? "Passphrase not confirmed" : "Recovery key not exported" }),
+      el("p", {
+        class: "modal-box__prompt-text",
+        text: forPassphrase
+          ? "The passphrase for this node has not been confirmed as kept. There is no copy anywhere else — close anyway?"
+          : "The recovery key for this node has not been saved. There is no copy anywhere else — close anyway?",
+      }),
+      el("p", {
+        class: "modal-box__warning-note",
+        text: forPassphrase
+          ? "If the passphrase is forgotten, the data on this node cannot be read by anyone, including us."
+          : "If the recovery key is lost, the data on this node cannot be read by anyone, including us.",
+      }),
       el(
         "div",
         { class: "modal-box__footer" },
@@ -664,6 +729,45 @@ export function createWizard(): WizardHandles {
           : "Shown in the sidebar and in logs. Not the node's identity.",
         nameInput,
       ),
+      (() => {
+        const standaloneRadio = el("input", { type: "radio", name: "dbmode", value: "standalone" }) as HTMLInputElement;
+        standaloneRadio.checked = draft.standalone;
+        on(standaloneRadio, "change", () => {
+          draft.standalone = true;
+          render();
+        });
+        const meshRadio = el("input", { type: "radio", name: "dbmode", value: "mesh" }) as HTMLInputElement;
+        meshRadio.checked = !draft.standalone;
+        on(meshRadio, "change", () => {
+          draft.standalone = false;
+          render();
+        });
+        const modeChoice = el(
+          "div",
+          { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
+          el(
+            "label",
+            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            standaloneRadio,
+            el("strong", { text: "Isolated Standalone Database" }),
+            el("span", { class: "badge", "data-tone": "converged", text: "Zero Replication" }),
+          ),
+          el(
+            "label",
+            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            meshRadio,
+            el("strong", { text: "LAN Mesh Replica" }),
+            el("span", { class: "badge", text: "Replicated" }),
+          ),
+        );
+        return field(
+          "Database Architecture",
+          draft.standalone
+            ? "Architecture 1: Multi-Database Isolation. Pure standalone database with dedicated private schema and zero replication. No network discovery or LAN syncing."
+            : "Architecture 2: Mesh Replicas. Automatically discovers peers on the LAN and replicates collections across the mesh (replication factor 3).",
+          modeChoice,
+        );
+      })(),
       field(
         "Storage Quota Cap (MiB)",
         overCommitted
@@ -688,16 +792,112 @@ export function createWizard(): WizardHandles {
       draft.encrypt && !draft.removable
         ? field(
             "Store key in macOS Keychain",
-            "On: restarts unlock automatically. Off: the recovery key is required after the app or Mac restarts, and no Keychain prompt is used.",
+            "On: restarts unlock automatically. Off: the recovery key or passphrase is required after the app or Mac restarts, and no Keychain prompt is used.",
             keychainInput,
           )
         : null,
+      draft.encrypt ? keyModeSection() : null,
       field(
         "What is this node for?",
         "Plain language. The next step reads this to propose engines, quotas and indexes — and shows you how sure it is.",
         descriptionInput,
       ),
       suggestions,
+    );
+  }
+
+  /** Key-mode choice + custom passphrase inputs (step 2, encrypt on only). */
+  function keyModeSection(): HTMLElement {
+    const generatedRadio = el("input", { type: "radio", name: "keymode", value: "generated" }) as HTMLInputElement;
+    generatedRadio.checked = draft.keyMode !== "passphrase";
+    on(generatedRadio, "change", () => {
+      draft.keyMode = "generated";
+      render();
+    });
+    const passphraseRadio = el("input", { type: "radio", name: "keymode", value: "passphrase" }) as HTMLInputElement;
+    passphraseRadio.checked = draft.keyMode === "passphrase";
+    on(passphraseRadio, "change", () => {
+      draft.keyMode = "passphrase";
+      render();
+    });
+    const choice = el(
+      "div",
+      { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
+      el("label", { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" }, generatedRadio, el("span", { text: "Generated recovery key" })),
+      el("label", { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" }, passphraseRadio, el("span", { text: "My own passphrase" })),
+    );
+
+    if (draft.keyMode !== "passphrase") {
+      return el(
+        "div",
+        { class: "stack" },
+        field(
+          "Recovery key or passphrase?",
+          "Generated: a 256-bit key shown once for you to save. Passphrase: your own memorable secret, stretched to the same key shape.",
+          choice,
+        ),
+      );
+    }
+
+    const pwInput = el("input", { type: "password", value: draft.passphrase, placeholder: "Correct horse battery staple …", autocomplete: "new-password" }) as HTMLInputElement;
+    on(pwInput, "input", () => {
+      draft.passphrase = (pwInput as HTMLInputElement).value;
+      draft.passphraseAckWeak = false;
+      render();
+    });
+    const confirmInput = el("input", { type: "password", value: draft.passphraseConfirm, placeholder: "Retype the passphrase", autocomplete: "new-password" }) as HTMLInputElement;
+    on(confirmInput, "input", () => {
+      draft.passphraseConfirm = (confirmInput as HTMLInputElement).value;
+      render();
+    });
+    const { score, label } = passphraseScore(draft.passphrase);
+    const len = [...draft.passphrase].length;
+    const tooShort = len > 0 && len < 12;
+    const mismatch = draft.passphraseConfirm !== "" && draft.passphrase !== draft.passphraseConfirm;
+    const weak = draft.passphrase !== "" && score <= 1;
+    const meter = el(
+      "p",
+      {
+        class: tooShort || mismatch ? "error-note" : "muted",
+        text:
+          draft.passphrase === ""
+            ? "At least 12 characters. Longer phrases with mixed words, numbers and symbols are strongest."
+            : tooShort
+              ? `Too short: ${len} of 12 characters minimum.`
+              : mismatch
+                ? "The two passphrases do not match yet."
+                : `Strength: ${label} (${score}/4). ${weak ? "This will work, but please confirm you understand it is guessable." : "Good — confirm it matches above."}`,
+      },
+    );
+    const ackRow = weak && !tooShort && !mismatch
+      ? (() => {
+          const box = el("input", { type: "checkbox" }) as HTMLInputElement;
+          box.checked = draft.passphraseAckWeak;
+          on(box, "change", () => {
+            draft.passphraseAckWeak = box.checked;
+            render();
+          });
+          return el(
+            "label",
+            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            box,
+            el("span", { text: "I understand this passphrase is weak but want to use it anyway" }),
+          );
+        })()
+      : null;
+
+    return el(
+      "div",
+      { class: "stack" },
+      field(
+        "Recovery key or passphrase?",
+        "Generated: a 256-bit key shown once for you to save. Passphrase: your own memorable secret, stretched to the same key shape.",
+        choice,
+      ),
+      field("Custom passphrase", "Never stored. Only the salt + wrapped key are kept; the passphrase itself lives in your memory.", pwInput),
+      field("Confirm passphrase", "Must match exactly — leading/trailing spaces are ignored, interior spaces matter.", confirmInput),
+      meter,
+      ackRow,
     );
   }
 
@@ -1135,8 +1335,12 @@ export function createWizard(): WizardHandles {
         el("dd", { text: engines.map(engineLabel).join(", ") || "Key–Value" }),
         el("dt", { text: "Default engine" }),
         el("dd", { text: engineLabel(spec?.default_engine ?? engines[0] ?? "kv") }),
+        el("dt", { text: "Database mode" }),
+        el("dd", { text: draft.standalone ? "Isolated Standalone (Zero Replication)" : "LAN Mesh (Replicated)" }),
         el("dt", { text: "Replication factor" }),
-        el("dd", { text: String(spec?.replication_factor ?? 3) }),
+        el("dd", { text: draft.standalone ? "1 (Standalone — no replication)" : String(spec?.replication_factor ?? 3) }),
+        el("dt", { text: "LAN Discovery" }),
+        el("dd", { text: draft.standalone ? "Disabled (Isolated)" : "Enabled (UDP 7901)" }),
         el("dt", { text: "At rest" }),
         el("dd", { text: draft.encrypt ? "Encrypted" : "Not encrypted" }),
         el("dt", { text: "Adopting" }),
@@ -1145,7 +1349,10 @@ export function createWizard(): WizardHandles {
       draft.encrypt &&
         el("p", {
           class: "wizard__lead",
-          text: "The next step shows this node's recovery key once. It is not stored anywhere the app can read back, so save it before finishing.",
+          text:
+            draft.keyMode === "passphrase"
+              ? "The next step confirms the passphrase — it is never shown again, so keep it somewhere safe before finishing."
+              : "The next step shows this node's recovery key once. It is not stored anywhere the app can read back, so save it before finishing.",
         }),
       draft.createError !== "" && el("p", { class: "error-note", text: draft.createError }),
     );
@@ -1164,7 +1371,7 @@ export function createWizard(): WizardHandles {
       default_engine: [...draft.manualEngines][0] ?? "kv",
       quota_split: { db_pct: 60, transit_store_pct: 15, cache_hash_pct: 10, ledger_pct: 10, net_buffers_pct: 5 },
       shard_key: "",
-      replication_factor: 3,
+      replication_factor: draft.standalone ? 1 : 3,
       secondary_indexes: [],
       retention_days: 0,
       collections: [],
@@ -1183,6 +1390,9 @@ export function createWizard(): WizardHandles {
     // wins, and the audit record in the manifest keeps both.
     spec.engines = [...draft.manualEngines].length > 0 ? [...draft.manualEngines] : spec.engines;
     if (!spec.engines.includes(spec.default_engine)) spec.default_engine = spec.engines[0] ?? "kv";
+    if (draft.standalone) {
+      spec.replication_factor = 1;
+    }
     if (spec.collections.length === 0) {
       spec.collections = spec.engines.map((eng) => ({
         name: DEFAULT_COLLECTIONS[eng]?.name ?? `${eng}_data`,
@@ -1191,6 +1401,36 @@ export function createWizard(): WizardHandles {
         retention_days: 0,
         schema: DEFAULT_COLLECTIONS[eng]?.schema,
       }));
+    }
+
+    // Client-side passphrase gate: server validates authoritatively, but
+    // catching typos here keeps the user on step 2 instead of bouncing from
+    // step 4 with a bare error.
+    if (draft.encrypt && draft.keyMode === "passphrase") {
+      const pw = draft.passphrase.trim();
+      const confirm = draft.passphraseConfirm.trim();
+      if ([...pw].length < 12) {
+        draft.createError = "Choose a passphrase with at least 12 characters, then confirm it matches.";
+        draft.step = 2;
+        draft.creating = false;
+        render();
+        return;
+      }
+      if (pw !== confirm) {
+        draft.createError = "The two passphrases do not match — retype both.";
+        draft.step = 2;
+        draft.creating = false;
+        render();
+        return;
+      }
+      const { score } = passphraseScore(pw);
+      if (score <= 1 && !draft.passphraseAckWeak) {
+        draft.createError = "This passphrase looks guessable — tick the weak-passphrase acknowledgement to use it anyway.";
+        draft.step = 2;
+        draft.creating = false;
+        render();
+        return;
+      }
     }
 
     const request: CreateNodeRequest = {
@@ -1202,17 +1442,23 @@ export function createWizard(): WizardHandles {
       encrypt_at_rest: draft.encrypt,
       store_key_in_keychain: draft.encrypt && !draft.removable && draft.storeKeyInKeychain,
       supervisor: false,
+      discovery_enabled: !draft.standalone,
       removable: draft.removable,
       bootstrap_peers: [],
       description: draft.description,
       preallocate: draft.preallocate,
+      key_mode: draft.encrypt ? draft.keyMode : "generated",
+      passphrase: draft.encrypt && draft.keyMode === "passphrase" ? draft.passphrase.trim() : undefined,
+      passphrase_confirm: draft.encrypt && draft.keyMode === "passphrase" ? draft.passphraseConfirm.trim() : undefined,
     };
 
     try {
       const result = await sidecar.createNode(request);
       draft.created = result.node;
+      draft.keyMode = result.key_mode ?? (draft.encrypt ? draft.keyMode : "generated");
       draft.recoveryKey = result.recovery_key;
-      draft.recoveryExported = result.recovery_key === null;
+      draft.recoveryExported = result.recovery_key === null && draft.keyMode !== "passphrase";
+      draft.recoveryConfirmed = false;
       draft.recoveryVerified = false;
       draft.verifyOrder = null;
       draft.verifyProgress = 0;
@@ -1314,7 +1560,7 @@ export function createWizard(): WizardHandles {
     const key = draft.recoveryKey;
     if (node === null) return el("div", { class: "skeleton", style: "height: 220px" });
 
-    if (key === null) {
+    if (key === null && draft.keyMode !== "passphrase") {
       return el(
         "div",
         { class: "stack" },
@@ -1326,6 +1572,47 @@ export function createWizard(): WizardHandles {
         }),
       );
     }
+
+    if (key === null && draft.keyMode === "passphrase") {
+      const confirmRow = (() => {
+        const box = el("input", { type: "checkbox" }) as HTMLInputElement;
+        box.checked = draft.recoveryConfirmed;
+        on(box, "change", () => {
+          draft.recoveryConfirmed = box.checked;
+          render();
+        });
+        return el(
+          "label",
+          { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+          box,
+          el("span", { text: "I have written down my passphrase somewhere safe" }),
+        );
+      })();
+      return el(
+        "div",
+        { class: "stack" },
+        el("p", { class: "wizard__eyebrow", text: "Step 5 of 5" }),
+        el("h2", { class: "wizard__title", text: "Remember the passphrase" }),
+        el("p", {
+          class: "wizard__lead",
+          text: "This node unlocks with the passphrase chosen in step 2. It is never shown again and never stored where the app can read it back: if this device's keychain entry is lost and the passphrase is forgotten, the data cannot be read by anyone, including us.",
+        }),
+        el("p", {
+          class: "muted",
+          text: draft.storeKeyInKeychain && !draft.removable
+            ? "Keychain storage is on, so restarts unlock automatically on this machine. The passphrase is still required on any other machine or after the keychain entry is removed."
+            : "Keychain storage is off or this is removable media, so this passphrase will be asked for after every restart.",
+        }),
+        confirmRow,
+        draft.recoveryConfirmed
+          ? el("p", { class: "muted", text: "Done is now enabled. The passphrase can be changed later from the node screen; the old one stops working immediately." })
+          : el("p", { class: "error-note", text: "Check the box above to finish — Done stays disabled until you confirm you kept the passphrase." }),
+      );
+    }
+
+    // Both null-key cases returned above (unencrypted + passphrase). A null
+    // here is unreachable; guard for the type-checker rather than rendering.
+    if (key === null) return el("div", { class: "skeleton", style: "height: 220px" });
 
     const saveButton = el("button", { class: "btn btn--primary", type: "button", text: "Save to a file…" });
     on(saveButton, "click", async () => {
@@ -1446,6 +1733,8 @@ export function createWizard(): WizardHandles {
       case 3: return true;
       case 4: return !draft.creating;
       case 5:
+        // Passphrase nodes have no displayed key; the checkbox confirms memory.
+        if (draft.recoveryKey === null && draft.keyMode === "passphrase") return draft.recoveryConfirmed;
         // Unencrypted nodes have no key; creation already marked them exported.
         if (draft.recoveryKey === null) return draft.recoveryExported;
         return draft.recoveryExported && draft.recoveryConfirmed;

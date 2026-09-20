@@ -9,6 +9,7 @@
 #include "desentry/common/json.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 
 namespace desentry {
 
@@ -270,13 +271,17 @@ StatusOr<std::vector<EngineRow>> ColumnarLiteBackend::DecodeSegment(const std::s
 // ---------------------------------------------------------------------------
 
 Status ColumnarLiteBackend::Open(const std::string& data_dir, uint64_t quota_mb,
-                                  size_t buffer_pool_pages) {
+                                  size_t buffer_pool_pages, const std::string& dek) {
   (void)buffer_pool_pages;  // segment-based layout has no buffer pool to size
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  dek_ = dek;
   dir_ = data_dir + "/columnar_lite";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/segments.json";
 
-  auto store_or = SegmentStore::Open(dir_ + "/columnar.dsf");
+  auto store_or = SegmentStore::Open(dir_ + "/columnar.dsf", 256, dek_);
   if (!store_or.ok()) return store_or.status();
   store_ = std::move(store_or.value());
 
@@ -286,14 +291,15 @@ Status ColumnarLiteBackend::Open(const std::string& data_dir, uint64_t quota_mb,
 }
 
 Status ColumnarLiteBackend::LoadManifest() {
-  std::ifstream f(manifest_path_);
-  if (!f.is_open()) return Status::OK();
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  if (ss.str().empty()) return Status::OK();
+  auto text_or = at_rest::ReadSealedJsonFile(manifest_path_, dek_, "columnar-manifest");
+  if (!text_or.ok()) {
+    if (text_or.status().code() == StatusCode::kNotFound) return Status::OK();
+    return Status::Corruption(std::string("columnar manifest: ") + text_or.status().message());
+  }
+  if (text_or.value().empty()) return Status::OK();
   JsonValue root;
   try {
-    root = JsonValue::Parse(ss.str());
+    root = JsonValue::Parse(text_or.value());
   } catch (const std::exception& e) {
     return Status::Corruption(std::string("columnar manifest parse error: ") + e.what());
   }
@@ -353,17 +359,11 @@ Status ColumnarLiteBackend::SaveManifest() {
       arr.emplace_back(std::move(o));
     }
   }
-  const std::string tmp = manifest_path_ + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) return Status::IOError("columnar: cannot write " + tmp);
-    f << JsonValue(std::move(arr)).Dump();
-    f.flush();
-    if (!f.good()) return Status::IOError("columnar: manifest write failed");
-  }
-  std::remove(manifest_path_.c_str());
-  if (std::rename(tmp.c_str(), manifest_path_.c_str()) != 0) {
-    return Status::IOError("columnar: cannot commit " + manifest_path_);
+  Status st = at_rest::WriteSealedJsonFile(manifest_path_, JsonValue(std::move(arr)).Dump(),
+                                             dek_, "columnar-manifest");
+  if (!st.ok()) {
+    return Status::IOError(std::string("columnar: cannot commit ") + manifest_path_ + ": " +
+                           st.message());
   }
   return Status::OK();
 }

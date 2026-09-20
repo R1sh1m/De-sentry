@@ -62,10 +62,20 @@ export function createConsole(): ConsoleHandles {
     }
 
     const collections = node.brain?.collections ?? [];
+    // Each specialized tab only lists collections bound to its engine: a KV
+    // collection queried as a vector index fails with a backend mismatch,
+    // so offering it there is offering an error. Documents & KV keeps all.
+    const namesFor = (engine: string): string[] =>
+      collections.filter((c) => c.engine === engine).map((c) => c.name);
+    const vecNames = namesFor("vector_hnsw_lite");
+    const tsNames = namesFor("ts_rollup");
+    const graphNames = namesFor("graph_adj");
     if (!docCollection && collections.length > 0) docCollection = collections[0].name;
-    if (!vecCollection && collections.length > 0) vecCollection = collections[0].name;
-    if (!tsCollection && collections.length > 0) tsCollection = collections[0].name;
-    if (!graphCollection && collections.length > 0) graphCollection = collections[0].name;
+    if (!vecCollection || !vecNames.includes(vecCollection)) vecCollection = vecNames[0] ?? "";
+    if (!tsCollection || !tsNames.includes(tsCollection)) tsCollection = tsNames[0] ?? "";
+    if (!graphCollection || !graphNames.includes(graphCollection)) {
+      graphCollection = graphNames[0] ?? "";
+    }
 
     // -- Header bar -----------------------------------------------------------
     const backBtn = el(
@@ -111,12 +121,30 @@ export function createConsole(): ConsoleHandles {
     );
 
     // -- Tab switcher ---------------------------------------------------------
-    const tabs: { id: ConsoleTab; label: string; icon: string }[] = [
-      { id: "documents", label: "Documents & KV", icon: Icons.folder },
-      { id: "vector", label: "Vector Search", icon: Icons.search },
-      { id: "timeseries", label: "Time-Series", icon: Icons.chart },
-      { id: "graph", label: "Graph Explorer", icon: Icons.mesh },
-      { id: "api", label: "Direct API", icon: Icons.inspector },
+    // Tabs with no bound collection stay clickable: their content explains
+    // what to bind rather than failing on a mismatched engine. The title
+    // says the requirement up front.
+    const tabs: { id: ConsoleTab; label: string; icon: string; title: string }[] = [
+      { id: "documents", label: "Documents & KV", icon: Icons.folder, title: "Any collection" },
+      {
+        id: "vector",
+        label: `Vector Search${vecNames.length > 0 ? ` (${vecNames.length})` : ""}`,
+        icon: Icons.search,
+        title: vecNames.length > 0 ? "Collections bound to vector_hnsw_lite" : "Needs a collection bound to vector_hnsw_lite",
+      },
+      {
+        id: "timeseries",
+        label: `Time-Series${tsNames.length > 0 ? ` (${tsNames.length})` : ""}`,
+        icon: Icons.chart,
+        title: tsNames.length > 0 ? "Collections bound to ts_rollup" : "Needs a collection bound to ts_rollup",
+      },
+      {
+        id: "graph",
+        label: `Graph Explorer${graphNames.length > 0 ? ` (${graphNames.length})` : ""}`,
+        icon: Icons.mesh,
+        title: graphNames.length > 0 ? "Collections bound to graph_adj" : "Needs a collection bound to graph_adj",
+      },
+      { id: "api", label: "Direct API", icon: Icons.inspector, title: "Raw method + path against this node" },
     ];
 
     const tabButtons = tabs.map((t) => {
@@ -126,6 +154,7 @@ export function createConsole(): ConsoleHandles {
           class: `btn btn--sm ${activeTab === t.id ? "btn--primary" : "btn--ghost"}`,
           type: "button",
           style: "gap: 6px;",
+          title: t.title,
         },
         icon(t.icon, 13),
         t.label,
@@ -153,13 +182,13 @@ export function createConsole(): ConsoleHandles {
         content = renderDocumentsTab(node, collections.map((c) => c.name));
         break;
       case "vector":
-        content = renderVectorTab(node, collections.map((c) => c.name));
+        content = renderVectorTab(node, vecNames);
         break;
       case "timeseries":
-        content = renderTimeSeriesTab(node, collections.map((c) => c.name));
+        content = renderTimeSeriesTab(node, tsNames);
         break;
       case "graph":
-        content = renderGraphTab(node, collections.map((c) => c.name));
+        content = renderGraphTab(node, graphNames);
         break;
       case "api":
         content = renderApiTab(node);
@@ -297,6 +326,12 @@ export function createConsole(): ConsoleHandles {
 
   // -- 2. Vector Search Tab ---------------------------------------------------
   function renderVectorTab(node: NodeView, colNames: string[]): HTMLElement {
+    if (colNames.length === 0) {
+      return emptyState({
+        title: "No vector collections",
+        body: "This node has no collection bound to vector_hnsw_lite. Drop embeddings through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"vector_hnsw_lite\"}.",
+      });
+    }
     const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
@@ -391,6 +426,12 @@ export function createConsole(): ConsoleHandles {
 
   // -- 3. Time-Series Tab -----------------------------------------------------
   function renderTimeSeriesTab(node: NodeView, colNames: string[]): HTMLElement {
+    if (colNames.length === 0) {
+      return emptyState({
+        title: "No time-series collections",
+        body: "This node has no collection bound to ts_rollup. Drop metric logs through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"ts_rollup\"}.",
+      });
+    }
     const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
@@ -471,6 +512,12 @@ export function createConsole(): ConsoleHandles {
 
   // -- 4. Graph Tab -----------------------------------------------------------
   function renderGraphTab(node: NodeView, colNames: string[]): HTMLElement {
+    if (colNames.length === 0) {
+      return emptyState({
+        title: "No graph collections",
+        body: "This node has no collection bound to graph_adj. Drop edge lists through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"graph_adj\"}.",
+      });
+    }
     const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
@@ -589,22 +636,19 @@ export function createConsole(): ConsoleHandles {
       statusBadge.textContent = "Loading…";
       const start = Date.now();
       try {
-        const url = `http://127.0.0.1:${node.process.api_port}${apiPath}`;
-        const res = await fetch(url, {
-          method: apiMethod,
-          headers: apiMethod !== "GET" && apiBody ? { "Content-Type": "application/json" } : undefined,
-          body: apiMethod !== "GET" && apiBody ? apiBody : undefined,
-        });
+        // Same timeout + unreachable semantics as every other call (a dead
+        // node reports honestly, never a hung spinner); non-2xx surfaces as
+        // data so the playground can display it.
+        const res = await apiFor(node.process.api_port).rawRequest(
+          apiMethod,
+          apiPath,
+          apiMethod !== "GET" ? apiBody : undefined,
+        );
         apiDuration = Date.now() - start;
         durationSpan.textContent = `${apiDuration}ms`;
-        apiStatus = `${res.status} ${res.statusText}`;
+        apiStatus = `${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
         statusBadge.textContent = apiStatus;
-        const text = await res.text();
-        try {
-          apiResult = json(JSON.parse(text));
-        } catch {
-          apiResult = text;
-        }
+        apiResult = typeof res.body === "string" ? res.body : json(res.body);
         responsePre.textContent = apiResult;
       } catch (err) {
         apiDuration = Date.now() - start;

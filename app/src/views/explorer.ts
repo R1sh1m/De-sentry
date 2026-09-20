@@ -207,24 +207,35 @@ export function createExplorer(): ExplorerHandles {
         start: start || undefined,
         limit: PAGE_SIZE,
       });
+      // The engine's scan bound is inclusive: ask from the last visible key
+      // and drop the repeated first row. (A trailing-space suffix hack was
+      // tried before; it breaks on keys that genuinely end in a space.)
       const rows =
         dropLeading !== "" && page.documents[0]?.key === dropLeading
           ? page.documents.slice(1)
           : page.documents;
-      const selected = rows.length > 0 ? rows[0].key : null;
+      // Preserve the selection across page turns when the key is still
+      // visible; otherwise fall back to the first row. The filter text and
+      // view mode are page chrome, not page content -- keep them too.
+      const prev = state;
+      const prevSelected =
+        prev !== null && prev.collection === collection ? prev.selectedKey : null;
+      const kept = prevSelected !== null ? rows.find((r) => r.key === prevSelected) : undefined;
+      const selected = kept !== undefined ? kept.key : (rows.length > 0 ? rows[0].key : null);
+      const selectedRow = rows.find((r) => r.key === selected);
       state = {
         nodeId,
         collection,
         rows,
         pageStack: state !== null && state.collection === collection ? state.pageStack : [],
         selectedKey: selected,
-        draft: selected !== null ? json(rows[0].document) : "",
+        draft: selectedRow !== undefined ? json(selectedRow.document) : "",
         dirty: false,
         loading: false,
         error: "",
         mayHaveMore: page.documents.length === PAGE_SIZE,
-        keyFilter: "",
-        viewMode: "formatted",
+        keyFilter: prev !== null && prev.collection === collection ? prev.keyFilter : "",
+        viewMode: prev !== null && prev.collection === collection ? prev.viewMode : "formatted",
       };
     } catch (error) {
       state = {
@@ -344,7 +355,8 @@ export function createExplorer(): ExplorerHandles {
     const searchInput = el("input", {
       class: "explorer__search-input",
       type: "search",
-      placeholder: "Filter 200 loaded keys…",
+      placeholder: "Filter this page's keys…",
+      title: "Page-local filter: it searches the keys on this page only, not the whole collection",
       value: current.keyFilter,
     }) as HTMLInputElement;
 
@@ -426,19 +438,29 @@ export function createExplorer(): ExplorerHandles {
       const last = current.rows[current.rows.length - 1];
       if (last === undefined) return;
       const stack = [...current.pageStack, current.rows[0]?.key ?? ""];
-      void load(current.nodeId, current.collection, `${last.key} `).then(() => {
+      // Inclusive bound + drop-first (see load()): correct for every key,
+      // including ones ending in a space.
+      void load(current.nodeId, current.collection, last.key, last.key).then(() => {
         if (state !== null) state.pageStack = stack;
         render();
       });
     });
 
+    // "N keys on page" says nothing about position; the from→to range does.
+    // mayHaveMore is still heuristic (exactly PAGE_SIZE rows may be the end),
+    // so Next on the last page harmlessly returns an empty page.
+    const range =
+      current.rows.length > 0
+        ? `${truncate(current.rows[0].key, 18)} → ${truncate(current.rows[current.rows.length - 1].key, 18)}`
+        : "empty page";
     return el(
       "div",
       { class: "row row--between" },
       el("span", {
         class: "muted",
         style: "font: var(--text-fine);",
-        text: `${count(current.rows.length)} key${current.rows.length === 1 ? "" : "s"} on page`,
+        title: "Page-local range; the filter box below also applies to this page only",
+        text: `${count(current.rows.length)} keys (${range})`,
       }),
       el("div", { class: "row" }, back, next),
     );

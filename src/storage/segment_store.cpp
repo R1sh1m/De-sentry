@@ -35,9 +35,13 @@ SegPageHeader ReadHeader(const char* data) {
 }  // namespace
 
 StatusOr<std::unique_ptr<SegmentStore>> SegmentStore::Open(const std::string& file_path,
-                                                             size_t buffer_pool_pages) {
+                                                             size_t buffer_pool_pages,
+                                                             const std::string& dek) {
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
   std::unique_ptr<SegmentStore> store(new SegmentStore());
-  auto disk_or = DiskManager::Open(file_path);
+  auto disk_or = DiskManager::Open(file_path, dek);
   if (!disk_or.ok()) return disk_or.status();
   store->disk_ = std::move(disk_or.value());
   store->pool_ = std::make_unique<BufferPoolManager>(buffer_pool_pages, store->disk_.get());

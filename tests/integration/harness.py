@@ -69,6 +69,35 @@ def find_engine(explicit: Optional[str] = None) -> str:
 _ALLOCATED_PORTS: Set[int] = set()
 
 
+# Crockford base32 (no I, L, O, U) -- the same alphabet the sidecar's
+# recovery keys and the engine's stdin decoder use, so test keys exercise
+# the exact production parsing path rather than a lookalike.
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def crockford_encode(raw: bytes) -> str:
+    bits = 0
+    count = 0
+    symbols = []
+    for byte in raw:
+        bits = (bits << 8) | byte
+        count += 8
+        while count >= 5:
+            count -= 5
+            symbols.append(_CROCKFORD[(bits >> count) & 0x1F])
+    if count > 0:
+        symbols.append(_CROCKFORD[(bits << (5 - count)) & 0x1F])
+    grouped = "-".join(
+        "".join(symbols[i:i + 5]) for i in range(0, len(symbols), 5)
+    )
+    return grouped
+
+
+def random_recovery_key() -> str:
+    """A fresh 256-bit node key in recovery-key text form (Crockford)."""
+    return crockford_encode(os.urandom(32))
+
+
 def free_port(start: int, exclude: Optional[Set[int]] = None, udp: bool = False) -> int:
     """First port at or above `start` that nothing is listening on and that
     has not already been reserved for another node in this test process.
@@ -93,7 +122,8 @@ class Node:
 
     def __init__(self, name: str, data_dir: str, api_port: int, p2p_port: int,
                  discovery_port: int, engine: str, *, supervisor: bool = False,
-                 config_overrides: Optional[Dict[str, Any]] = None):
+                 config_overrides: Optional[Dict[str, Any]] = None,
+                 unlock_key: Optional[str] = None):
         self.name = name
         self.data_dir = data_dir
         self.api_port = api_port
@@ -102,6 +132,11 @@ class Node:
         self.engine = engine
         self.supervisor = supervisor
         self.config_overrides = config_overrides or {}
+        # At-rest unlock key in recovery-key text form. Handed to the child
+        # on stdin exactly like the sidecar does (one line, then EOF), which
+        # is what makes sealed-mode integration tests exercise the production
+        # key path rather than a test-only seam.
+        self.unlock_key = unlock_key
         self.process: Optional[subprocess.Popen] = None
         self.log_path = os.path.join(data_dir, "node.log")
         self.node_id: str = ""
@@ -147,14 +182,22 @@ class Node:
               wait: bool = True) -> "Node":
         config_path = self.write_config(bootstrap_peers)
         log = open(self.log_path, "ab")
+        args = [self.engine, "--config", config_path]
+        if self.unlock_key is not None:
+            args.append("--read-unlock-stdin")
         self.process = subprocess.Popen(
-            [self.engine, "--config", config_path],
+            args,
+            stdin=subprocess.PIPE if self.unlock_key is not None else None,
             stdout=log,
             stderr=subprocess.STDOUT,
             # A new process group on POSIX so a Ctrl-C in the test runner does
             # not take the nodes with it before their assertions run.
             start_new_session=(os.name != "nt"),
         )
+        if self.unlock_key is not None and self.process.stdin is not None:
+            # One line, then EOF -- byte for byte what the sidecar writes.
+            self.process.stdin.write((self.unlock_key + "\n").encode("utf-8"))
+            self.process.stdin.close()
         if wait:
             self.wait_ready()
         return self
@@ -239,7 +282,8 @@ class Cluster:
 
     def add(self, name: str, *, supervisor: bool = False,
             data_dir: Optional[str] = None,
-            config_overrides: Optional[Dict[str, Any]] = None) -> Node:
+            config_overrides: Optional[Dict[str, Any]] = None,
+            unlock_key: Optional[str] = None) -> Node:
         api_port = free_port(self._next_api_port)
         _ALLOCATED_PORTS.add(api_port)
         self._next_api_port = api_port + 1
@@ -257,6 +301,7 @@ class Cluster:
             engine=self.engine,
             supervisor=supervisor,
             config_overrides=config_overrides,
+            unlock_key=unlock_key,
         )
         self.nodes.append(node)
         return node

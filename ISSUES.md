@@ -591,11 +591,12 @@ These are known design limits, not automatically bugs:
   conflicts.
 - Optional vendored backends are never downloaded automatically and are off by
   default.
-- At-rest encryption is NOT enforced (2026-09): `encrypt_at_rest` is parsed,
-  persisted and surfaced, but DiskManager/SegmentStore/WAL write plaintext and
-  AES-GCM covers the wire only. `desentryd` warns when the flag is set
-  (apps/desentry_node/main.cpp); docs/architecture-v2.md Sec 8.1 states the gap.
-  Wiring is tracked future work.
+- At-rest encryption is ENFORCED (since 2026-09-20): `encrypt_at_rest: true`
+  seals every data file with the node's DEK (AES-256-GCM pages, sealed log
+  records, sealed JSON/identity files; fail-closed both ways; vendored
+  backends refuse a DEK). Plaintext dirs migrate offline via
+  `desentryd --re-encrypt`. See STATUS.md §13 and docs/architecture-v2.md
+  §8.1 for the format, limits and verification.
 - `secondary_indexes` are metadata only: persisted in the catalog and echoed by
   the API, never built or queried by any backend.
 - Retention is manual only: `ts_rollup::ApplyRetention/Prune` work when called,

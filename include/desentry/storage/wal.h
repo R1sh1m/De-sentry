@@ -138,8 +138,13 @@ class WriteAheadLog {
   // storage layer never includes net/identity.h.
   using Signer = std::function<std::string(const std::string& message)>;
 
-  static StatusOr<std::unique_ptr<WriteAheadLog>> Open(const std::string& wal_file);
-  ~WriteAheadLog();
+   // Opens (creating if absent) the ledger file. `dek` is the node's 32-byte
+   // data-encryption key; empty means plaintext. Fail-closed both ways: a
+   // sealed log opened without a key, or a plaintext log opened with one,
+   // is Corruption (migrate with `desentryd --re-encrypt`).
+   static StatusOr<std::unique_ptr<WriteAheadLog>> Open(const std::string& wal_file,
+                                                        const std::string& dek = "");
+   ~WriteAheadLog();
 
   // Installs the origin identity used to stamp and sign subsequent entries.
   // Entries appended before this is called are stored unsigned and are
@@ -253,8 +258,17 @@ class WriteAheadLog {
   // v1 body parser, used only by the one-time migration on Open().
   static Status DecodeBodyV1(const std::string& body, WalRecord* out);
 
-  Status ReadAllLocked(std::vector<WalRecord>* out);
-  Status RewriteLocked(const std::vector<WalRecord>& records);
+   Status ReadAllLocked(std::vector<WalRecord>* out);
+   Status RewriteLocked(const std::vector<WalRecord>& records);
+   // Seals EncodeBody output when encrypted (identity otherwise); unseals a
+   // sealed payload, enforcing the fail-closed mode match. Both set
+   // `corrupt` rather than returning when bytes are present-but-bad, matching
+   // the torn-tail-vs-corruption split ReadAllLocked already implements.
+   Status SealPayload(const std::string& payload, std::string* out) const;
+   Status UnsealPayload(const std::string& payload, std::string* out, bool* corrupt) const;
+   // Peeks the first record to decide sealed vs plaintext before the full
+   // read. Empty file: new log in the current mode. Mismatch: Corruption.
+   static Status DetectMode(const std::string& wal_file, bool have_key, bool* sealed);
 
   std::fstream file_;
   std::string path_;
@@ -268,8 +282,12 @@ class WriteAheadLog {
   // a tampered record was cut out of.
   bool last_read_corrupt_ = false;
 
-  std::string origin_node_id_;
-  Signer signer_;
+   std::string origin_node_id_;
+   Signer signer_;
+   // At-rest state. Empty subkey when plaintext; derived once at Open from
+   // the DEK via FileSubkey(DEK, "wal"), so every WAL shares one subkey
+   // derivation scheme with the other sealed logs.
+   std::string subkey_;
 
   bool migrated_from_v1_ = false;
   std::string pre_migration_tip_hash_;

@@ -42,8 +42,10 @@ constexpr size_t kSegmentPagePayload = kPageSize - kSegmentPageHeaderBytes;
 
 class SegmentStore {
  public:
+  // `dek` seals the segment file's pages (empty = plaintext).
   static StatusOr<std::unique_ptr<SegmentStore>> Open(const std::string& file_path,
-                                                        size_t buffer_pool_pages = 256);
+                                                        size_t buffer_pool_pages = 256,
+                                                        const std::string& dek = "");
   ~SegmentStore();
 
   // Writes `bytes` as a page chain and returns the first page id. An empty

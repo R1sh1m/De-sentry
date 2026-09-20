@@ -19,7 +19,12 @@ namespace desentry {
 
 class NodeIdentity {
  public:
-  static StatusOr<NodeIdentity> LoadOrCreate(const std::string& key_file);
+  // Loads (creating if absent) the node's Ed25519 identity. `dek` seals the
+  // key file (empty = plaintext); fail-closed both ways -- a sealed
+  // identity without a key, or a plaintext identity with one, is Corruption.
+  // A stolen disk yields neither the node's identity nor its data.
+  static StatusOr<NodeIdentity> LoadOrCreate(const std::string& key_file,
+                                             const std::string& dek = "");
 
   const std::string& node_id() const { return node_id_; }
   const std::string& public_key() const { return public_key_; }

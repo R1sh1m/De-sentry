@@ -41,9 +41,11 @@ struct OutboxEntry {
 
 class OutboxStore {
  public:
-  // Opens (creating if absent) the outbox log under `data_dir`.
+  // Opens (creating if absent) the outbox log under `data_dir`. `dek`
+  // seals staged bytes (empty = plaintext); fail-closed both ways.
   static StatusOr<std::unique_ptr<OutboxStore>> Open(const std::string& data_dir,
-                                                      std::string local_node_id);
+                                                      std::string local_node_id,
+                                                      const std::string& dek = "");
   ~OutboxStore();
 
   // Stores an entry for a write made while isolated. Upserts on
@@ -75,9 +77,11 @@ class OutboxStore {
   std::string path_;
   std::string local_node_id_;
 
-  mutable std::mutex mu_;
-  std::unordered_map<std::string, OutboxEntry> entries_;
-  std::unique_ptr<std::fstream> file_;
+   mutable std::mutex mu_;
+   std::unordered_map<std::string, OutboxEntry> entries_;
+   std::unique_ptr<std::fstream> file_;
+   // At-rest subkey (empty when plaintext), derived once at Open.
+   std::string subkey_;
 };
 
 }  // namespace desentry

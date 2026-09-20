@@ -138,10 +138,18 @@ export interface CreateNodeRequest {
   /** Store the at-rest key in the OS keychain for automatic restarts. */
   store_key_in_keychain: boolean;
   supervisor: boolean;
+  /** Whether node advertises and syncs via UDP/LAN discovery. Set false for Multi-Database Isolation. */
+  discovery_enabled?: boolean;
   removable: boolean;
   bootstrap_peers: string[];
   description: string;
   preallocate?: boolean;
+  /** "generated" (recovery key) or "passphrase" (custom passphrase). */
+  key_mode?: string;
+  /** User-chosen passphrase when key_mode == "passphrase". */
+  passphrase?: string;
+  /** Confirmation copy; must match `passphrase`. */
+  passphrase_confirm?: string;
 }
 
 export interface CreateNodeResult {
@@ -150,11 +158,20 @@ export interface CreateNodeResult {
    * The recovery key, in plain text, exactly once. It is not stored anywhere
    * the app can read back: this response is the only time it exists outside
    * the OS keychain when selected. The wizard cannot advance until the user
-   * has exported it.
+   * has exported it. Null for unencrypted nodes AND for passphrase nodes
+   * (the user already knows that secret — nothing is displayed).
    */
   recovery_key: string | null;
   /** Keychain entry name, so the node config can reference it. */
   keychain_ref: string;
+  /** Echoes the key mode so the wizard renders the matching step-5 screen. */
+  key_mode: string;
+}
+
+export interface PassphraseStrength {
+  score: number;
+  label: string;
+  min_len: number;
 }
 
 export interface AppInfo {
@@ -317,9 +334,19 @@ export const sidecar = {
     return invoke<void>("export_recovery_key", { nodeId, path });
   },
 
-  /** Unlocks an encrypted node with a password or recovery key. */
+  /** Unlocks an encrypted node with a passphrase or recovery key. */
   unlockNode(nodeId: string, password: string, dataDir?: string): Promise<SupervisedNode> {
     return invoke<SupervisedNode>("unlock_node", { nodeId, password, dataDir });
+  },
+
+  /** Scores a candidate passphrase (local only; the secret never leaves the window). */
+  passphraseStrength(passphrase: string): Promise<PassphraseStrength> {
+    return invoke<PassphraseStrength>("passphrase_strength", { passphrase });
+  },
+
+  /** Rotates a passphrase: old secret verifies, same DEK re-wrapped under a fresh salt. */
+  changePassphrase(nodeId: string, oldSecret: string, newPassphrase: string, newConfirm: string): Promise<void> {
+    return invoke<void>("change_passphrase", { nodeId, oldSecret, newPassphrase, newConfirm });
   },
 
   /** Locks an encrypted node: stops process and clears in-memory keys. */

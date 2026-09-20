@@ -7,6 +7,7 @@
 #include "desentry/common/crc32.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/storage/engines/columnar_lite.h"
 #include "desentry/storage/engines/graph_adj.h"
 #include "desentry/storage/engines/kv_bplus.h"
@@ -45,8 +46,22 @@ std::string EncodeIndexEntry(const IndexEntry& entry) {
 
 }  // namespace
 
-StatusOr<std::unique_ptr<CrossEngineIndex>> CrossEngineIndex::Open(const std::string& path) {
+StatusOr<std::unique_ptr<CrossEngineIndex>> CrossEngineIndex::Open(const std::string& path,
+                                                                     const std::string& dek) {
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  bool sealed = false;
+  Status mode_st =
+      at_rest::DetectLogMode(path, kIndexRecordCap, !dek.empty(), "cross-engine index", &sealed);
+  if (!mode_st.ok()) return mode_st;
+  (void)sealed;  // the in-loop unseal below enforces the mode per record
   std::unique_ptr<CrossEngineIndex> index(new CrossEngineIndex(path));
+  if (!dek.empty()) {
+    auto subkey_or = at_rest::FileSubkey(dek, "index");
+    if (!subkey_or.ok()) return subkey_or.status();
+    index->subkey_ = subkey_or.value();
+  }
   Status st = index->Load();
   if (!st.ok()) return st;
   return index;
@@ -96,6 +111,24 @@ Status CrossEngineIndex::Load() {
       DSN_LOG_WARN("index", "cross-engine index: CRC mismatch, stopping load at a torn record");
       break;
     }
+    // At-rest layer (after the CRC gate, before decode): sealed payloads
+    // open here; a mode mismatch is loud and stopping.
+    if (!subkey_.empty()) {
+      if (!at_rest::LooksSealedRecord(body)) {
+        DSN_LOG_ERROR("index", "cross-engine index: plaintext record in sealed log, stopping load");
+        break;
+      }
+      auto open_or = at_rest::OpenRecord(subkey_, body, "index");
+      if (!open_or.ok()) {
+        DSN_LOG_ERROR("index", "cross-engine index: record authentication failed, stopping load: "
+                                   << open_or.status().message());
+        break;
+      }
+      body = open_or.value();
+    } else if (at_rest::LooksSealedRecord(body)) {
+      DSN_LOG_ERROR("index", "cross-engine index: sealed record without an unlock key, stopping load");
+      break;
+    }
     try {
       ByteReader r(body);
       IndexEntry entry;
@@ -114,7 +147,13 @@ Status CrossEngineIndex::Load() {
 }
 
 Status CrossEngineIndex::AppendRecord(const IndexEntry& entry) {
-  std::string body = EncodeIndexEntry(entry);
+  std::string payload = EncodeIndexEntry(entry);
+  if (!subkey_.empty()) {
+    auto sealed_or = at_rest::SealRecord(subkey_, payload, "index");
+    if (!sealed_or.ok()) return sealed_or.status();
+    payload = sealed_or.value();
+  }
+  const std::string& body = payload;
   uint32_t body_len = static_cast<uint32_t>(body.size());
   uint32_t crc = Crc32(body.data(), body.size());
 
@@ -269,6 +308,10 @@ StatusOr<std::unique_ptr<StorageRouter>> StorageRouter::Open(const Options& opti
   const uint64_t total_mb = db_bytes == 0 ? 0 : (db_bytes + kMiB - 1) / kMiB;
   const uint64_t base_mb = engines.empty() ? 0 : total_mb / engines.size();
   const uint64_t extra_mb = engines.empty() ? 0 : total_mb % engines.size();
+  if (!options.dek.empty() && options.dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  router->dek_ = options.dek;
   size_t pool_pages = options.buffer_pool_pages == 0 ? 16 : options.buffer_pool_pages;
   for (size_t i = 0; i < engines.size(); ++i) {
     const uint64_t engine_mb = base_mb + (i < extra_mb ? 1 : 0);
@@ -276,7 +319,8 @@ StatusOr<std::unique_ptr<StorageRouter>> StorageRouter::Open(const Options& opti
     if (!st.ok()) return st;
   }
 
-  auto index_or = CrossEngineIndex::Open(router->data_dir_ + "/cross_engine_index.log");
+  auto index_or =
+      CrossEngineIndex::Open(router->data_dir_ + "/cross_engine_index.log", router->dek_);
   if (!index_or.ok()) return index_or.status();
   router->index_ = std::move(index_or.value());
 
@@ -296,7 +340,7 @@ Status StorageRouter::RegisterBackend(const std::string& name, const std::string
   // The caller deals whole MiBs that already sum to the data-plane share, so
   // no rounding happens here: 0 stays 0 ("unlimited") and is never confused
   // with a tiny-but-limited budget.
-  Status st = backend->Open(data_dir, quota_mb, buffer_pool_pages);
+  Status st = backend->Open(data_dir, quota_mb, buffer_pool_pages, dek_);
   if (!st.ok()) return st;
   std::lock_guard<std::mutex> lock(mu_);
   backends_[name] = std::move(backend);

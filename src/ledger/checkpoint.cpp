@@ -6,6 +6,7 @@
 
 #include <set>
 
+#include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 
 namespace desentry {
@@ -123,10 +124,21 @@ StatusOr<CheckpointOutcome> RunCheckpoint(WriteAheadLog* wal, TransitStore* tran
   }
 
   // The marker first, so the prune that follows is itself part of the
-  // audited history rather than an unrecorded mutation.
+  // audited history rather than an unrecorded mutation. The marker carries
+  // the quorum attestation inline, inside the signed content: Prune() clears
+  // survivors' origin signatures (it cannot re-sign another node's entry),
+  // so without this the post-prune chain would record THAT a checkpoint
+  // happened but not WHAT the quorum agreed to. Replay ignores non-PUT
+  // records, so the attestation bytes never reach materialized storage.
+  const std::string attestation =
+      "{\"agreed_entry_hash\":\"" + HexEncode(outcome.decision.agreed_entry_hash) +
+      "\",\"agreeing\":" + std::to_string(outcome.decision.agreeing) + ",\"required\":" +
+      std::to_string(outcome.decision.required) + ",\"checkpoint_lsn\":" +
+      std::to_string(outcome.decision.checkpoint_lsn) + "}";
   WriteAheadLog::AppendOptions options;
   options.hlc = now;
-  auto marker_or = wal->Append(WalRecordType::kCheckpoint, "", "checkpoint", "", options);
+  auto marker_or =
+      wal->Append(WalRecordType::kCheckpoint, "", "checkpoint", attestation, options);
   if (!marker_or.ok()) return marker_or.status();
   outcome.checkpoint_entry_id = marker_or.value();
 

@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "desentry/common/logger.h"
+#include "desentry/security/at_rest.h"
 
 namespace desentry {
 
@@ -47,22 +48,27 @@ CollectionAcl DecodeAcl(const JsonValue& v) {
 
 }  // namespace
 
-StatusOr<std::unique_ptr<Catalog>> Catalog::Open(const std::string& catalog_file) {
-  std::unique_ptr<Catalog> cat(new Catalog(catalog_file));
+StatusOr<std::unique_ptr<Catalog>> Catalog::Open(const std::string& catalog_file,
+                                                  const std::string& dek) {
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  std::unique_ptr<Catalog> cat(new Catalog(catalog_file, dek));
   Status st = cat->LoadFromDisk();
   if (!st.ok()) return st;
   return cat;
 }
 
 Status Catalog::LoadFromDisk() {
-  std::ifstream f(path_);
-  if (!f.is_open()) {
-    DSN_LOG_INFO("catalog", "no existing catalog at " << path_ << ", starting empty");
-    return Status::OK();
+  auto text_or = at_rest::ReadSealedJsonFile(path_, dek_, "catalog");
+  if (!text_or.ok()) {
+    if (text_or.status().code() == StatusCode::kNotFound) {
+      DSN_LOG_INFO("catalog", "no existing catalog at " << path_ << ", starting empty");
+      return Status::OK();
+    }
+    return text_or.status();
   }
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  std::string text = ss.str();
+  std::string text = text_or.value();
   if (text.empty()) return Status::OK();
 
   JsonValue root;
@@ -129,20 +135,8 @@ Status Catalog::SaveLocked() {
   // Write-then-rename so a crash mid-save can never leave a truncated
   // catalog on disk: the old file stays intact until the new one is
   // complete. (v1 wrote in place with std::ios::trunc, which had a real
-  // window where the catalog was zero bytes.)
-  const std::string tmp_path = path_ + ".tmp";
-  {
-    std::ofstream f(tmp_path, std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) return Status::IOError("cannot write catalog: " + tmp_path);
-    f << JsonValue(std::move(arr)).Dump();
-    f.flush();
-    if (!f.good()) return Status::IOError("catalog write failed: " + tmp_path);
-  }
-  std::remove(path_.c_str());  // Windows rename() refuses to clobber
-  if (std::rename(tmp_path.c_str(), path_.c_str()) != 0) {
-    return Status::IOError("cannot commit catalog: " + path_);
-  }
-  return Status::OK();
+  // window where the catalog was zero bytes.) Sealed when a DEK is set.
+  return at_rest::WriteSealedJsonFile(path_, JsonValue(std::move(arr)).Dump(), dek_, "catalog");
 }
 
 Status Catalog::Save() {

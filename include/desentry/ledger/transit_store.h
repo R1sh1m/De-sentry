@@ -80,9 +80,12 @@ class TransitStore {
  public:
   // Opens (creating if absent) the transit log under `data_dir`. `ttl_seconds`
   // is the envelope lifetime stamped at Hold() time (0 == never expire).
+  // `dek` seals held bytes (empty = plaintext); fail-closed both ways, and a
+  // corrupt tail is flagged via LoadCorrupt() rather than silently dropped.
   static StatusOr<std::unique_ptr<TransitStore>> Open(const std::string& data_dir,
                                                        uint32_t ttl_seconds,
-                                                       std::string holder_node_id);
+                                                       std::string holder_node_id,
+                                                       const std::string& dek = "");
   ~TransitStore();
 
   // Stores an envelope, stamping expires_ms from the TTL. Upserts on
@@ -116,6 +119,16 @@ class TransitStore {
   // Sum of encoded_doc bytes over live envelopes.
   uint64_t BytesHeld();
 
+  // True when the last Load() met present-but-invalid bytes (bad CRC or an
+  // implausible record length) rather than a clean EOF or a torn tail. A
+  // torn tail from a crash is benign and costs at most the last record;
+  // present-but-bad bytes mean corruption, and Load() stops at the first
+  // such record, keeps every valid envelope before it, and rewrites the log
+  // to drop the corrupt tail (self-healing). Surfaced on GET /_transit as
+  // `load_corrupt` so operators can tell "crashed mid-append" from "disk or
+  // writer corruption".
+  bool LoadCorrupt() const;
+
   uint32_t ttl_seconds() const { return ttl_seconds_; }
 
   // Drops every envelope with 0 < expires_ms <= now_ms. Returns the number
@@ -144,13 +157,18 @@ class TransitStore {
   Status AppendRecord(const std::string& body);
   Status CompactLocked();  // caller holds mu_; rewrites the log with live rows only
 
-  std::string path_;
-  uint32_t ttl_seconds_;
-  std::string holder_node_id_;
+   std::string path_;
+   uint32_t ttl_seconds_;
+   std::string holder_node_id_;
 
-  mutable std::mutex mu_;
-  std::unordered_map<std::string, TransitEnvelope> entries_;
-  std::unique_ptr<std::fstream> file_;
+   mutable std::mutex mu_;
+   std::unordered_map<std::string, TransitEnvelope> entries_;
+   std::unique_ptr<std::fstream> file_;
+   // Set by Load() when it meets present-but-invalid bytes. Reset on every
+   // Load() so a healed log reads clean on the next open.
+   bool load_corrupt_ = false;
+   // At-rest subkey (empty when plaintext), derived once at Open.
+   std::string subkey_;
 };
 
 }  // namespace desentry

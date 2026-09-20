@@ -48,9 +48,21 @@
   "//retention_days": "Default time-series retention for collections that do not set their own. 0 keeps everything.",
   "retention_days": 0,
 
-  "//encrypt_at_rest": "NOT YET ENFORCED (2026-09): parsed + surfaced but no storage path encrypts yet; AES-GCM today covers the wire only. desentryd logs a warning when true rather than pretending. The key never appears in this file: keychain_ref names an entry in the OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) that the app unlocks and hands to the process.",
+  "//encrypt_at_rest": "ENFORCED (since 2026-09-20): every data file is AES-256-GCM-sealed with the node's 32-byte DEK (pages, WAL, transit/outbox/index logs, catalog, manifests, identity.key); vendored backends refuse a DEK. The node fails closed without its key (stdin via --read-unlock-stdin from the app, recovery key or passphrase). Migrate plaintext dirs offline with `desentryd --re-encrypt`. The key never appears in this file: keychain_ref names an entry in the OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) that the app unlocks and hands to the process.",
   "encrypt_at_rest": false,
   "keychain_ref": "",
+
+  "//key_mode": "How the node's key was created: 'generated' (recovery key shown once) or 'passphrase' (custom passphrase, PBKDF2-SHA256 210k + 16B salt into the same 32B key shape). Written by the app; do not hand-edit.",
+  "key_mode": "generated",
+  "//kdf": "Non-secret passphrase parameters. Salt + iteration count alone decrypt nothing; the passphrase itself is never stored.",
+  "kdf": {
+    "kdf": "pbkdf2-sha256-210k",
+    "iters": 0,
+    "salt_hex": ""
+  },
+  "//dek_wrapped_hex": "Envelope for passphrase nodes: the random DEK wrapped under the passphrase-derived KEK (XOR stream + HMAC tag in dek_tag_hex). Rotation re-wraps the same DEK, so the old passphrase stops working without re-encrypting data. Empty for generated-key nodes.",
+  "dek_wrapped_hex": "",
+  "dek_tag_hex": "",
 
   "//max_peer_threads": "Worker threads for eager broadcast fan-out. Bounded so a write to a 50-node mesh does not spawn 50 threads.",
   "max_peer_threads": 8,

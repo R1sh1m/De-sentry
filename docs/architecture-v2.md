@@ -434,8 +434,16 @@ reason it is shaped the way it is.
 | One node deleting shared history | Quorum-gated checkpoint (§5.3) |
 | Reading a private collection | Per-collection ACL at API *and* gossip byte filter (§6.3) |
 | Flooding a peer | Token bucket before decode, dedup, bounded worker pool (§6.2) |
-| Reading a stolen disk or USB stick | NOT YET DEFENDED (2026-09): `encrypt_at_rest` is parsed + surfaced but unenforced; AES-GCM covers the wire only. desentryd warns when the flag is set. Per-partition encryption + keychain/password-KDF wiring is tracked future work |
-| Reading a stolen `identity.key` | Owner-only permissions: `0600` on POSIX, a real protected DACL on Windows |
+| Reading a stolen disk or USB stick | DEFENDED when `encrypt_at_rest: true` (enforced since 2026-09-20): every data file is AES-256-GCM-sealed with the node's 32-byte DEK -- paged `*.dsf` files (4096B pages -> 4124B `[nonce‖ct‖tag]`, random nonce per write, AAD binds file tag + page id), length-framed logs (`desentry.wal`, `transit.log`, `outbox.log`, `cross_engine_index.log`: sealed record payloads, CRC/framing unchanged), whole-file JSON (`catalog.json`, `roots.json`, engine manifests) and `identity.key`. Fail-closed both ways (sealed-without-key, plaintext-with-key and wrong-key all refuse); vendored backends refuse a DEK. Key custody is unchanged (§8.3): keychain, recovery key, or passphrase -- the DEK never touches disk |
+| Reading a stolen `identity.key` | Sealed with the DEK when `encrypt_at_rest: true` (fail-closed without the key); owner-only permissions (`0600` on POSIX, a real protected DACL on Windows) otherwise |
+
+#### 8.1.1 At-rest format notes (for the auditor)
+
+* Per-file subkeys: `HKDF-SHA256(DEK, salt=file_tag, info="desentry-at-rest-v1")`. The `.dsf` tag is random per file (sidecar `<db>.enc` header, non-secret); logs and JSON use fixed kind tags (`wal`, `transit`, `outbox`, `index`, `catalog`, `roots`, manifests, `identity`).
+* Nonce discipline: fresh 12-byte random nonce per page write and per record/file seal -- no counters, no persistent state, so a crash can never cause reuse. AAD binds file tag + page id (pages) or the log/file kind (records/files): swapped or spliced ciphertext fails authentication.
+* Known limit: GCM detects tampering, not age -- rolling a page back to an older sealed image still authenticates. Crash consistency stays the WAL's job, and WAL replay heals a rolled-back page (verified live).
+* Sealed files cost ~0.7% (pages) to ~28 B/record; quota keeps its existing slack. `GET /_status` reports `at_rest_sealed`; `GET /_transit` reports `load_corrupt` (present-but-bad bytes met at open, corrupt tail dropped and rewritten).
+* Migration is offline only: `desentryd --re-encrypt` (node stopped, key on stdin) seals a plaintext directory idempotently and refuses vendored engines, torn files and mixed input. There is no decrypt direction -- restore from backup.
 
 ### 8.2 What is not defended
 

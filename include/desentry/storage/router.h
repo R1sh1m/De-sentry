@@ -90,8 +90,12 @@ class EngineBackend {
   // backends without a page cache ignore it. Threaded from NodeConfig via
   // StorageEngine/StorageRouter options so the sizing control is functional,
   // not decorative (default 1024 == 4MiB of 4KiB pages).
+  // `dek` is the node's 32-byte data-encryption key (empty = plaintext);
+  // paged backends seal their files with it, and vendored backends refuse it
+  // (they manage their own files outside the sealed-page layer -- see the
+  // fail-closed rule in each vendored Open).
   virtual Status Open(const std::string& data_dir, uint64_t quota_mb,
-                      size_t buffer_pool_pages = 1024) = 0;
+                      size_t buffer_pool_pages = 1024, const std::string& dek = "") = 0;
 
   // Physical upsert of already-CRDT-encoded document bytes. Returns
   // kOutOfSpace (never a partial write) when the write would exceed quota.
@@ -152,7 +156,9 @@ struct IndexEntry {
 
 class CrossEngineIndex {
  public:
-  static StatusOr<std::unique_ptr<CrossEngineIndex>> Open(const std::string& path);
+  // `dek` seals index entries (empty = plaintext); fail-closed both ways.
+  static StatusOr<std::unique_ptr<CrossEngineIndex>> Open(const std::string& path,
+                                                          const std::string& dek = "");
   ~CrossEngineIndex();
 
   Status Upsert(const IndexEntry& entry);
@@ -176,6 +182,8 @@ class CrossEngineIndex {
   std::string path_;
   std::unordered_map<std::string, IndexEntry> entries_;
   std::unique_ptr<std::fstream> file_;
+  // At-rest subkey (empty when plaintext), derived once at Open.
+  std::string subkey_;
 };
 
 // -- the router -------------------------------------------------------------
@@ -194,6 +202,9 @@ class StorageRouter {
     Catalog* catalog = nullptr;    // borrowed; used to resolve collection -> engine
     std::string node_id;           // recorded in the cross-engine index
     size_t buffer_pool_pages = 1024;  // forwarded to backends with a page cache (kv)
+    // Node DEK (empty = plaintext), forwarded to every backend. Vendored
+    // backends refuse it (fail closed); the index seals with it too.
+    std::string dek;
   };
 
   static StatusOr<std::unique_ptr<StorageRouter>> Open(const Options& options);
@@ -237,6 +248,8 @@ class StorageRouter {
   std::string node_id_;
   uint64_t quota_bytes_ = 0;
   Catalog* catalog_ = nullptr;
+  // Node DEK (empty when plaintext); forwarded to every backend at Open.
+  std::string dek_;
 
   mutable std::mutex mu_;
   std::unordered_map<std::string, std::unique_ptr<EngineBackend>> backends_;

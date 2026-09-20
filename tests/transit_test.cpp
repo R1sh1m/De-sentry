@@ -467,6 +467,53 @@ void TestLedgerDeltaVersions() {
 
 }  // namespace
 
+void TestCorruptTailKeepsValidEnvelopesAndHeals() {
+  std::cout << "  store: corrupt tail keeps valid envelopes, flags, and heals\n";
+  const std::string dir = TestRoot() + "/corrupt";
+  Fresh(dir);
+  const std::string owner = "owner-node-ccc";
+  {
+    NodeEngine::Options options = EngineOptions(dir);
+    auto engine_or = NodeEngine::Open(options);
+    assert(engine_or.ok());
+    assert(engine_or.value()->HoldForOfflineOwner(owner, "metrics", "s1", "kept-bytes").ok());
+    assert(engine_or.value()->PendingTransitFor(owner).size() == 1);
+  }  // engine closes; transit.log flushed with one valid envelope
+  // Append present-but-bad bytes: a complete frame whose CRC disagrees.
+  // This is corruption, not a torn tail (every byte is present).
+  {
+    std::ofstream out(dir + "/transit.log", std::ios::binary | std::ios::app);
+    assert(out.is_open());
+    const std::string body = "DSNT-bogus-body";
+    const uint32_t len = static_cast<uint32_t>(body.size());
+    const uint32_t bad_crc = 0xdeadbeef;
+    out.write(reinterpret_cast<const char*>(&len), 4);
+    out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    out.write(reinterpret_cast<const char*>(&bad_crc), 4);
+    out.flush();
+  }
+  {
+    NodeEngine::Options options = EngineOptions(dir);
+    auto engine_or = NodeEngine::Open(options);
+    assert(engine_or.ok());
+    NodeEngine& engine = *engine_or.value();
+    // The valid envelope before the corruption survives...
+    assert(engine.PendingTransitFor(owner).size() == 1);
+    // ...and the corruption is flagged rather than silent.
+    assert(engine.TransitLoadCorrupt());
+  }
+  // Self-heal: open rewrote the log without the corrupt tail, so the next
+  // open reads clean while the valid envelope is still there.
+  {
+    NodeEngine::Options options = EngineOptions(dir);
+    auto engine_or = NodeEngine::Open(options);
+    assert(engine_or.ok());
+    assert(!engine_or.value()->TransitLoadCorrupt());
+    assert(engine_or.value()->PendingTransitFor(owner).size() == 1);
+  }
+  RemoveTree(dir);
+}
+
 int main() {
   std::cout << "transit_test\n";
   TestChunkCount();
@@ -479,6 +526,7 @@ int main() {
   TestChunkSubsetHold();
   TestTransitWireCodec();
   TestLedgerDeltaVersions();
+  TestCorruptTailKeepsValidEnvelopesAndHeals();
   std::cout << "  all transit tests passed\n";
   return 0;
 }

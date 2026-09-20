@@ -21,16 +21,19 @@ Status EnsureDir(const std::string& path) {
 StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& options) {
   Status dir_st = EnsureDir(options.data_dir);
   if (!dir_st.ok()) return dir_st;
+  if (!options.dek.empty() && options.dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
 
   std::unique_ptr<StorageEngine> engine(new StorageEngine());
   engine->data_dir_ = options.data_dir;
   engine->quota_bytes_ = options.quota_mb * 1024ull * 1024ull;
 
-  auto wal_or = WriteAheadLog::Open(options.data_dir + "/desentry.wal");
+  auto wal_or = WriteAheadLog::Open(options.data_dir + "/desentry.wal", options.dek);
   if (!wal_or.ok()) return wal_or.status();
   engine->wal_ = std::move(wal_or.value());
 
-  auto cat_or = Catalog::Open(options.data_dir + "/catalog.json");
+  auto cat_or = Catalog::Open(options.data_dir + "/catalog.json", options.dek);
   if (!cat_or.ok()) return cat_or.status();
   engine->catalog_ = std::move(cat_or.value());
 
@@ -43,6 +46,7 @@ StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& opti
   router_opts.catalog = engine->catalog_.get();
   router_opts.node_id = options.node_id;
   router_opts.buffer_pool_pages = options.buffer_pool_pages;
+  router_opts.dek = options.dek;
   auto router_or = StorageRouter::Open(router_opts);
   if (!router_or.ok()) return router_or.status();
   engine->router_ = std::move(router_or.value());

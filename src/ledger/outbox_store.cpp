@@ -11,6 +11,7 @@
 #include "desentry/common/crc32.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 
 namespace desentry {
 
@@ -26,13 +27,27 @@ constexpr uint8_t kRecordDrop = 2;
 }  // namespace
 
 StatusOr<std::unique_ptr<OutboxStore>> OutboxStore::Open(const std::string& data_dir,
-                                                          std::string local_node_id) {
+                                                          std::string local_node_id,
+                                                          const std::string& dek) {
   if (local_node_id.empty()) {
     return Status::InvalidArgument("outbox store opened with an empty node id");
   }
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
   if (!MakeDirs(data_dir)) return Status::IOError("cannot create directory: " + data_dir);
-  std::unique_ptr<OutboxStore> store(
-      new OutboxStore(data_dir + "/outbox.log", std::move(local_node_id)));
+  const std::string path = data_dir + "/outbox.log";
+  bool sealed = false;
+  Status mode_st =
+      at_rest::DetectLogMode(path, kOutboxRecordCap, !dek.empty(), "outbox.log", &sealed);
+  if (!mode_st.ok()) return mode_st;
+  (void)sealed;  // the in-loop unseal below enforces the mode per record
+  std::unique_ptr<OutboxStore> store(new OutboxStore(path, std::move(local_node_id)));
+  if (!dek.empty()) {
+    auto subkey_or = at_rest::FileSubkey(dek, "outbox");
+    if (!subkey_or.ok()) return subkey_or.status();
+    store->subkey_ = subkey_or.value();
+  }
   Status st = store->Load();
   if (!st.ok()) return st;
   return store;
@@ -151,6 +166,25 @@ Status OutboxStore::Load() {
       DSN_LOG_WARN("outbox", "CRC mismatch, stopping load at a torn record");
       break;
     }
+    // At-rest layer (after the CRC gate, before decode): sealed payloads
+    // open here; a mode mismatch is present-but-bad corruption, loud and
+    // stopping rather than a silent skip.
+    if (!subkey_.empty()) {
+      if (!at_rest::LooksSealedRecord(body)) {
+        DSN_LOG_ERROR("outbox", "plaintext record in sealed log, stopping load");
+        break;
+      }
+      auto open_or = at_rest::OpenRecord(subkey_, body, "outbox");
+      if (!open_or.ok()) {
+        DSN_LOG_ERROR("outbox", "record authentication failed, stopping load: "
+                                    << open_or.status().message());
+        break;
+      }
+      body = open_or.value();
+    } else if (at_rest::LooksSealedRecord(body)) {
+      DSN_LOG_ERROR("outbox", "sealed record without an unlock key, stopping load");
+      break;
+    }
     auto entry_or = Decode(body);
     if (!entry_or.ok()) {
       DSN_LOG_WARN("outbox", "skipping undecodable record: " << entry_or.status().message());
@@ -164,13 +198,19 @@ Status OutboxStore::Load() {
 }
 
 Status OutboxStore::AppendRecord(const std::string& body) {
-  uint32_t body_len = static_cast<uint32_t>(body.size());
-  const uint32_t crc = Crc32(body.data(), body.size());
+  std::string payload = body;
+  if (!subkey_.empty()) {
+    auto sealed_or = at_rest::SealRecord(subkey_, body, "outbox");
+    if (!sealed_or.ok()) return sealed_or.status();
+    payload = sealed_or.value();
+  }
+  uint32_t body_len = static_cast<uint32_t>(payload.size());
+  const uint32_t crc = Crc32(payload.data(), payload.size());
 
   std::string frame;
   frame.resize(4);
   std::memcpy(frame.data(), &body_len, 4);
-  frame += body;
+  frame += payload;
   const size_t off = frame.size();
   frame.resize(off + 4);
   std::memcpy(frame.data() + off, &crc, 4);
@@ -257,7 +297,13 @@ Status OutboxStore::CompactLocked() {
     if (!out.is_open()) return Status::IOError("cannot write " + tmp);
     for (const auto& [map_key, entry] : entries_) {
       (void)map_key;
-      const std::string body = EncodeEntry(entry);
+      std::string payload = EncodeEntry(entry);
+      if (!subkey_.empty()) {
+        auto sealed_or = at_rest::SealRecord(subkey_, payload, "outbox");
+        if (!sealed_or.ok()) return sealed_or.status();
+        payload = sealed_or.value();
+      }
+      const std::string& body = payload;
       const uint32_t body_len = static_cast<uint32_t>(body.size());
       const uint32_t crc = Crc32(body.data(), body.size());
       out.write(reinterpret_cast<const char*>(&body_len), 4);

@@ -15,6 +15,7 @@
 import { convergenceOf, meshTip, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
+import { openChangePassphraseModal } from "./changePassphraseModal.js";
 import { apiFor } from "../api.js";
 import { bytes, count, displayNodeName, duration, engineLabel, percent, shortHash, shortNode, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
@@ -813,6 +814,15 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       e.stopPropagation();
       store.select({ kind: "console", nodeId: node.process.node_id });
     });
+    const passphraseBtn = node.process.encrypted
+      ? el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Change the passphrase or migrate this node to one (old secret stops working)", text: "Passphrase…" })
+      : null;
+    if (passphraseBtn) {
+      on(passphraseBtn, "click", (e) => {
+        e.stopPropagation();
+        openChangePassphraseModal({ node_id: node.process.node_id, node_name: name });
+      });
+    }
 
     replace(popover,
       el("div", { class: "mesh__popover-head" },
@@ -868,7 +878,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
           ),
         )
         : null,
-      el("div", { class: "mesh__popover-actions" }, ledgerBtn, consoleBtn),
+      el("div", { class: "mesh__popover-actions" }, ledgerBtn, consoleBtn, passphraseBtn),
     );
     schedulePositionPopover();
 

@@ -95,7 +95,11 @@ struct CollectionMeta {
 
 class Catalog {
  public:
-  static StatusOr<std::unique_ptr<Catalog>> Open(const std::string& catalog_file);
+  // `dek` seals the catalog file (empty = plaintext); fail-closed both
+  // ways. The catalog holds collection names, schemas and ACLs -- metadata
+  // that discloses what a stolen disk contains even without document bytes.
+  static StatusOr<std::unique_ptr<Catalog>> Open(const std::string& catalog_file,
+                                                 const std::string& dek = "");
 
   bool HasCollection(const std::string& name) const;
   const CollectionMeta* Get(const std::string& name) const;
@@ -139,12 +143,13 @@ class Catalog {
   static constexpr int kMaxAclParentDepth = 16;
 
  private:
-  explicit Catalog(std::string path) : path_(std::move(path)) {}
+  explicit Catalog(std::string path, std::string dek = "") : path_(std::move(path)), dek_(std::move(dek)) {}
   Status LoadFromDisk();
   Status SaveLocked();  // caller already holds mu_
 
   mutable std::mutex mu_;
   std::string path_;
+  std::string dek_;  // empty when plaintext; never written to disk
   std::unordered_map<std::string, CollectionMeta> collections_;
 };
 

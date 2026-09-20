@@ -59,6 +59,9 @@ class StorageEngine {
     std::vector<std::string> engines{"kv"};
     std::string default_engine = "kv";
     std::string node_id;          // stamped into ledger entries and the index
+    // Node DEK (empty = plaintext), sealing the WAL, catalog, every backend
+    // and the cross-engine index. Never written to disk.
+    std::string dek;
   };
 
   static StatusOr<std::unique_ptr<StorageEngine>> Open(const Options& options);

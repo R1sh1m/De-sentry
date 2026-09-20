@@ -37,7 +37,7 @@ import sys
 import time
 from typing import Dict, List
 
-from harness import Cluster, Node, Report
+from harness import Cluster, Node, Report, random_recovery_key
 from desentry_client import DesentryError
 
 COLLECTION = "soak"
@@ -52,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle", type=float, default=180.0,
                         help="seconds allowed for convergence afterwards")
     parser.add_argument("--engine", default=None, help="path to desentryd")
+    parser.add_argument("--sealed", action="store_true",
+                        help="seal every node at rest: per-node random recovery keys "
+                             "on stdin (the sidecar path) with encrypt_at_rest on")
     return parser.parse_args()
 
 
@@ -77,22 +80,29 @@ def main() -> int:
     report = Report("soak_test")
     random.seed(20260906)  # reproducible chaos
 
-    print(f"[1] starting {args.nodes} nodes (this takes a while)")
+    print(f"[1] starting {args.nodes} nodes (this takes a while)"
+          + (" -- sealed at rest" if args.sealed else ""))
     with Cluster(engine=args.engine) as cluster:
         for i in range(args.nodes):
+            overrides = {
+                # Small buffer pools: fifty default pools would be 200 MiB
+                # of page cache for a test that writes a few megabytes.
+                "buffer_pool_pages": 64,
+                "gossip_interval_ms": 700,
+                "discovery_interval_ms": 1000,
+                # The caps that exist precisely for this scale.
+                "max_peer_threads": 4,
+                "peer_rate_limit_per_sec": 500,
+                "peer_rate_burst": 1000,
+            }
+            key = None
+            if args.sealed:
+                key = random_recovery_key()
+                overrides["encrypt_at_rest"] = True
             cluster.add(
                 f"n{i:02d}",
-                config_overrides={
-                    # Small buffer pools: fifty default pools would be 200 MiB
-                    # of page cache for a test that writes a few megabytes.
-                    "buffer_pool_pages": 64,
-                    "gossip_interval_ms": 700,
-                    "discovery_interval_ms": 1000,
-                    # The caps that exist precisely for this scale.
-                    "max_peer_threads": 4,
-                    "peer_rate_limit_per_sec": 500,
-                    "peer_rate_burst": 1000,
-                },
+                config_overrides=overrides,
+                unlock_key=key,
             )
 
         started = 0

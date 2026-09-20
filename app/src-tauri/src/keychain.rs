@@ -32,6 +32,21 @@ pub fn reference_for(node_id: &str) -> String {
     format!("node.{node_id}")
 }
 
+/// A collision-free entry name for tests.
+///
+/// Tests share one persistent OS store (Credential Manager / Keychain / Secret
+/// Service) with no per-process isolation — unlike temp dirs, which isolate by
+/// pid. Fixed test refs race when two `cargo test` processes (or threads)
+/// interleave `store → forget → load`. The pid + atomic nonce makes every
+/// call unique across processes and threads; callers `forget` in a
+/// scope-guard so a failure never leaks an entry into a later run.
+#[cfg(test)]
+pub fn unique_test_ref(prefix: &str) -> String {
+    static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NONCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("node.test-{prefix}-{}-{n}", std::process::id())
+}
+
 fn entry(reference: &str) -> Result<Entry, KeychainError> {
     Entry::new(SERVICE, reference).map_err(|error| KeychainError::Backend(error.to_string()))
 }
@@ -94,7 +109,16 @@ mod tests {
         if !available() {
             return;
         }
-        let reference = reference_for("test-round-trip");
+        // Unique ref: the OS store is shared across test threads and across
+        // concurrent `cargo test` processes — a fixed ref races.
+        let reference = unique_test_ref("round-trip");
+        struct Guard<'a>(&'a str);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                let _ = forget(self.0);
+            }
+        }
+        let _guard = Guard(&reference);
         let key = "ABCDE-FGHJK-MNPQR";
         if store(&reference, key).is_err() {
             return;
@@ -102,5 +126,13 @@ mod tests {
         assert_eq!(load(&reference).unwrap(), key);
         forget(&reference).unwrap();
         assert!(matches!(load(&reference), Err(KeychainError::Missing(_))));
+    }
+
+    #[test]
+    fn unique_test_refs_never_collide() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..100 {
+            assert!(seen.insert(unique_test_ref("nonce")));
+        }
     }
 }

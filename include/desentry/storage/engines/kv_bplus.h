@@ -33,7 +33,7 @@ class KvBPlusBackend : public BaseBackend {
   std::string Name() const override { return "kv"; }
 
   Status Open(const std::string& data_dir, uint64_t quota_mb,
-              size_t buffer_pool_pages = 1024) override;
+              size_t buffer_pool_pages = 1024, const std::string& dek = "") override;
   // Pages the buffer pool was constructed with; exposed so sizing is testable.
   size_t BufferPoolPages() const;
   Status Put(const std::string& collection, const std::string& key,
@@ -54,6 +54,8 @@ class KvBPlusBackend : public BaseBackend {
   std::string roots_path_;
   std::unique_ptr<DiskManager> disk_;
   std::unique_ptr<BufferPoolManager> pool_;
+  // Node DEK (empty when plaintext); seals kv.dsf pages and roots.json.
+  std::string dek_;
 
   mutable std::mutex mu_;
   std::unordered_map<std::string, std::unique_ptr<BPlusTree>> indexes_;

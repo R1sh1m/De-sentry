@@ -82,6 +82,7 @@ pub struct NodeConfigSpec {
     pub node_name: String,
     pub ports: PortAllocation,
     pub supervisor: bool,
+    pub discovery_enabled: bool,
     pub quota_mb: u64,
     pub quota_split: QuotaSplit,
     pub engines: Vec<String>,
@@ -92,6 +93,47 @@ pub struct NodeConfigSpec {
     pub keychain_ref: String,
     pub bootstrap_peers: Vec<String>,
     pub advertise_hostname: String,
+    /// "generated" (recovery key) or "passphrase" (custom passphrase + envelope).
+    #[allow(clippy::vec_box)]
+    pub key_mode: String,
+    /// Hex salt for passphrase KDF; empty for generated keys.
+    pub kdf_salt_hex: String,
+    /// PBKDF2 iteration count for passphrase KDF; 0 for generated keys.
+    pub kdf_iters: u32,
+    /// Wrapped DEK hex + HMAC tag hex for passphrase nodes; empty otherwise.
+    pub dek_wrapped_hex: String,
+    pub dek_tag_hex: String,
+}
+
+impl Default for NodeConfigSpec {
+    fn default() -> Self {
+        Self {
+            data_dir: PathBuf::from("."),
+            node_name: String::new(),
+            ports: PortAllocation {
+                api_port: 0,
+                p2p_port: 0,
+                discovery_port: 0,
+            },
+            supervisor: false,
+            discovery_enabled: true,
+            quota_mb: 0,
+            quota_split: QuotaSplit::default(),
+            engines: vec![],
+            default_engine: "kv".to_owned(),
+            replication_factor: 3,
+            retention_days: 0,
+            encrypt_at_rest: false,
+            keychain_ref: String::new(),
+            bootstrap_peers: vec![],
+            advertise_hostname: String::new(),
+            key_mode: "generated".to_owned(),
+            kdf_salt_hex: String::new(),
+            kdf_iters: 0,
+            dek_wrapped_hex: String::new(),
+            dek_tag_hex: String::new(),
+        }
+    }
 }
 
 impl NodeConfigSpec {
@@ -103,6 +145,11 @@ impl NodeConfigSpec {
         // is set correctly at the source instead.
         let api_bind = "127.0.0.1";
         let p2p_bind = if self.supervisor { "127.0.0.1" } else { "0.0.0.0" };
+        let discovery_enabled = if self.supervisor {
+            false
+        } else {
+            self.discovery_enabled
+        };
 
         serde_json::json!({
             "data_dir": self.data_dir.to_string_lossy(),
@@ -113,7 +160,7 @@ impl NodeConfigSpec {
             "p2p_bind_addr": p2p_bind,
             "p2p_port": self.ports.p2p_port,
 
-            "discovery_enabled": !self.supervisor,
+            "discovery_enabled": discovery_enabled,
             "discovery_port": self.ports.discovery_port,
             "discovery_interval_ms": 2000,
             "bootstrap_peers": self.bootstrap_peers,
@@ -141,6 +188,20 @@ impl NodeConfigSpec {
 
             "encrypt_at_rest": self.encrypt_at_rest,
             "keychain_ref": self.keychain_ref,
+
+            // Passphrase envelope (non-secret alone): key_mode + KDF params +
+            // wrapped DEK. Generated-key nodes leave these empty/defaults.
+            // Copying node.json still copies nothing that decrypts anything:
+            // the passphrase itself lives only in the user's memory/paper and
+            // (optionally) the OS keychain holds the unwrapped DEK.
+            "key_mode": self.key_mode,
+            "kdf": {
+                "kdf": "pbkdf2-sha256-210k",
+                "iters": self.kdf_iters,
+                "salt_hex": self.kdf_salt_hex,
+            },
+            "dek_wrapped_hex": self.dek_wrapped_hex,
+            "dek_tag_hex": self.dek_tag_hex,
 
             "max_peer_threads": 8,
             "peer_rate_limit_per_sec": 200,
@@ -188,6 +249,88 @@ fn buffer_pool_pages(quota_mb: u64) -> u32 {
     target_pages.clamp(1024, 16_384) as u32
 }
 
+/// Passphrase envelope as stored in node.json (all non-secret alone).
+#[derive(Debug, Clone)]
+pub struct KeyEnvelope {
+    pub key_mode: String,
+    pub kdf_iters: u32,
+    pub kdf_salt_hex: String,
+    pub dek_wrapped_hex: String,
+    pub dek_tag_hex: String,
+}
+
+/// Reads the key envelope (key_mode + KDF + wrapped DEK) from node.json.
+pub fn read_envelope(data_dir: &Path) -> Option<KeyEnvelope> {
+    let text = fs::read_to_string(data_dir.join("node.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(KeyEnvelope {
+        key_mode: value
+            .get("key_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("generated")
+            .to_owned(),
+        kdf_iters: value
+            .get("kdf")
+            .and_then(|k| k.get("iters"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32,
+        kdf_salt_hex: value
+            .get("kdf")
+            .and_then(|k| k.get("salt_hex"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        dek_wrapped_hex: value
+            .get("dek_wrapped_hex")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        dek_tag_hex: value
+            .get("dek_tag_hex")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned(),
+    })
+}
+
+/// Rewrites only the envelope fields of node.json, leaving everything else.
+pub fn rewrite_envelope(
+    config_path: &Path,
+    key_mode: &str,
+    kdf_iters: u32,
+    kdf_salt_hex: &str,
+    dek_wrapped_hex: &str,
+    dek_tag_hex: &str,
+) -> std::io::Result<()> {
+    let text = fs::read_to_string(config_path)?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("key_mode".into(), key_mode.into());
+        object.insert(
+            "kdf".into(),
+            serde_json::json!({
+                "kdf": "pbkdf2-sha256-210k",
+                "iters": kdf_iters,
+                "salt_hex": kdf_salt_hex,
+            }),
+        );
+        object.insert("dek_wrapped_hex".into(), dek_wrapped_hex.into());
+        object.insert("dek_tag_hex".into(), dek_tag_hex.into());
+    }
+    let body = serde_json::to_string_pretty(&value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // Atomic replace via temp + rename, matching NodeConfigSpec::write.
+    if let Some(parent) = config_path.parent() {
+        let temp = parent.join("node.json.tmp");
+        fs::write(&temp, body + "\n")?;
+        let _ = fs::remove_file(config_path);
+        fs::rename(&temp, config_path)?;
+        return Ok(());
+    }
+    fs::write(config_path, body + "\n")
+}
+
 /// Reads a node's existing name from its config, for adoption.
 pub fn read_node_name(data_dir: &Path) -> Option<String> {
     let text = fs::read_to_string(data_dir.join("node.json")).ok()?;
@@ -226,6 +369,7 @@ mod tests {
                 discovery_port: 7901,
             },
             supervisor: false,
+            discovery_enabled: true,
             quota_mb: 2048,
             quota_split: QuotaSplit::default(),
             engines: vec!["kv".into()],
@@ -236,7 +380,20 @@ mod tests {
             keychain_ref: String::new(),
             bootstrap_peers: vec![],
             advertise_hostname: "test-host".into(),
+            key_mode: "generated".into(),
+            kdf_salt_hex: String::new(),
+            kdf_iters: 0,
+            dek_wrapped_hex: String::new(),
+            dek_tag_hex: String::new(),
         }
+    }
+
+    #[test]
+    fn a_standalone_isolated_database_disables_discovery() {
+        let mut spec = spec();
+        spec.discovery_enabled = false;
+        let json = spec.to_json();
+        assert_eq!(json["discovery_enabled"], false);
     }
 
     #[test]
@@ -292,5 +449,77 @@ mod tests {
         assert_eq!(buffer_pool_pages(64), 1024);
         assert_eq!(buffer_pool_pages(1_000_000), 16_384);
         assert!(buffer_pool_pages(4096) > 1024);
+    }
+
+    #[test]
+    fn the_passphrase_envelope_round_trips_through_node_json() {
+        // Full production path at the config layer: write a passphrase-mode
+        // config, read the envelope back, rotate it, and confirm the old wrap
+        // no longer reads while the new one does. Uses a small iteration
+        // count — the KDF shape is covered in passphrase.rs; this covers the
+        // persistence contract.
+        use crate::passphrase;
+        let dir = std::env::temp_dir().join(format!("desentry-envelope-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut spec = spec();
+        spec.data_dir = dir.clone();
+        spec.encrypt_at_rest = true;
+        spec.key_mode = "passphrase".into();
+
+        let salt = [11u8; passphrase::SALT_BYTES];
+        let dek = [0x5au8; passphrase::KEY_BYTES];
+        let kek = passphrase::derive_kek("a long enough old phrase!", &salt, 1000);
+        let (wrapped, tag) = passphrase::wrap_dek(&dek, &kek, &salt);
+        spec.kdf_salt_hex = {
+            let mut s = String::new();
+            for b in salt {
+                s.push_str(&format!("{b:02x}"));
+            }
+            s
+        };
+        spec.kdf_iters = 1000;
+        spec.dek_wrapped_hex = wrapped.clone();
+        spec.dek_tag_hex = tag.clone();
+        let config_path = spec.write().expect("config writes");
+
+        let env = read_envelope(&dir).expect("envelope reads back");
+        assert_eq!(env.key_mode, "passphrase");
+        assert_eq!(env.kdf_iters, 1000);
+        assert_eq!(env.dek_wrapped_hex, wrapped);
+
+        // Rotation: same DEK under a fresh salt; old KEK must fail, new must pass.
+        let new_salt = [22u8; passphrase::SALT_BYTES];
+        let new_kek = passphrase::derive_kek("a different long phrase here", &new_salt, 1000);
+        let (new_wrapped, new_tag) = passphrase::wrap_dek(&dek, &new_kek, &new_salt);
+        let mut new_salt_hex = String::new();
+        for b in new_salt {
+            new_salt_hex.push_str(&format!("{b:02x}"));
+        }
+        rewrite_envelope(&config_path, "passphrase", 1000, &new_salt_hex, &new_wrapped, &new_tag)
+            .expect("rotation writes");
+        let rotated = read_envelope(&dir).expect("rotated envelope reads");
+        assert_eq!(rotated.dek_wrapped_hex, new_wrapped);
+        // Old KEK against the new wrap fails; new KEK succeeds.
+        assert!(passphrase::unwrap_dek(&rotated.dek_wrapped_hex, &rotated.dek_tag_hex, &kek, &new_salt).is_err());
+        let back = passphrase::unwrap_dek(&rotated.dek_wrapped_hex, &rotated.dek_tag_hex, &new_kek, &new_salt)
+            .expect("new passphrase unwraps");
+        assert_eq!(back, dek);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_configs_without_an_envelope_read_as_generated() {
+        let dir = std::env::temp_dir().join(format!("desentry-legacy-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(
+            dir.join("node.json"),
+            r#"{"node_name":"old","keychain_ref":""}"#,
+        )
+        .expect("legacy config writes");
+        let env = read_envelope(&dir).expect("legacy envelope has defaults");
+        assert_eq!(env.key_mode, "generated");
+        assert!(env.dek_wrapped_hex.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

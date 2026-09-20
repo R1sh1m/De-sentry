@@ -27,6 +27,7 @@ pub mod http;
 pub mod keychain;
 pub mod nodes;
 pub mod notify;
+pub mod passphrase;
 pub mod ports;
 pub mod power;
 pub mod recovery;
@@ -181,6 +182,7 @@ fn start_supervisor(state: &AppState) -> Result<(), String> {
         node_name: "supervisor".to_owned(),
         ports: allocation,
         supervisor: true,
+        discovery_enabled: false,
         quota_mb: SUPERVISOR_QUOTA_MB,
         quota_split: QuotaSplit::default(),
         engines: vec!["kv".to_owned()],
@@ -191,6 +193,11 @@ fn start_supervisor(state: &AppState) -> Result<(), String> {
         keychain_ref: String::new(),
         bootstrap_peers: Vec::new(),
         advertise_hostname: String::new(),
+        key_mode: "generated".to_owned(),
+        kdf_salt_hex: String::new(),
+        kdf_iters: 0,
+        dek_wrapped_hex: String::new(),
+        dek_tag_hex: String::new(),
     };
     let config_path = config
         .write()
@@ -317,6 +324,8 @@ pub fn run() {
             commands::pending_recovery_key,
             commands::export_recovery_key,
             commands::unlock_node,
+            commands::passphrase_strength,
+            commands::change_passphrase,
             commands::lock_node,
             commands::pick_directory,
             commands::pick_save_file,

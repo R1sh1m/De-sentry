@@ -12,6 +12,7 @@
 #include "desentry/common/crc32.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 
 namespace desentry {
 
@@ -33,14 +34,29 @@ constexpr uint8_t kRecordDrop = 2;
 }  // namespace
 
 StatusOr<std::unique_ptr<TransitStore>> TransitStore::Open(const std::string& data_dir,
-                                                           uint32_t ttl_seconds,
-                                                           std::string holder_node_id) {
+                                                            uint32_t ttl_seconds,
+                                                            std::string holder_node_id,
+                                                            const std::string& dek) {
   if (holder_node_id.empty()) {
     return Status::InvalidArgument("transit store opened with an empty holder node id");
   }
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
   if (!MakeDirs(data_dir)) return Status::IOError("cannot create directory: " + data_dir);
+  const std::string path = data_dir + "/transit.log";
+  bool sealed = false;
+  Status mode_st = at_rest::DetectLogMode(path, kTransitRecordCap, !dek.empty(), "transit.log",
+                                          &sealed);
+  if (!mode_st.ok()) return mode_st;
+  (void)sealed;  // the in-loop unseal below enforces the mode per record
   std::unique_ptr<TransitStore> store(
-      new TransitStore(data_dir + "/transit.log", ttl_seconds, std::move(holder_node_id)));
+      new TransitStore(path, ttl_seconds, std::move(holder_node_id)));
+  if (!dek.empty()) {
+    auto subkey_or = at_rest::FileSubkey(dek, "transit");
+    if (!subkey_or.ok()) return subkey_or.status();
+    store->subkey_ = subkey_or.value();
+  }
   Status st = store->Load();
   if (!st.ok()) return st;
   return store;
@@ -170,8 +186,11 @@ Status TransitStore::Load() {
   if (!file_->is_open()) return Status::IOError("cannot open transit log: " + path_);
 
   std::lock_guard<std::mutex> lock(mu_);
+  load_corrupt_ = false;
   file_->clear();
   file_->seekg(0);
+  // Byte offset of the record being read, for corruption reports.
+  uint64_t offset = 0;
   for (;;) {
     char len_buf[4];
     file_->read(len_buf, 4);
@@ -179,19 +198,56 @@ Status TransitStore::Load() {
     uint32_t body_len = 0;
     std::memcpy(&body_len, len_buf, 4);
     if (body_len == 0 || body_len > kTransitRecordCap) {
-      DSN_LOG_WARN("transit", "implausible record length, stopping load");
+      // Four length bytes are present but nonsensical: corruption, not a
+      // torn tail. Flag it loudly and stop; the log is rewritten below to
+      // drop this tail while keeping every valid envelope before it.
+      load_corrupt_ = true;
+      DSN_LOG_ERROR("transit", "corrupt record length " << body_len << " at offset " << offset
+                                                        << " in " << path_
+                                                        << "; stopping load, valid envelopes kept");
       break;
     }
     std::string body(body_len, '\0');
     file_->read(body.data(), static_cast<std::streamsize>(body_len));
-    if (static_cast<uint32_t>(file_->gcount()) < body_len) break;  // torn tail
+    if (static_cast<uint32_t>(file_->gcount()) < body_len) break;  // torn tail: benign crash
+    offset += 4 + body_len;
     char crc_buf[4];
     file_->read(crc_buf, 4);
-    if (file_->gcount() < 4) break;
+    if (file_->gcount() < 4) break;  // torn tail: benign crash
+    offset += 4;
     uint32_t stored_crc = 0;
     std::memcpy(&stored_crc, crc_buf, 4);
     if (stored_crc != Crc32(body.data(), body.size())) {
-      DSN_LOG_WARN("transit", "CRC mismatch, stopping load at a torn record");
+      // Body and CRC are both present but disagree: corruption, not a tear.
+      load_corrupt_ = true;
+      DSN_LOG_ERROR("transit", "CRC mismatch at offset " << offset << " in " << path_
+                                                          << "; stopping load, valid envelopes kept");
+      break;
+    }
+    // At-rest layer (after the CRC gate, before decode): sealed payloads
+    // open here. A plaintext body in a sealed log, a sealed body without a
+    // key, or an authentication failure is present-but-bad corruption --
+    // flagged and stopping, exactly like a CRC mismatch above.
+    if (!subkey_.empty()) {
+      if (!at_rest::LooksSealedRecord(body)) {
+        load_corrupt_ = true;
+        DSN_LOG_ERROR("transit", "plaintext record in sealed log at offset " << offset << " in "
+                                                                              << path_);
+        break;
+      }
+      auto open_or = at_rest::OpenRecord(subkey_, body, "transit");
+      if (!open_or.ok()) {
+        load_corrupt_ = true;
+        DSN_LOG_ERROR("transit", "record authentication failed at offset " << offset << " in "
+                                                                            << path_ << ": "
+                                                                            << open_or.status().message());
+        break;
+      }
+      body = open_or.value();
+    } else if (at_rest::LooksSealedRecord(body)) {
+      load_corrupt_ = true;
+      DSN_LOG_ERROR("transit", "sealed record without an unlock key at offset " << offset << " in "
+                                                                                << path_);
       break;
     }
     bool is_tombstone = false;
@@ -209,17 +265,39 @@ Status TransitStore::Load() {
     }
   }
   file_->clear();
+  if (load_corrupt_) {
+    // Self-heal: rewrite the log with the valid rows parsed so far, dropping
+    // the corrupt tail. A crash mid-rewrite leaves the original intact
+    // (CompactLocked writes a sibling first).
+    Status st = CompactLocked();
+    if (!st.ok()) {
+      DSN_LOG_ERROR("transit", "could not rewrite corrupt log " << path_ << ": " << st.message());
+    } else {
+      DSN_LOG_WARN("transit", "rewrote " << path_ << " to drop the corrupt tail");
+    }
+  }
   return Status::OK();
 }
 
+bool TransitStore::LoadCorrupt() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return load_corrupt_;
+}
+
 Status TransitStore::AppendRecord(const std::string& body) {
-  uint32_t body_len = static_cast<uint32_t>(body.size());
-  const uint32_t crc = Crc32(body.data(), body.size());
+  std::string payload = body;
+  if (!subkey_.empty()) {
+    auto sealed_or = at_rest::SealRecord(subkey_, body, "transit");
+    if (!sealed_or.ok()) return sealed_or.status();
+    payload = sealed_or.value();
+  }
+  uint32_t body_len = static_cast<uint32_t>(payload.size());
+  const uint32_t crc = Crc32(payload.data(), payload.size());
 
   std::string frame;
   frame.resize(4);
   std::memcpy(frame.data(), &body_len, 4);
-  frame += body;
+  frame += payload;
   const size_t off = frame.size();
   frame.resize(off + 4);
   std::memcpy(frame.data() + off, &crc, 4);
@@ -337,7 +415,13 @@ Status TransitStore::CompactLocked() {
     if (!out.is_open()) return Status::IOError("cannot write " + tmp);
     for (const auto& [map_key, envelope] : entries_) {
       (void)map_key;
-      const std::string body = EncodeEnvelope(envelope);
+      std::string payload = EncodeEnvelope(envelope);
+      if (!subkey_.empty()) {
+        auto sealed_or = at_rest::SealRecord(subkey_, payload, "transit");
+        if (!sealed_or.ok()) return sealed_or.status();
+        payload = sealed_or.value();
+      }
+      const std::string& body = payload;
       const uint32_t body_len = static_cast<uint32_t>(body.size());
       const uint32_t crc = Crc32(body.data(), body.size());
       out.write(reinterpret_cast<const char*>(&body_len), 4);

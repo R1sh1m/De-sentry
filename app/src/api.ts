@@ -487,6 +487,54 @@ export class NodeApi {
     return this.request<T>("GET", path, undefined, options);
   }
 
+  /**
+   * Raw method+path call for the Direct API playground. Same timeout and
+   * unreachable semantics as every other call (a dead node reports
+   * UnreachableError, never a hung spinner), but the HTTP status and body
+   * pass through verbatim -- including non-2xx, which surface as data
+   * rather than thrown errors so the playground can display them.
+   */
+  async rawRequest(
+    method: string,
+    path: string,
+    bodyText?: string,
+  ): Promise<{ status: number; statusText: string; body: unknown }> {
+    let body: unknown;
+    if (bodyText !== undefined && bodyText.trim() !== "") {
+      try {
+        body = JSON.parse(bodyText);
+      } catch {
+        throw new Error("request body is not valid JSON");
+      }
+    }
+    const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method,
+        signal: controller.signal,
+        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (cause) {
+      throw new UnreachableError(this.baseUrl, cause);
+    } finally {
+      clearTimeout(timeout);
+    }
+    const text = await response.text();
+    let parsed: unknown = text;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+    }
+    return { status: response.status, statusText: response.statusText, body: parsed };
+  }
+
   // -- node state ------------------------------------------------------------
 
   status(options?: RequestOptions): Promise<NodeStatus> {

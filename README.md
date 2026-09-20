@@ -425,7 +425,7 @@ Every node serves this API on its local HTTP port (default 7701/7702/7703):
 | GET | `/_schema/:collection` | Read a collection's schema |
 | GET | `/_collections` | List known collections |
 | GET | `/_peers` | List known P2P peers |
-| GET | `/_status` | Node identity, uptime, peer count |
+| GET | `/_status` | Node identity, uptime, peer count, at-rest posture (`encrypt_at_rest`, `at_rest_sealed`) |
 | GET | `/_brain` | Compact snapshot: signed ledger tip, per-collection checksums, peers |
 | GET | `/_ledger/tip` | Current hash-chain tip + Ed25519 signature |
 | GET | `/_ledger/entries?from=&to=` | Bounded page of ledger entries for replay/audit |
@@ -437,10 +437,10 @@ Every node serves this API on its local HTTP port (default 7701/7702/7703):
 | PUT | `/_collection/:collection/placement` | Replication factor and placement policy |
 | GET | `/_quota` | Quota split and per-engine usage |
 | GET | `/_changes?since=` | Long-poll change feed (signals `truncated` on a gap) |
-| GET | `/_transit` · POST `/_transit/claim` · POST `/_transit/expire` | Transit store: pending handoffs, claims, TTL sweep |
+| GET | `/_transit` · POST `/_transit/claim` · POST `/_transit/expire` | Transit store: pending handoffs, claims, TTL sweep, `load_corrupt` flag |
 | POST | `/_checkpoint` | Quorum-gated GC below the checkpoint |
 | POST | `/_verify` | Verify a peer's tip against ours (the quorum vote) |
-| GET | `/_placement/:collection/:key` | Which nodes own a key, and why |
+| GET | `/_placement/:collection/:key` | Ring RF subset + `displaced_owners` for a key; actual holders converge to all reachable nodes (see `/_brain` checksums) |
 | POST | `/_search/vector/:collection` | k-NN over a vector collection |
 | GET | `/_ts/:collection/rollups` | Time-series rollups |
 | GET | `/_graph/:collection/:key` | Adjacency for a graph node |

@@ -94,6 +94,10 @@ class NodeEngine {
     // transit_chunk_bytes). Documents bigger than this are held as one
     // envelope per chunk, each with its own ledger intent.
     uint32_t transit_chunk_bytes = 256 * 1024;
+    // Node DEK (empty = plaintext). Seals identity.key, the WAL, catalog,
+    // every built-in backend, transit/outbox logs and the cross-engine
+    // index. Never written to disk; arrives from the sidecar on stdin.
+    std::string dek;
   };
 
   static StatusOr<std::unique_ptr<NodeEngine>> Open(const Options& options);
@@ -107,6 +111,9 @@ class NodeEngine {
   ReceiptTracker& receipt_tracker() { return *receipt_tracker_; }
   bool is_supervisor() const { return options_.supervisor; }
   uint32_t replication_factor() const { return options_.replication_factor; }
+  // True when this node seals its files (a DEK was supplied at Open).
+  // Reported on GET /_status as `at_rest_sealed`.
+  bool at_rest_sealed() const { return at_rest_sealed_; }
   Requestor SelfRequestor() const { return Requestor::Local(identity_->node_id()); }
 
   // Called after every successful *local* write with the
@@ -185,6 +192,12 @@ class NodeEngine {
   // Envelopes this node is holding for `owner_node` -- what a kTransitQuery
   // from that peer is answered with.
   std::vector<TransitEnvelope> PendingTransitFor(const std::string& owner_node);
+
+  // True when the transit log met present-but-invalid bytes at open (bad CRC
+  // or implausible record length) rather than a clean EOF or torn tail. The
+  // corrupt tail is dropped and rewritten on open; this flag (also on
+  // GET /_transit as `load_corrupt`) tells operators corruption happened.
+  bool TransitLoadCorrupt() const;
 
   // Called on the returning owner: applies a held document and appends
   // TRANSIT_CLAIMED to its own ledger.
@@ -270,6 +283,9 @@ class NodeEngine {
                        const std::string& encoded_doc, bool notify_hook);
 
   Options options_;
+  // Whether files are sealed. Kept as a bool (not the DEK) so the raw key
+  // is not retained in memory longer than Open() needs it.
+  bool at_rest_sealed_ = false;
   std::unique_ptr<StorageEngine> storage_;
   std::unique_ptr<HybridLogicalClock> clock_;
   std::unique_ptr<NodeIdentity> identity_;

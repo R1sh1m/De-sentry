@@ -84,8 +84,15 @@ class SqliteVecBackend : public BaseBackend {
   std::string Name() const override { return "sqlite_vec"; }
 
   Status Open(const std::string& data_dir, uint64_t quota_mb,
-              size_t buffer_pool_pages = 1024) override {
+              size_t buffer_pool_pages = 1024, const std::string& dek = "") override {
     (void)buffer_pool_pages;  // SQLite manages its own page cache
+    // Fail closed: sqlite-vec manages its own files outside the sealed-page
+    // layer, so an encrypted node must not silently store plaintext here.
+    if (!dek.empty()) {
+      return Status::InvalidArgument(
+          "engine 'sqlite_vec' does not support encrypt_at_rest: bind collections to a built-in "
+          "engine (kv, columnar_lite, ts_rollup, vector_hnsw_lite, graph_adj)");
+    }
     dir_ = data_dir + "/sqlite_vec";
     if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
     path_ = dir_ + "/vectors.sqlite3";

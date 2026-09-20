@@ -7,6 +7,7 @@
 #include "desentry/common/crc32.h"
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/security/crypto.h"
 
 namespace desentry {
@@ -193,7 +194,37 @@ Status WriteAheadLog::DecodeBodyV1(const std::string& body, WalRecord* out) {
   return Status::OK();
 }
 
-StatusOr<std::unique_ptr<WriteAheadLog>> WriteAheadLog::Open(const std::string& wal_file) {
+Status WriteAheadLog::DetectMode(const std::string& wal_file, bool have_key, bool* sealed) {
+  *sealed = false;
+  std::ifstream in(wal_file, std::ios::binary);
+  if (!in.is_open()) return Status::OK();  // created empty below: new log in the current mode
+  char len_buf[4];
+  in.read(len_buf, 4);
+  if (in.gcount() < 4) return Status::OK();  // empty file: new log
+  const uint32_t body_len = GetU32(len_buf);
+  if (body_len < 8 || body_len > kMaxRecordBytes) {
+    return Status::Corruption("WAL: implausible first record length -- file is not a ledger");
+  }
+  std::string head(std::min<size_t>(body_len, 64), '\0');
+  in.read(head.data(), static_cast<std::streamsize>(head.size()));
+  if (static_cast<size_t>(in.gcount()) < head.size()) return Status::OK();  // torn tail: mode unknown
+  // The sealed magic sits at the payload start; CRC occupies the last 4
+  // bytes, so require at least magic + CRC before calling it sealed.
+  *sealed = head.size() >= 8 && at_rest::LooksSealedRecord(head);
+  if (*sealed && !have_key) {
+    return Status::Corruption("at-rest: sealed ledger " + wal_file +
+                              " opened without encryption (missing unlock key?)");
+  }
+  if (!*sealed && have_key) {
+    return Status::Corruption("at-rest: plaintext ledger " + wal_file +
+                              " opened with encryption enabled; migrate it with "
+                              "`desentryd --re-encrypt`");
+  }
+  return Status::OK();
+}
+
+StatusOr<std::unique_ptr<WriteAheadLog>> WriteAheadLog::Open(const std::string& wal_file,
+                                                             const std::string& dek) {
   {
     std::ifstream probe(wal_file, std::ios::binary);
     if (!probe.is_open()) {
@@ -201,16 +232,39 @@ StatusOr<std::unique_ptr<WriteAheadLog>> WriteAheadLog::Open(const std::string& 
       if (!create.is_open()) return Status::IOError("cannot create WAL file: " + wal_file);
     }
   }
+  bool sealed = false;
+  Status mode_st = DetectMode(wal_file, !dek.empty(), &sealed);
+  if (!mode_st.ok()) return mode_st;
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
   std::fstream file(wal_file, std::ios::in | std::ios::out | std::ios::binary);
   if (!file.is_open()) return Status::IOError("cannot open WAL file: " + wal_file);
 
   std::unique_ptr<WriteAheadLog> wal(new WriteAheadLog(std::move(file), wal_file, 0, GenesisHash()));
+  if (!dek.empty()) {
+    auto subkey_or = at_rest::FileSubkey(dek, "wal");
+    if (!subkey_or.ok()) return subkey_or.status();
+    wal->subkey_ = subkey_or.value();
+  }
 
   std::vector<WalRecord> records;
   {
     std::lock_guard<std::mutex> lock(wal->mu_);
     Status st = wal->ReadAllLocked(&records);
     if (!st.ok()) return st;
+  }
+
+  if (!dek.empty() && records.empty() && wal->last_read_corrupt_) {
+    // Wrong-key fail-closed: a sealed log whose very first record does not
+    // authenticate recovered nothing. Booting with an empty ledger here
+    // would fork history (new writes reuse LSNs) and strand every peer's
+    // convergence -- refuse instead. (A sealed log with a merely torn tail
+    // reads clean with last_read_corrupt_ false, so crash recovery still
+    // opens; later-record corruption keeps the established VerifyChain
+    // semantics and is reported, not hidden.)
+    return Status::Corruption("at-rest: sealed ledger " + wal_file +
+                              " did not authenticate (wrong unlock key or tampered file)");
   }
 
   if (!records.empty()) {
@@ -302,7 +356,10 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
   rec.entry_hash = crypto::Sha256(content + rec.prev_hash);
   if (signer_) rec.origin_signature = signer_(content);
 
-  std::string body = EncodeBody(rec);
+  std::string payload = EncodeBody(rec);
+  Status seal_st = SealPayload(payload, &payload);
+  if (!seal_st.ok()) return seal_st;
+  std::string body = std::move(payload);
   uint32_t crc = Crc32(body.data(), body.size());
   PutU32(&body, crc);
 
@@ -349,12 +406,21 @@ Status WriteAheadLog::ReadAllLocked(std::vector<WalRecord>* out) {
       DSN_LOG_WARN("wal", "torn record tail detected, stopping replay");
       break;  // short read: the file really ends here (crash mid-append)
     }
-    const std::string payload = body.substr(0, body_len - 4);
+    std::string payload = body.substr(0, body_len - 4);
     uint32_t stored_crc = GetU32(body.data() + body_len - 4);
     uint32_t computed_crc = Crc32(payload.data(), payload.size());
     if (stored_crc != computed_crc) {
       DSN_LOG_WARN("wal", "stopping replay: CRC mismatch on record (stored="
                                << stored_crc << ", computed=" << computed_crc << ")");
+      corrupt = true;
+      break;
+    }
+    // At-rest layer: sealed payloads open here; the torn-tail-vs-corruption
+    // split above is unchanged (short reads still break benignly before any
+    // cryptographic check runs).
+    Status unseal_st = UnsealPayload(payload, &payload, &corrupt);
+    if (!unseal_st.ok()) {
+      DSN_LOG_WARN("wal", "stopping replay: " << unseal_st.message());
       corrupt = true;
       break;
     }
@@ -462,13 +528,54 @@ WriteAheadLog::VerifyResult WriteAheadLog::VerifyChain(const SignatureVerifier& 
   return result;
 }
 
+Status WriteAheadLog::SealPayload(const std::string& payload, std::string* out) const {
+  if (subkey_.empty()) {
+    *out = payload;
+    return Status::OK();
+  }
+  auto sealed_or = at_rest::SealRecord(subkey_, payload, "wal");
+  if (!sealed_or.ok()) return sealed_or.status();
+  *out = sealed_or.value();
+  return Status::OK();
+}
+
+Status WriteAheadLog::UnsealPayload(const std::string& payload, std::string* out,
+                                    bool* corrupt) const {
+  const bool sealed = at_rest::LooksSealedRecord(payload);
+  if (sealed && subkey_.empty()) {
+    // Sealed bytes with no key: DetectMode fail-closes at Open for a sealed
+    // first record; a sealed record deeper in a plaintext log is tampering.
+    *corrupt = true;
+    return Status::Corruption("WAL: sealed record without an unlock key");
+  }
+  if (!sealed && !subkey_.empty()) {
+    // Plaintext record in a sealed log: fail closed rather than mixing modes.
+    *corrupt = true;
+    return Status::Corruption("WAL: plaintext record in a sealed ledger");
+  }
+  if (!sealed) {
+    *out = payload;
+    return Status::OK();
+  }
+  auto open_or = at_rest::OpenRecord(subkey_, payload, "wal");
+  if (!open_or.ok()) {
+    *corrupt = true;
+    return open_or.status();
+  }
+  *out = open_or.value();
+  return Status::OK();
+}
+
 Status WriteAheadLog::RewriteLocked(const std::vector<WalRecord>& records) {
   const std::string tmp = path_ + ".rewrite";
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return Status::IOError("cannot write " + tmp);
     for (const WalRecord& rec : records) {
-      std::string body = EncodeBody(rec);
+      std::string payload = EncodeBody(rec);
+      Status seal_st = SealPayload(payload, &payload);
+      if (!seal_st.ok()) return seal_st;
+      std::string body = std::move(payload);
       uint32_t crc = Crc32(body.data(), body.size());
       PutU32(&body, crc);
       uint32_t body_len = static_cast<uint32_t>(body.size());

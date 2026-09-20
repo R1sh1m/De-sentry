@@ -21,7 +21,9 @@
 #include "desentry/common/platform.h"
 #include "desentry/engine/node_engine.h"
 #include "desentry/net/network_manager.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/supervisor/supervisor.h"
+#include "desentry/storage/reencrypt.h"
 
 namespace {
 
@@ -32,6 +34,7 @@ void PrintUsage() {
   std::printf(
       "usage: desentryd [--config path/to/node.json] [--data-dir DIR] [--api-port N]\n"
       "                 [--p2p-port N] [--supervisor] [--log-level debug|info|warn|error]\n"
+      "                 [--read-unlock-stdin] [--re-encrypt]\n"
       "\n"
       "Every desentryd process is a full peer: it serves a local REST API for\n"
       "applications and participates as an equal in the P2P replication mesh.\n"
@@ -40,7 +43,27 @@ void PrintUsage() {
       "checkpointing); it binds its API to loopback only, is never elected,\n"
       "and never holds replicated data.\n"
       "\n"
+      "--read-unlock-stdin reads one line (the node's Crockford unlock key)\n"
+      "from stdin and uses it as the at-rest data-encryption key. The desktop\n"
+      "app passes this flag whenever it has a key to hand over; without it\n"
+      "stdin is never touched, so running by hand in a terminal never blocks.\n"
+      "\n"
+      "--re-encrypt seals every plaintext data file under the configured\n"
+      "data directory with the stdin key and exits (the node must be\n"
+      "STOPPED first). Already-sealed files are skipped, so reruns finish\n"
+      "the job. There is no decrypt direction: restore from backup.\n"
+      "\n"
       "See config/node.example.json for every configurable field.\n");
+}
+
+// Reads one line from stdin (the sidecar writes the unlock key followed by a
+// newline, then closes the pipe). Only called when --read-unlock-stdin was
+// passed, so a hand-run in a terminal never blocks on input.
+std::string ReadUnlockKeyFromStdin() {
+  std::string line;
+  if (!std::getline(std::cin, line)) return std::string();
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+  return line;
 }
 
 desentry::LogLevel ParseLogLevel(const std::string& name) {
@@ -63,6 +86,8 @@ int main(int argc, char** argv) {
   int override_api_port = 0;
   int override_p2p_port = 0;
   bool force_supervisor = false;
+  bool read_unlock_stdin = false;
+  bool re_encrypt = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -76,6 +101,10 @@ int main(int argc, char** argv) {
       override_p2p_port = std::atoi(argv[++i]);
     } else if (arg == "--supervisor") {
       force_supervisor = true;
+    } else if (arg == "--read-unlock-stdin") {
+      read_unlock_stdin = true;
+    } else if (arg == "--re-encrypt") {
+      re_encrypt = true;
     } else if (arg == "--log-level" && i + 1 < argc) {
       desentry::Logger::Instance().SetLevel(ParseLogLevel(argv[++i]));
     } else if (arg == "--help" || arg == "-h") {
@@ -108,12 +137,64 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Honest gate: encrypt_at_rest is parsed and surfaced but no storage path
-  // enforces it yet (AES-GCM covers the wire only). Warn loudly rather than
-  // letting a user believe a stolen disk is unreadable.
+  // At-rest key handling. The unlock key arrives on stdin (one line, then
+  // EOF) ONLY when --read-unlock-stdin is passed -- the sidecar passes it
+  // whenever it has a key, and anything else leaves stdin alone so hand runs
+  // never block. The key is Crockford text; the 32-byte DEK it decodes to is
+  // what seals every data file, and it never touches disk.
+  std::string dek;
+  if (read_unlock_stdin || re_encrypt) {
+    const std::string typed = ReadUnlockKeyFromStdin();
+    if (!typed.empty()) {
+      auto dek_or = desentry::at_rest::DecodeRecoveryKey(typed);
+      if (!dek_or.ok()) {
+        std::fprintf(stderr, "fatal: unlock key on stdin is not valid: %s\n",
+                     dek_or.status().ToString().c_str());
+        return 1;
+      }
+      dek = dek_or.value();
+    }
+  }
+
+  if (re_encrypt) {
+    // Offline migration: seal every plaintext file and exit. The node must
+    // be stopped; the tool refuses sealed/mixed/torn input rather than
+    // guessing, and skips already-sealed files so reruns finish the job.
+    if (dek.empty()) {
+      std::fprintf(stderr,
+                   "fatal: --re-encrypt needs the node's unlock key on stdin "
+                   "(pass --read-unlock-stdin or pipe the key)\n");
+      return 1;
+    }
+    std::string summary;
+    desentry::Status st =
+        desentry::ReencryptDataDir(config.data_dir, dek, &summary);
+    desentry::at_rest::Zeroize(dek);
+    if (!st.ok()) {
+      std::fprintf(stderr, "fatal: re-encrypt failed: %s\n", st.ToString().c_str());
+      return 1;
+    }
+    std::printf("re-encrypt complete for %s: %s\n", config.data_dir.c_str(), summary.c_str());
+    return 0;
+  }
+
+  // Fail closed: an encrypted node without its key must never boot into a
+  // state that reads (or writes) plaintext. The sidecar surfaces this as the
+  // unlock prompt; a hand run needs --read-unlock-stdin with the key piped.
+  if (config.encrypt_at_rest && dek.empty()) {
+    std::fprintf(stderr,
+                 "fatal: encrypt_at_rest=true but no unlock key was provided (pass "
+                 "--read-unlock-stdin and pipe the node's recovery key or passphrase-derived "
+                 "key); refusing to boot unencrypted\n");
+    return 1;
+  }
+  if (!config.encrypt_at_rest && !dek.empty()) {
+    DSN_LOG_WARN("main", "an unlock key was provided but encrypt_at_rest=false; ignoring the key");
+    desentry::at_rest::Zeroize(dek);
+    dek.clear();
+  }
   if (config.encrypt_at_rest) {
-    DSN_LOG_WARN("main", "encrypt_at_rest=true is NOT YET ENFORCED: data files are written "
-                         "unencrypted; wire encryption only. See docs/architecture-v2.md Sec 8.");
+    DSN_LOG_INFO("main", "encrypt_at_rest=true: data files are sealed with the provided key");
   }
 
   desentry::NodeEngine::Options engine_opts;
@@ -128,8 +209,15 @@ int main(int argc, char** argv) {
   engine_opts.transit_chunk_bytes = config.transit_chunk_bytes;
   engine_opts.replication_factor = config.replication_factor;
   engine_opts.supervisor = config.supervisor;
+  engine_opts.dek = dek;
 
   auto engine_or = desentry::NodeEngine::Open(engine_opts);
+  // The engine derived per-file subkeys at open; drop the raw key from this
+  // scope so memory holds subkeys only.
+  desentry::at_rest::Zeroize(engine_opts.dek);
+  engine_opts.dek.clear();
+  desentry::at_rest::Zeroize(dek);
+  dek.clear();
   if (!engine_or.ok()) {
     std::fprintf(stderr, "fatal: failed to open node engine: %s\n",
                  engine_or.status().ToString().c_str());

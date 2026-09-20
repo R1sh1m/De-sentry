@@ -40,7 +40,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     type: "password",
     class: "input",
     style: "flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--color-ink);",
-    placeholder: "Enter recovery key or password…",
+    placeholder: "Enter passphrase or recovery key…",
     autocomplete: "off",
   }) as HTMLInputElement;
 

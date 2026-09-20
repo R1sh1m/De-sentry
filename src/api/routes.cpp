@@ -466,6 +466,11 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("public_key_hex", JsonValue(HexEncode(engine->identity().public_key())));
     obj.emplace_back("uptime_seconds", JsonValue(static_cast<int64_t>(uptime_s)));
     obj.emplace_back("supervisor", JsonValue(engine->is_supervisor()));
+    // At-rest posture, honestly reported: whether this node seals its files.
+    // A stolen disk of a node reporting false here is readable; true means
+    // every data file needs the unlock key.
+    obj.emplace_back("encrypt_at_rest", JsonValue(network->config().encrypt_at_rest));
+    obj.emplace_back("at_rest_sealed", JsonValue(engine->at_rest_sealed()));
     obj.emplace_back("collections", JsonValue(static_cast<int64_t>(engine->ListCollections().size())));
     obj.emplace_back("known_peers", JsonValue(static_cast<int64_t>(network->peers().Size())));
     obj.emplace_back("replication_factor",
@@ -654,6 +659,11 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("documents_held", JsonValue(static_cast<int64_t>(documents)));
     obj.emplace_back("bytes_held", JsonValue(static_cast<int64_t>(engine->transit().BytesHeld())));
     obj.emplace_back("ttl_seconds", JsonValue(static_cast<int64_t>(engine->transit().ttl_seconds())));
+    // True when the transit log met present-but-invalid bytes at open (bad
+    // CRC or implausible length) rather than a clean EOF or torn tail. The
+    // corrupt tail was dropped and the log rewritten; this flag is the
+    // operator-visible record that corruption happened.
+    obj.emplace_back("load_corrupt", JsonValue(engine->TransitLoadCorrupt()));
     return JsonOk(JsonValue(std::move(obj)));
   });
 
@@ -756,6 +766,8 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     for (const std::string& r : plan.replicas) replicas.emplace_back(JsonValue(r));
     JsonValue::Array skipped;
     for (const std::string& s : plan.skipped) skipped.emplace_back(JsonValue(s));
+    JsonValue::Array displaced;
+    for (const std::string& d : plan.displaced_owners) displaced.emplace_back(JsonValue(d));
 
     JsonValue::Object obj;
     obj.emplace_back("collection", JsonValue(collection));
@@ -769,6 +781,16 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("ring_nodes",
                      JsonValue(static_cast<int64_t>(network->placement().ring().NodeCount())));
     obj.emplace_back("skipped", JsonValue(std::move(skipped)));
+    obj.emplace_back("displaced_owners", JsonValue(std::move(displaced)));
+    // Honesty note, stated in the response rather than buried in docs:
+    // `replicas` is the ring's RF subset for this key, but writes are
+    // broadcast to every connected peer and gossip converges the rest, so in
+    // practice every reachable data node holds every key. Compare
+    // per-collection checksums in /_brain across nodes for the ground truth
+    // of who actually holds what.
+    obj.emplace_back("replication_note",
+                     JsonValue("ring RF subset; actual holders converge to all reachable data "
+                               "nodes via broadcast + gossip -- see /_brain checksums"));
     return JsonOk(JsonValue(std::move(obj)));
   });
 

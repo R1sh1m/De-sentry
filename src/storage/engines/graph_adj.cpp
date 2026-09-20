@@ -9,6 +9,7 @@
 #include "desentry/common/byte_buffer.h"
 #include "desentry/common/json.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/storage/document_codec.h"
 
 namespace desentry {
@@ -64,8 +65,13 @@ std::vector<GraphEdge> GraphAdjBackend::DeriveOutEdges(const std::string& encode
         edges.push_back(GraphEdge{e.AsString(), "", ""});
       } else if (e.is_object()) {
         const JsonValue* to = e.Find("to");
+        if (to == nullptr || !to->is_string() || to->AsString().empty()) {
+          to = e.Find("target");
+        }
         if (to == nullptr || !to->is_string() || to->AsString().empty()) continue;
         const JsonValue* label = e.Find("label");
+        if (label == nullptr) label = e.Find("rel");
+        if (label == nullptr) label = e.Find("relation");
         edges.push_back(
             GraphEdge{to->AsString(), label && label->is_string() ? label->AsString() : "", ""});
       }
@@ -146,7 +152,11 @@ Status GraphAdjBackend::DecodeAdjacency(const std::string& blob, CollectionState
 // ---------------------------------------------------------------------------
 
 Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb,
-                              size_t buffer_pool_pages) {
+                              size_t buffer_pool_pages, const std::string& dek) {
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  dek_ = dek;
   dir_ = data_dir + "/graph_adj";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/graph.json";
@@ -154,11 +164,12 @@ Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb,
   docs_ = std::make_unique<KvBPlusBackend>();
   // The inner store is opened unlimited: this backend's own Charge() is the
   // single quota authority, so a document is never accepted here and then
-  // rejected one layer down.
-  Status st = docs_->Open(dir_, 0, buffer_pool_pages);
+  // rejected one layer down. The DEK is forwarded so the inner kv files and
+  // roots.json seal exactly like a top-level kv backend.
+  Status st = docs_->Open(dir_, 0, buffer_pool_pages, dek_);
   if (!st.ok()) return st;
 
-  auto store_or = SegmentStore::Open(dir_ + "/adjacency.dsf");
+  auto store_or = SegmentStore::Open(dir_ + "/adjacency.dsf", 256, dek_);
   if (!store_or.ok()) return store_or.status();
   store_ = std::move(store_or.value());
 
@@ -168,14 +179,15 @@ Status GraphAdjBackend::Open(const std::string& data_dir, uint64_t quota_mb,
 }
 
 Status GraphAdjBackend::LoadManifest() {
-  std::ifstream f(manifest_path_);
-  if (!f.is_open()) return Status::OK();
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  if (ss.str().empty()) return Status::OK();
+  auto text_or = at_rest::ReadSealedJsonFile(manifest_path_, dek_, "graph-manifest");
+  if (!text_or.ok()) {
+    if (text_or.status().code() == StatusCode::kNotFound) return Status::OK();
+    return Status::Corruption(std::string("graph_adj manifest: ") + text_or.status().message());
+  }
+  if (text_or.value().empty()) return Status::OK();
   JsonValue root;
   try {
-    root = JsonValue::Parse(ss.str());
+    root = JsonValue::Parse(text_or.value());
   } catch (const std::exception& e) {
     return Status::Corruption(std::string("graph_adj manifest parse error: ") + e.what());
   }
@@ -208,17 +220,11 @@ Status GraphAdjBackend::SaveManifest() {
     o.emplace_back("nodes", JsonValue(static_cast<int64_t>(state.out_edges.size())));
     arr.emplace_back(std::move(o));
   }
-  const std::string tmp = manifest_path_ + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) return Status::IOError("graph_adj: cannot write " + tmp);
-    f << JsonValue(std::move(arr)).Dump();
-    f.flush();
-    if (!f.good()) return Status::IOError("graph_adj: manifest write failed");
-  }
-  std::remove(manifest_path_.c_str());
-  if (std::rename(tmp.c_str(), manifest_path_.c_str()) != 0) {
-    return Status::IOError("graph_adj: cannot commit " + manifest_path_);
+  Status st = at_rest::WriteSealedJsonFile(manifest_path_, JsonValue(std::move(arr)).Dump(),
+                                             dek_, "graph-manifest");
+  if (!st.ok()) {
+    return Status::IOError(std::string("graph_adj: cannot commit ") + manifest_path_ + ": " +
+                           st.message());
   }
   return Status::OK();
 }
@@ -269,6 +275,9 @@ void GraphAdjBackend::IndexDocumentLocked(CollectionState* state, const std::str
 
   std::vector<std::pair<std::string, std::string>>& declared = state->declared[key];
   auto add_edge = [&](const std::string& from, const std::string& to, const std::string& label) {
+    for (const auto& p : declared) {
+      if (p.first == from && p.second == to) return;  // avoid duplicate inside same doc
+    }
     state->out_edges[from].push_back(GraphEdge{to, label, key});
     state->in_edges[to].push_back(GraphEdge{from, label, key});
     declared.emplace_back(from, to);
@@ -276,6 +285,33 @@ void GraphAdjBackend::IndexDocumentLocked(CollectionState* state, const std::str
     // their own, so Roots()/StatsFor() see the whole vertex set.
     state->out_edges.emplace(to, std::vector<GraphEdge>());
   };
+
+  // Standalone edge document support (e.g., from Dropbox or REST edge ingest):
+  // { "source": "A", "target": "B" } or { "from": "A", "to": "B" }
+  JsonValue json = ToJsonSafe(encoded_doc);
+  if (json.is_object()) {
+    std::string edge_from;
+    const JsonValue* f = json.Find("from");
+    if (f == nullptr) f = json.Find("source");
+    if (f != nullptr && f->is_string()) edge_from = f->AsString();
+
+    std::string edge_to;
+    const JsonValue* t = json.Find("to");
+    if (t == nullptr) t = json.Find("target");
+    if (t != nullptr && t->is_string()) edge_to = t->AsString();
+
+    if (!edge_from.empty() && !edge_to.empty()) {
+      std::string edge_label;
+      for (const char* l : {"label", "rel", "relation", "type"}) {
+        const JsonValue* lv = json.Find(l);
+        if (lv != nullptr && lv->is_string()) {
+          edge_label = lv->AsString();
+          break;
+        }
+      }
+      add_edge(edge_from, edge_to, edge_label);
+    }
+  }
 
   // A `parent` field is an in-edge on this node, which is the same fact as
   // an out-edge on the parent -- recorded that way so both directions stay
@@ -326,7 +362,18 @@ std::vector<GraphEdge> GraphAdjBackend::OutEdges(const std::string& collection,
   auto coll = collections_.find(collection);
   if (coll == collections_.end()) return {};
   auto it = coll->second.out_edges.find(key);
-  return it == coll->second.out_edges.end() ? std::vector<GraphEdge>() : it->second;
+  if (it == coll->second.out_edges.end()) return {};
+
+  std::vector<GraphEdge> unique_edges;
+  unique_edges.reserve(it->second.size());
+  std::unordered_set<std::string> seen;
+  for (const auto& e : it->second) {
+    std::string sig = e.to + "\0" + e.label;
+    if (seen.insert(sig).second) {
+      unique_edges.push_back(e);
+    }
+  }
+  return unique_edges;
 }
 
 std::vector<GraphEdge> GraphAdjBackend::InEdges(const std::string& collection,
@@ -335,7 +382,18 @@ std::vector<GraphEdge> GraphAdjBackend::InEdges(const std::string& collection,
   auto coll = collections_.find(collection);
   if (coll == collections_.end()) return {};
   auto it = coll->second.in_edges.find(key);
-  return it == coll->second.in_edges.end() ? std::vector<GraphEdge>() : it->second;
+  if (it == coll->second.in_edges.end()) return {};
+
+  std::vector<GraphEdge> unique_edges;
+  unique_edges.reserve(it->second.size());
+  std::unordered_set<std::string> seen;
+  for (const auto& e : it->second) {
+    std::string sig = e.to + "\0" + e.label;
+    if (seen.insert(sig).second) {
+      unique_edges.push_back(e);
+    }
+  }
+  return unique_edges;
 }
 
 std::vector<std::string> GraphAdjBackend::Descendants(const std::string& collection,
@@ -505,10 +563,13 @@ GraphAdjBackend::Stats GraphAdjBackend::StatsFor(const std::string& collection) 
   if (coll == collections_.end()) return stats;
   const CollectionState& state = coll->second;
   stats.nodes = state.out_edges.size();
-  for (const auto& [key, edges] : state.out_edges) {
-    (void)key;
-    stats.edges += edges.size();
+  std::set<std::pair<std::string, std::string>> unique_edges;
+  for (const auto& [from, edges] : state.out_edges) {
+    for (const auto& e : edges) {
+      unique_edges.emplace(from, e.to);
+    }
   }
+  stats.edges = unique_edges.size();
   for (const auto& [key, edges] : state.out_edges) {
     (void)edges;
     if (state.in_edges.find(key) == state.in_edges.end()) ++stats.roots;

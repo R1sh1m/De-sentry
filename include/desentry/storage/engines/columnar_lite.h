@@ -73,7 +73,7 @@ class ColumnarLiteBackend : public BaseBackend {
   std::string Name() const override { return "columnar_lite"; }
 
   Status Open(const std::string& data_dir, uint64_t quota_mb,
-              size_t buffer_pool_pages = 1024) override;
+              size_t buffer_pool_pages = 1024, const std::string& dek = "") override;
   Status Put(const std::string& collection, const std::string& key,
               const std::string& encoded_doc) override;
   StatusOr<std::string> Get(const std::string& collection, const std::string& key) override;
@@ -127,6 +127,8 @@ class ColumnarLiteBackend : public BaseBackend {
   std::string dir_;
   std::string manifest_path_;
   std::unique_ptr<SegmentStore> store_;
+  // Node DEK (empty when plaintext); seals segments.dsf pages and segments.json.
+  std::string dek_;
   uint64_t next_sequence_ = 1;
 
   mutable std::mutex mu_;

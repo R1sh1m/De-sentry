@@ -7,17 +7,22 @@
 #include "desentry/common/json.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/storage/slotted_page.h"
 
 namespace desentry {
 
 Status KvBPlusBackend::Open(const std::string& data_dir, uint64_t quota_mb,
-                             size_t buffer_pool_pages) {
+                             size_t buffer_pool_pages, const std::string& dek) {
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  dek_ = dek;
   dir_ = data_dir + "/kv";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   roots_path_ = dir_ + "/roots.json";
 
-  auto disk_or = DiskManager::Open(dir_ + "/kv.dsf");
+  auto disk_or = DiskManager::Open(dir_ + "/kv.dsf", dek_);
   if (!disk_or.ok()) return disk_or.status();
   disk_ = std::move(disk_or.value());
   // Zero/degenerate requests cannot make progress (NewPage would always fail),
@@ -36,14 +41,16 @@ size_t KvBPlusBackend::BufferPoolPages() const {
 }
 
 Status KvBPlusBackend::LoadRoots() {
-  std::ifstream f(roots_path_);
-  if (!f.is_open()) return Status::OK();
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  if (ss.str().empty()) return Status::OK();
+  auto text_or = at_rest::ReadSealedJsonFile(roots_path_, dek_, "roots");
+  if (!text_or.ok()) {
+    if (text_or.status().code() == StatusCode::kNotFound) return Status::OK();
+    return Status::Corruption(std::string("kv backend: roots.json: ") +
+                              text_or.status().message());
+  }
+  if (text_or.value().empty()) return Status::OK();
   JsonValue root;
   try {
-    root = JsonValue::Parse(ss.str());
+    root = JsonValue::Parse(text_or.value());
   } catch (const std::exception& e) {
     return Status::Corruption(std::string("kv backend: roots.json parse error: ") + e.what());
   }
@@ -60,17 +67,13 @@ Status KvBPlusBackend::SaveRoots() {
   for (const auto& [name, root] : roots_) {
     obj.emplace_back(name, JsonValue(static_cast<int64_t>(root)));
   }
-  const std::string tmp = roots_path_ + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) return Status::IOError("kv backend: cannot write " + tmp);
-    f << JsonValue(std::move(obj)).Dump();
-    f.flush();
-    if (!f.good()) return Status::IOError("kv backend: roots write failed");
-  }
-  std::remove(roots_path_.c_str());
-  if (std::rename(tmp.c_str(), roots_path_.c_str()) != 0) {
-    return Status::IOError("kv backend: cannot commit " + roots_path_);
+  // Atomic tmp+rename is inside WriteSealedJsonFile (sealed when dek_ is
+  // set); the error below names roots.json either way.
+  Status st = at_rest::WriteSealedJsonFile(roots_path_, JsonValue(std::move(obj)).Dump(), dek_,
+                                           "roots");
+  if (!st.ok()) {
+    return Status::IOError(std::string("kv backend: cannot commit ") + roots_path_ + ": " +
+                           st.message());
   }
   return Status::OK();
 }

@@ -71,11 +71,17 @@ export function createDropbox(): DropboxHandles {
         };
       }
       // Check for Graph adjacency: array of { source, target } or { from, to }
-      if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0].source || parsed[0].from)) {
+      // (guarded: parsed[0] may be a number, string or null, none of which
+      // has edge fields -- and must fall through, not throw).
+      if (
+        Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" &&
+        parsed[0] !== null && ((parsed[0] as Record<string, unknown>).source || (parsed[0] as Record<string, unknown>).from)
+      ) {
         const records = parsed.map((item, i) => {
-          const src = item.source || item.from;
-          const dst = item.target || item.to;
-          return { key: `edge_${src}_${dst}_${i}`, doc: item };
+          const obj = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+          const src = obj.source ?? obj.from ?? `unknown_${i}`;
+          const dst = obj.target ?? obj.to ?? `unknown_${i}`;
+          return { key: `edge_${String(src)}_${String(dst)}_${i}`, doc: item };
         });
         return {
           workload: "graph",
@@ -87,11 +93,17 @@ export function createDropbox(): DropboxHandles {
           rawText: text,
         };
       }
-      // Check for Time-Series records
-      if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0].timestamp || parsed[0].time || parsed[0].ts)) {
+      // Check for Time-Series records (same null-guard as the graph check).
+      if (
+        Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" &&
+        parsed[0] !== null &&
+        ((parsed[0] as Record<string, unknown>).timestamp || (parsed[0] as Record<string, unknown>).time ||
+          (parsed[0] as Record<string, unknown>).ts)
+      ) {
         const records = parsed.map((item, i) => {
-          const t = item.timestamp || item.time || item.ts;
-          const k = `ts_${t}_${i}`;
+          const obj = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+          const t = obj.timestamp ?? obj.time ?? obj.ts ?? i;
+          const k = `ts_${String(t)}_${i}`;
           return { key: k, doc: item };
         });
         return {
@@ -107,7 +119,8 @@ export function createDropbox(): DropboxHandles {
       // General JSON Array of documents
       if (Array.isArray(parsed)) {
         const records = parsed.map((item, i) => {
-          const k = item.id || item.key || item._id || `item_${i + 1}`;
+          const obj = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+          const k = obj.id ?? obj.key ?? obj._id ?? `item_${i + 1}`;
           return { key: String(k), doc: item };
         });
         return {
@@ -115,20 +128,21 @@ export function createDropbox(): DropboxHandles {
           title: "JSON Document Collection",
           summary: `Collection of ${records.length} structured records.`,
           suggestedCollection: filename ? filename.replace(/\.[^/.]+$/, "") : "records",
-          suggestedEngine: "kv_bplus",
+          suggestedEngine: "kv",
           records,
           rawText: text,
         };
       }
       // Single JSON object
       if (typeof parsed === "object" && parsed !== null) {
-        const k = parsed.id || parsed.key || parsed.name || `doc_${Date.now()}`;
+        const obj = parsed as Record<string, unknown>;
+        const k = obj.id ?? obj.key ?? obj.name ?? `doc_${Date.now()}`;
         return {
           workload: "document",
           title: "JSON Document",
           summary: "Single structured JSON record.",
           suggestedCollection: filename ? filename.replace(/\.[^/.]+$/, "") : "documents",
-          suggestedEngine: "kv_bplus",
+          suggestedEngine: "kv",
           records: [{ key: String(k), doc: parsed }],
           rawText: text,
         };
@@ -137,15 +151,48 @@ export function createDropbox(): DropboxHandles {
       // Not JSON, check CSV / Tabular
     }
 
-    // 2. Check for CSV
+    // 2. Check for CSV. Quoted fields may contain the delimiter and
+    // doubled quotes ("") escape a literal quote -- a naive split() turns
+    // `"a, b",c` into three fields instead of two.
     if (trimmed.includes("\n") && (trimmed.includes(",") || trimmed.includes("\t"))) {
       const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
       if (lines.length > 1) {
         const delimiter = trimmed.includes("\t") ? "\t" : ",";
-        const headers = lines[0].split(delimiter).map((h) => h.replace(/^["']|["']$/g, "").trim());
+        const splitRow = (line: string): string[] => {
+          const fields: string[] = [];
+          let cur = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuotes) {
+              if (ch === '"') {
+                if (line[i + 1] === '"') {
+                  cur += '"';
+                  i++;
+                } else {
+                  inQuotes = false;
+                }
+              } else {
+                cur += ch;
+              }
+            } else if (ch === '"') {
+              inQuotes = true;
+            } else if (ch === delimiter) {
+              fields.push(cur.trim());
+              cur = "";
+            } else {
+              cur += ch;
+            }
+          }
+          fields.push(cur.trim());
+          return fields.map((f) =>
+            f.length >= 2 && f.startsWith("'") && f.endsWith("'") ? f.slice(1, -1) : f,
+          );
+        };
+        const headers = splitRow(lines[0]);
         const records: { key: string; doc: unknown }[] = [];
         for (let i = 1; i < lines.length; i++) {
-          const parts = lines[i].split(delimiter).map((p) => p.replace(/^["']|["']$/g, "").trim());
+          const parts = splitRow(lines[i]);
           const obj: Record<string, unknown> = {};
           headers.forEach((h, idx) => {
             const val = parts[idx] ?? "";
@@ -159,7 +206,9 @@ export function createDropbox(): DropboxHandles {
           title: "CSV / Tabular Dataset",
           summary: `${records.length} rows with ${headers.length} columns: ${headers.slice(0, 4).join(", ")}...`,
           suggestedCollection: filename ? filename.replace(/\.[^/.]+$/, "") : "tables",
-          suggestedEngine: "duckdb",
+          // columnar_lite: the built-in segment engine for tabular data.
+          // (duckdb is vendored and usually not compiled in.)
+          suggestedEngine: "columnar_lite",
           records,
           rawText: text,
         };
@@ -173,10 +222,69 @@ export function createDropbox(): DropboxHandles {
       title: filename ? `File: ${filename}` : "Unstructured Note",
       summary: `Plain text document (${bytes(new Blob([text]).size)}).`,
       suggestedCollection: "notes",
-      suggestedEngine: "kv_bplus",
+      suggestedEngine: "kv",
       records: [{ key, doc: { content: trimmed, filename: filename || undefined, created_ms: Date.now() } }],
       rawText: text,
     };
+  }
+
+  /**
+   * Splits records whose serialized form exceeds the engine's single-page
+   * budget (~4 KiB) into a manifest + parts. A whole file in one `content`
+   * string otherwise fails the entire PUT with kOutOfSpace. Parts are
+   * `{parent_key, part_index, part_total, field, text}` under
+   * `<key>#<i>`; the parent keeps every other field plus a `chunked`
+   * marker. Records with no splittable string field (e.g. a huge embedding)
+   * pass through untouched -- the backend then decides with a per-record
+   * error the log already surfaces.
+   */
+  function chunkRecords(records: { key: string; doc: unknown }[]): { key: string; doc: unknown }[] {
+    const out: { key: string; doc: unknown }[] = [];
+    for (const r of records) {
+      const text = JSON.stringify(r.doc);
+      if (text.length <= 3500) {
+        out.push(r);
+        continue;
+      }
+      if (typeof r.doc === "object" && r.doc !== null && !Array.isArray(r.doc)) {
+        const obj = r.doc as Record<string, unknown>;
+        let biggest = "";
+        let biggestLen = 0;
+        for (const [k, v] of Object.entries(obj)) {
+          if (typeof v === "string" && v.length > biggestLen) {
+            biggest = k;
+            biggestLen = v.length;
+          }
+        }
+        if (biggestLen > 2000) {
+          const full = obj[biggest] as string;
+          const n = Math.ceil(full.length / 3500);
+          for (let i = 0; i < n; i++) {
+            out.push({
+              key: `${r.key}#${i}`,
+              doc: {
+                parent_key: r.key,
+                part_index: i,
+                part_total: n,
+                field: biggest,
+                text: full.slice(i * 3500, (i + 1) * 3500),
+              },
+            });
+          }
+          const rest: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (k !== biggest) rest[k] = v;
+          }
+          out.push({
+            key: r.key,
+            doc: { ...rest, chunked: true, chunk_total: n, chunk_field: biggest },
+          });
+          continue;
+        }
+      }
+      out.push(r);
+    }
+    return out;
   }
 
   function pickBestNode(_workload: DetectedWorkload, engine: string): NodeView | undefined {
@@ -411,11 +519,19 @@ export function createDropbox(): DropboxHandles {
   function readFile(file: File): void {
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === "string") {
-        stageData(analyzeText(reader.result, file.name), file.name);
-      } else {
+      if (typeof reader.result !== "string") {
         store.toast("error", `Could not read '${file.name}'`, "The file could not be decoded as text.");
+        return;
       }
+      // readAsText never fails on binary -- it decodes garbage with U+FFFD
+      // replacements. Detect that and re-read as a data URL instead, so
+      // images, PDFs and zips ingest as base64 asset documents (chunked by
+      // chunkRecords like any other oversized field) rather than mojibake.
+      if (reader.result.includes("�")) {
+        readFileAsAsset(file);
+        return;
+      }
+      stageData(analyzeText(reader.result, file.name), file.name);
     };
     reader.onerror = () => {
       store.toast("error", `Could not read '${file.name}'`, reader.error ? reader.error.message : "Read failed.");
@@ -425,6 +541,51 @@ export function createDropbox(): DropboxHandles {
     };
     try {
       reader.readAsText(file);
+    } catch (error) {
+      store.toast("error", `Could not read '${file.name}'`, describeError(error));
+    }
+  }
+
+  function readFileAsAsset(file: File): void {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        store.toast("error", `Could not read '${file.name}'`, "Binary read produced no data.");
+        return;
+      }
+      const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(reader.result);
+      if (!match) {
+        store.toast("error", `Could not read '${file.name}'`, "Binary encoding failed.");
+        return;
+      }
+      const key = file.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+      stageData(
+        {
+          workload: "raw",
+          title: `Binary file: ${file.name}`,
+          summary: `Binary asset (${bytes(file.size)}); stored base64-encoded and chunked.`,
+          suggestedCollection: "assets",
+          suggestedEngine: "kv",
+          records: [{
+            key,
+            doc: {
+              filename: file.name,
+              mime: match[1] || "application/octet-stream",
+              size_bytes: file.size,
+              base64: match[2],
+              created_ms: Date.now(),
+            },
+          }],
+          rawText: "",
+        },
+        file.name,
+      );
+    };
+    reader.onerror = () => {
+      store.toast("error", `Could not read '${file.name}'`, reader.error ? reader.error.message : "Read failed.");
+    };
+    try {
+      reader.readAsDataURL(file);
     } catch (error) {
       store.toast("error", `Could not read '${file.name}'`, describeError(error));
     }
@@ -469,13 +630,29 @@ export function createDropbox(): DropboxHandles {
     let failCount = 0;
 
     try {
-      // Ingest each record into the target node; failures are per-record so
-      // one bad document never aborts the rest of the file.
-      for (const r of item.payload.records) {
+      // Bind the suggested engine FIRST: without this the "Engine: X" label
+      // is advice the backend never hears, and vector/ts/graph payloads land
+      // as plain KV docs. BindCollection creates an empty entry for fresh
+      // collections; on a populated one it refuses rebind, and the records
+      // below still land in the existing binding -- either way one log line.
+      try {
+        await api.bindEngine(item.targetCollection, item.payload.suggestedEngine);
+        item.logs.push(`Collection '${item.targetCollection}' bound to ${item.payload.suggestedEngine}.`);
+      } catch (err) {
+        item.logs.push(`Engine bind skipped (${describeError(err)}); ingesting into the existing binding.`);
+      }
+      // Oversized records are chunked into manifest + parts (see
+      // chunkRecords); failures stay per-record so one bad document never
+      // aborts the rest of the file.
+      const outgoing = chunkRecords(item.payload.records);
+      if (outgoing.length !== item.payload.records.length) {
+        item.logs.push(`Split ${item.payload.records.length} oversized record(s) into ${outgoing.length} chunked writes (page budget ~4 KiB).`);
+      }
+      for (const r of outgoing) {
         try {
           const res = await api.putDocument(item.targetCollection, r.key, r.doc);
           successCount++;
-          if (successCount <= 5 || successCount + failCount === item.payload.records.length) {
+          if (successCount <= 5 || successCount + failCount === outgoing.length) {
             item.logs.push(`✓ Ingested "${r.key}" -> entry #${res.entry_id}`);
           }
         } catch (err) {
@@ -484,7 +661,7 @@ export function createDropbox(): DropboxHandles {
         }
       }
 
-      const total = item.payload.records.length;
+      const total = outgoing.length;
       const label = item.sourceName || item.targetCollection;
       if (failCount === 0) {
         store.toast(

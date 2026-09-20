@@ -5,11 +5,13 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <unordered_set>
 
 #include "desentry/common/byte_buffer.h"
 #include "desentry/common/json.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/security/at_rest.h"
 #include "desentry/storage/document_codec.h"
 #include "desentry/storage/engines/columnar_lite.h"
 
@@ -72,10 +74,24 @@ std::string TsRollupBackend::ExtractSeries(const std::string& key, const std::st
 bool TsRollupBackend::ExtractValue(const std::string& encoded_doc, double* out) {
   try {
     JsonValue json = DecodeDocument(encoded_doc).ToJson();
-    const JsonValue* v = FindNumeric(json, {"value", "v", "reading"});
-    if (v == nullptr) return false;
-    *out = v->AsDouble();
-    return true;
+    if (!json.is_object()) return false;
+    const JsonValue* v = FindNumeric(json, {"value", "v", "val", "reading", "metric", "measurement", "count", "data"});
+    if (v != nullptr) {
+      *out = v->AsDouble();
+      return true;
+    }
+    // Fallback: look for any numeric field that is not a timestamp or metadata field
+    static const std::unordered_set<std::string> non_value_fields = {
+        "ts", "timestamp", "time", "timestamp_ms", "ts_ms", "time_ms", "date", "datetime",
+        "series", "id", "key", "name", "tag", "device", "host"
+    };
+    for (const auto& [field, val] : json.AsObject()) {
+      if (val.is_number() && non_value_fields.find(field) == non_value_fields.end()) {
+        *out = val.AsDouble();
+        return true;
+      }
+    }
+    return false;
   } catch (const std::exception&) {
     return false;
   }
@@ -206,13 +222,17 @@ Status TsRollupBackend::SplitChunk(const std::string& blob, std::string* rollup_
 // ---------------------------------------------------------------------------
 
 Status TsRollupBackend::Open(const std::string& data_dir, uint64_t quota_mb,
-                              size_t buffer_pool_pages) {
+                              size_t buffer_pool_pages, const std::string& dek) {
   (void)buffer_pool_pages;  // segment-based layout has no buffer pool to size
+  if (!dek.empty() && dek.size() != 32) {
+    return Status::InvalidArgument("at-rest: DEK must be 32 bytes");
+  }
+  dek_ = dek;
   dir_ = data_dir + "/ts_rollup";
   if (!MakeDirs(dir_)) return Status::IOError("cannot create backend directory: " + dir_);
   manifest_path_ = dir_ + "/chunks.json";
 
-  auto store_or = SegmentStore::Open(dir_ + "/ts.dsf");
+  auto store_or = SegmentStore::Open(dir_ + "/ts.dsf", 256, dek_);
   if (!store_or.ok()) return store_or.status();
   store_ = std::move(store_or.value());
 
@@ -222,14 +242,15 @@ Status TsRollupBackend::Open(const std::string& data_dir, uint64_t quota_mb,
 }
 
 Status TsRollupBackend::LoadManifest() {
-  std::ifstream f(manifest_path_);
-  if (!f.is_open()) return Status::OK();
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  if (ss.str().empty()) return Status::OK();
+  auto text_or = at_rest::ReadSealedJsonFile(manifest_path_, dek_, "ts-manifest");
+  if (!text_or.ok()) {
+    if (text_or.status().code() == StatusCode::kNotFound) return Status::OK();
+    return Status::Corruption(std::string("ts_rollup manifest: ") + text_or.status().message());
+  }
+  if (text_or.value().empty()) return Status::OK();
   JsonValue root;
   try {
-    root = JsonValue::Parse(ss.str());
+    root = JsonValue::Parse(text_or.value());
   } catch (const std::exception& e) {
     return Status::Corruption(std::string("ts_rollup manifest parse error: ") + e.what());
   }
@@ -283,17 +304,11 @@ Status TsRollupBackend::SaveManifest() {
       arr.emplace_back(std::move(o));
     }
   }
-  const std::string tmp = manifest_path_ + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) return Status::IOError("ts_rollup: cannot write " + tmp);
-    f << JsonValue(std::move(arr)).Dump();
-    f.flush();
-    if (!f.good()) return Status::IOError("ts_rollup: manifest write failed");
-  }
-  std::remove(manifest_path_.c_str());
-  if (std::rename(tmp.c_str(), manifest_path_.c_str()) != 0) {
-    return Status::IOError("ts_rollup: cannot commit " + manifest_path_);
+  Status st = at_rest::WriteSealedJsonFile(manifest_path_, JsonValue(std::move(arr)).Dump(),
+                                             dek_, "ts-manifest");
+  if (!st.ok()) {
+    return Status::IOError(std::string("ts_rollup: cannot commit ") + manifest_path_ + ": " +
+                           st.message());
   }
   return Status::OK();
 }

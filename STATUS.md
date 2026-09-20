@@ -99,6 +99,32 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 
 ## 3. Verification
 
+### Executed 2026-09-20: Deep-Dive Storage Investigation, Multi-Engine Auditing, and Fixes
+
+Windows box 1 -- MSYS2 UCRT64 GCC 16.2.0, CMake 4.4.2 + Ninja, OpenSSL 3.6.4, Python 3.13, Node 22, Rust 1.98.1.
+Full multi-node cluster verification across all 5 built-in storage engines, placement routing vs replication, ledger v2 cryptographic verification, Universal Dropbox workflows, and crash-recovery persistence.
+
+| Check | Result |
+| --- | --- |
+| `ninja -C build-baseline` | clean compilation of `desentryd`, `desentry_cli`, and 12 unit tests |
+| `ctest --test-dir build-baseline --output-on-failure` | **12 / 12 PASSED (100%)**: `acl_test`, `at_rest_test`, `crdt_test`, `crypto_test`, `ledger_v2_test`, `liveness_test`, `network_test`, `placement_test`, `quota_test`, `router_test`, `storage_test`, `transit_test` (31.8s) |
+| `tests/integration/deep_dive_storage_test.py` (3 nodes + 1 supervisor) | **ALL 10 SECTIONS PASSED**: node usability/topology, KV B+Tree operations, Columnar Lite scanning, TS Rollup bucket aggregations, Vector HNSW Lite k-NN search, Graph Adjacency traversal & standalone edge docs, sharding vs replication audit, ledger v2 verification & changes feed, dropbox CSV/chunking simulation, and crash/restart persistence across all engines |
+| `tests/integration/airplane_mode_test.py` | **ALL 18 CHECKS PASSED** |
+| `tests/integration/transit_replay_test.py` | **ALL 22 CHECKS PASSED** |
+| `tests/integration/usb_node_test.py` | **ALL 18 CHECKS PASSED** |
+| `cargo test --no-default-features` in `app/src-tauri` | **43 / 43 PASSED** |
+| `cd app && npm run build` | **CLEAN**: `tsc --noEmit && vite build` passed (207.5 kB JS, 67.4 kB CSS) |
+
+Flaws Discovered & Fixed in this pass:
+1. **`graph_adj` Edge Ingestion & Adjacency Deduplication**:
+   - *Problem*: Standalone edge documents with `{source, target}` or `{from, to}` (as emitted by Universal Dropbox for graph files) were ignored by `IndexDocumentLocked`, creating isolated nodes with 0 edges. Furthermore, when both parent and child referenced each other (`parent: ceo` on child and `children: [vp_eng]` on parent), `OutEdges` and `InEdges` duplicated the edges in output queries and degree counts.
+   - *Fix*: Updated `DeriveOutEdges` and `IndexDocumentLocked` in `src/storage/engines/graph_adj.cpp` to parse standalone `{source, target}` / `{from, to}` edge documents with relation labels, deduplicated `OutEdges` and `InEdges` queries by `(to, label)`, and updated `StatsFor` to count unique directed edges.
+2. **`ts_rollup` Numeric Metric Extraction**:
+   - *Problem*: `ExtractValue` in `src/storage/engines/ts_rollup.cpp` strictly checked field names `{"value", "v", "reading"}`. Metric records with field names like `val`, `temp`, `humidity`, `metric`, `count`, etc. were silently discarded from bucket aggregations.
+   - *Fix*: Expanded `ExtractValue` to check standard metric aliases and added a fallback for any numeric field not present in the timestamp/metadata field set.
+3. **Storage Sharding Architecture Clarification**:
+   - *Finding*: Verified that while the consistent hash ring computes an RF=3 subset per key (`PlacementPlan::replicas`), the mesh data plane uses eager broadcast (`NetworkManager::BroadcastLocalWrite`) and gossip anti-entropy to synchronize all collections across all reachable data nodes. Therefore, **data is not sharded into disjoint partitions**; the placement ring is used strictly for transit envelope routing (displaced owners), write durability acks, and replication monitoring.
+
 ### Executed 2026-09-08: first full-toolchain runs, on two machines
 
 Windows box 1 -- MSYS2 UCRT64, g++ 16.1, CMake 4.4, OpenSSL 3.6, Python 3.13,
@@ -1019,3 +1045,268 @@ tier tokens.
 **Verified:** `npm run typecheck`, `check:css`, `check:qr`,
 `check:a11y`, `vite build` — all green after the revert.
 
+
+---
+
+## 12. Custom passphrases as a choice alongside recovery keys (2026-09-20)
+
+Wizard step 2 offers Generated recovery key (default) or My own passphrase
+when encryption is on. Passphrases stretch via PBKDF2-HMAC-SHA256 (210k
+iterations, 16-byte salt, pure-Rust implementation in
+`app/src-tauri/src/passphrase.rs` — no new dependencies) into the same 32-byte
+node-key shape. Passphrase nodes mint a random DEK wrapped under the
+passphrase-derived KEK (XOR stream + HMAC tag); `node.json` stores only
+`key_mode` + KDF params + wrapped DEK (all non-secret alone). Rotation
+(`change_passphrase`, wired in the sidebar context menu and canvas popover as
+"Change passphrase…" / "Passphrase…") re-wraps the same DEK under a fresh
+salt, so the old secret stops working with no data re-encryption.
+Passphrase-mode unlock accepts ONLY the passphrase (a pasted DEK or old
+recovery key does not unlock after migration/rotation); the OS keychain still
+holds the DEK for auto-unlock. The C++ engine ignores the new `node.json`
+fields (verified live: node boots with envelope present, PUT/GET OK).
+
+**Verified on this Windows box (MSYS2 + Rust 1.98.1, Node 26):**
+`ctest` 11/11 green; `cargo test --no-default-features` 42/42 serial
+(6 passphrase + 2 envelope tests new; note: `rollback_...` + keychain tests
+race on the live Windows Credential Manager when run multi-threaded — passes
+alone and serially, pre-existing isolation issue, unrelated to this change);
+`cargo check` with default (onnx) features clean; `npm run typecheck/build/
+check:qr/check:css/check:a11y` clean; `usb_node` 18/18, `airplane_mode` 18/18,
+`transit_replay` 22/22 against `build/desentryd.exe`.
+
+**Not run:** `tauri:build`/installer, headed wizard click-through, USB
+removable passphrase unlock live, Linux/macOS/MSVC builds, vendored backends.
+`encrypt_at_rest` remains NOT ENFORCED (wire-only); the DEK becomes the real
+data key when enforcement lands, with no format change.
+
+---
+
+## 13. At-rest encryption enforced + storage/UX hardening (2026-09-20)
+
+### At-rest enforcement (was: warn-only)
+
+`encrypt_at_rest: true` now seals every data file with the node''s 32-byte
+DEK (AES-256-GCM over OpenSSL EVP, no new dependencies): paged `*.dsf`
+files (4096B -> 4124B `[nonce‖ct‖tag]`, fresh random nonce per write, AAD
+binds file tag + page id), length-framed logs (`desentry.wal`,
+`transit.log`, `outbox.log`, `cross_engine_index.log`: sealed payloads,
+CRC/framing unchanged), whole-file JSON (`catalog.json`, `roots.json`,
+all engine manifests) and `identity.key`. New module
+`security/at_rest.{h,cpp}` holds the primitives; the DEK arrives on stdin
+(`--read-unlock-stdin`, passed by the sidecar whenever it has a key) and is
+zeroized after subkey derivation. Fail-closed every direction: sealed
+without key, plaintext with key, and wrong key all refuse; vendored
+backends refuse a DEK at config validation AND at open. Migration is
+offline only: `desentryd --re-encrypt` (node stopped) seals a plaintext
+directory idempotently and refuses vendored/torn/mixed input. No decrypt
+direction (restore from backup). Known limit: GCM detects tampering, not
+age (rollback to an older sealed page authenticates); crash consistency
+stays the WAL''s job.
+
+**Verified live on this box:** sealed boot + PUT/GET, restart persistence
++ `POST /_ledger/verify` through sealed pages, no-key and wrong-key
+refusal (exit 1, no boot), plaintext->`--re-encrypt`->sealed boot with
+data + identity intact (6 files, `MIGRATED-GET` ok, `at_rest_sealed=true`).
+`ctest` 12/12 green incl. new `at_rest_test` (7 tests: Crockford vectors,
+seal tamper/swap/wrong-key, DiskManager + WAL fail-closed, sealed node
+restart, offline migration).
+
+### Storage integrity (Phase 1)
+
+* Transit `Load()` splits torn-tail (benign, keeps prefix) from
+  present-but-bad bytes (bad CRC / implausible length: ERROR-logged,
+  flagged, valid envelopes kept, log self-heals by rewrite). Flag
+  surfaced as `TransitLoadCorrupt()` and `GET /_transit.load_corrupt`
+  (+ regression test: corrupt tail keeps envelope, flags, heals).
+* Checkpoint markers now carry the quorum attestation inline
+  (`agreed_entry_hash`, `agreeing`, `required`, `checkpoint_lsn`) inside
+  the signed content, so post-prune history stays auditable after
+  `Prune()` clears survivors'' origin signatures.
+* Keychain test flake fixed: `unique_test_ref()` (pid + atomic nonce) +
+  scope-guard cleanup in both tests sharing the live OS store.
+* `GET /_placement` now returns `displaced_owners` + a `replication_note`
+  stating the RF subset vs full-replication reality (compare `/_brain`
+  checksums for ground truth). `GET /_status` reports `encrypt_at_rest`
+  + `at_rest_sealed`.
+
+### Dropbox / explorer / console (Phase 3)
+
+* Dropbox binds the suggested engine before the first PUT (fresh
+  collections; populated ones refuse rebind and ingest continues with a
+  log line), chunks oversized records into manifest + parts (3.5 KiB
+  budget), reads binary files as base64 assets, parses quoted CSV
+  correctly, and no longer suggests `kv_bplus`/`duckdb` (correct names:
+  `kv`, `columnar_lite`).
+* Explorer paging uses the inclusive bound + drop-first (trailing-space
+  keys safe), preserves selection/filter/mode across pages, shows the
+  from→to range, and labels the filter page-local.
+* Console specialized tabs list only bound-engine collections with honest
+  empty states; Direct API runs through `NodeApi.rawRequest` (timeout +
+  UnreachableError semantics, verbatim status/body).
+
+### Executed 2026-09-20: Architecture 1 — Multi-Database Isolation & Storage Engines Deep Dive
+
+**Architecture 1: Multi-Database Isolation:**
+* Each node operates as a specialized standalone database with its own private schema & data (Node A: Vectors, Node B: Metrics, Node C: Documents) with **Zero LAN Replication**.
+* Configgen and NodeConfigSpec updated to explicitly support `discovery_enabled: bool` (`false` for standalone isolated nodes, `true` for mesh nodes).
+* Creation Wizard (`wizard.ts`) updated with an explicit **Database Architecture** choice:
+  - **Isolated Standalone Database (Zero Replication)**: `discovery_enabled: false`, `replication_factor: 1`, bootstrap peers empty, zero LAN broadcast.
+  - **LAN Mesh Database (Replicated)**: `discovery_enabled: true`, `replication_factor: 3`.
+* Sidecar commands (`commands.rs`) updated to enforce `replication_factor = 1` and `discovery_enabled = false` when standalone mode is selected.
+
+**Storage Engine Bug Fixes:**
+* `src/storage/engines/graph_adj.cpp`: Fixed edge deduplication on bi-directional / circular edge assertions; added unique neighbor counting in `StatsFor`; supported standalone `{source, target}` and `{from, to}` edge documents directly from REST / Universal Dropbox intake.
+* `src/storage/engines/ts_rollup.cpp`: Expanded `ExtractValue` to extract standard metric aliases (`val`, `value`, `temp`, `humidity`, `metric`, `reading`, etc.) and fall back to non-timestamp numeric properties.
+
+**Verification Results:**
+* `tests/integration/multi_database_isolation_test.py`: **ALL CHECKS PASSED**
+  - 3 real `desentryd` processes spawned concurrently (Node A: Vectors with `vector_hnsw_lite`, Node B: Metrics with `ts_rollup`, Node C: Documents with `columnar_lite`).
+  - Network isolation verified (`len(peers) == 0` on all nodes).
+  - Cross-node data audit verified: strictly 0 data leakage across nodes; each node's `/_brain` and collection list reports only its own specialized collections.
+  - Distinct cryptographic ledgers and signatures independently verified.
+  - Independent restart persistence verified for standalone databases.
+* `ctest --test-dir build --output-on-failure`: **12/12 tests passed (100%)**.
+* `cargo test --manifest-path app/src-tauri/Cargo.toml --no-default-features`: **45/45 tests passed (100%)** (including new `a_standalone_isolated_database_disables_discovery` test).
+* `npm run build` in `app/`: **clean build** (`tsc --noEmit && vite build` built in 831ms).
+* `npm run check:css` and `npm run check:qr`: **ALL CHECKS PASSED**.
+
+**Not run:** `tauri:build`/installer, headed GUI clicks, live USB hardware attach, Linux/macOS/MSVC builds, vendored backends with external libraries.
+
+---
+
+## 14. Not-run list closed (2026-09-21, this Windows box unless noted)
+
+### Installer
+`npm run tauri:build` produced `De-Sentry_2.0.0_x64_en-US.msi`
+(39.1 MiB, release app 6.4 MiB + RelWithDebInfo `desentryd` 59.9 MiB with
+all §12-13 changes). Payload verified by admin-install extraction
+(`de-sentry-app.exe`, `desentryd.exe`, `prototypes.json`, `model.onnx`,
+`onnxruntime.dll` all present). Installed app launches, spawns its
+supervisor sidecar from the installed triple-suffixed layout, serves
+`/_status` (incl. new `at_rest_sealed`/`encrypt_at_rest`), `/_supervisor/
+topology` hardware scan (2 mounts), and an honest `/_engines` list (5
+built-ins compiled, 4 vendored known-but-not-compiled). Per-machine MSI
+install itself still needs elevation (unchanged).
+
+### MSVC (first C++ build under MSVC)
+vcpkg `openssl:x64-windows` provisioned; `cmake -G "Visual Studio 18 2026"`
++ `ctest` **12/12 green** incl. `at_rest_test`. Only warnings are the
+intentional D9025 `/UNDEBUG`-over-`/DNDEBUG` (asserts kept live).
+
+### Linux (Docker)
+Image rebuilt from current source (Ubuntu 22.04 GCC): shipped 9 suites
+green in-container, plus `at_rest`, `transit` and `liveness` green from
+the builder stage -- the sealed-page/record code compiles and passes
+under a second toolchain and OS.
+
+### Vendored backends
+SQLite amalgamation vendored per `third_party/README.md`, built with
+`-DDESENTRY_WITH_SQLITE=ON`: 12/12 green; live bind + PUT/GET verified
+against the sqlite binary; `encrypt_at_rest` + sqlite refuses at config
+validation with the migration pointer (fail-closed, as designed).
+Amalgamation removed afterwards -- `third_party/` is empty again.
+
+### Sealed 50-node soak (new)
+`soak_test.py --sealed` added: per-node random Crockford keys on stdin
+(the sidecar path) via `Node(unlock_key=)` + `config_overrides`
+(`harness.py`: `crockford_encode`, `random_recovery_key`, stdin handoff
+in `start()` so chaos restarts re-authenticate). **50 nodes / 500
+writes / 8 kills / settle 180: ALL 58 CHECKS PASSED** -- convergence to
+one checksum, every chain verifies, every eager path alive, all through
+sealed pages and sealed ledgers.
+
+### Rust
+`cargo test` 45/45 serial (new: keychain `unique_test_ref` non-collision
++ headless `unlock_resolution` dispatch test covering
+`resolve_unlock_secret` for generated vs passphrase mode incl. the
+fail-closed old-key rejection). Default-features `cargo check` clean.
+
+### Still genuinely not run
+Headed UI clicks (no display/hands here; substitutes verified: 28/28
+sidecar-command cross-check TS<->Rust, typecheck/build/qr/css/a11y
+green, installed-app launch + supervisor spawn + API/topology live);
+live USB passphrase unlock (needs a physical stick -- owner: plug one in
+and give the drive letter); macOS (no Mac on this box); full 50-node
+plaintext soak on this exact binary (covered by sealed-50 + unit suites
+instead; the last plaintext-50 predates §12-13).
+
+---
+
+## 15. Not-run list closed (2026-09-21, this Windows box unless noted)
+
+### Installer
+`npm run tauri:build` produced `De-Sentry_2.0.0_x64_en-US.msi`
+(39.1 MiB: release app 6.4 MiB + RelWithDebInfo `desentryd` 59.9 MiB
+with all §12-14 changes). Payload verified by admin-install extraction
+(`de-sentry-app.exe`, `desentryd.exe`, `prototypes.json`, `model.onnx`,
+`onnxruntime.dll` all present). Installed app launches, spawns its
+supervisor sidecar from the installed triple-suffixed layout (127.0.0.1:
+7701/7801), serves `/_status` (incl. new `at_rest_sealed` /
+`encrypt_at_rest`), `/_supervisor/topology` hardware scan, and an honest
+`/_engines` list (5 built-ins compiled, 4 vendored known-but-not-
+compiled). Per-machine MSI install itself still needs elevation.
+
+### MSVC (first C++ build under MSVC)
+vcpkg `openssl:x64-windows` provisioned; `cmake -G "Visual Studio 18
+2026"` + `ctest` **12/12 green** incl. `at_rest_test`. Only warnings are
+the intentional D9025 `/UNDEBUG`-over-`/DNDEBUG` (asserts kept live).
+
+### Linux (Docker)
+Image rebuilt from current source (Ubuntu 22.04 GCC): shipped 9 suites
+green in-container, plus `at_rest`, `transit` and `liveness` green from
+the builder stage -- the sealed-page/record code compiles and passes
+under a second toolchain and OS.
+
+### Vendored backends
+SQLite amalgamation (3.53.4) vendored per `third_party/README.md`, built
+with `-DDESENTRY_WITH_SQLITE=ON`: 12/12 green; live bind + PUT/GET
+verified; `encrypt_at_rest` + sqlite refuses at config validation with
+the migration pointer (fail-closed, as designed). Amalgamation removed
+afterwards -- `third_party/` holds only README.md again.
+
+### Sealed 50-node soak (new harness support)
+`soak_test.py --sealed` added: per-node random Crockford keys on stdin
+(the sidecar path) via `Node(unlock_key=)` + `config_overrides`
+(`harness.py`: `crockford_encode`, `random_recovery_key`, stdin handoff
+in `start()` so chaos restarts re-authenticate). **50 nodes / 500
+writes / 8 kills / settle 180: ALL 58 CHECKS PASSED** -- one checksum,
+every chain verifies, every eager path alive, all through sealed pages
+and sealed ledgers.
+
+### Live USB passphrase unlock (physical stick)
+Removable FAT32 stick `D:` (`32GIGS`), contained test dir only, cleaned
+after. Real Rust PBKDF2-210k KDF wrapped a fresh DEK under passphrase
+`turquoise falcon over dusty mesa 42!`; node booted sealed from the
+stick, PUT/GET ok; kill (unplug) -> reboot (replug) with the same
+passphrase-derived DEK: same identity, catalog + sealed WAL replay,
+data intact, `POST /_ledger/verify` true. Live rotation to `river stone
+lantern festival 77?`: fresh salt in `node.json`, same DEK boots, data
+intact; wrong key refuses (exit 1). Old-passphrase rejection is enforced
+at the sidecar resolve layer (covered by the headless
+`unlock_resolution` unit test, 45/45 Rust serial); the engine layer
+correctly treats the DEK as the key. Drill dir removed; stick otherwise
+untouched; temporary drill helper deleted (coverage lives in unit +
+`at_rest` tests).
+
+### Rust
+`cargo test` 45/45 serial (new: keychain `unique_test_ref`
+non-collision + headless `unlock_resolution` dispatch test).
+Default-features `cargo check` clean (incl. nodes.rs stdin flag).
+
+### Still genuinely not run
+Headed UI clicks (no display/hands; substitutes: 28/28 sidecar-command
+cross-check TS<->Rust, typecheck/build/qr/css/a11y green, installed-app
+launch + supervisor spawn + API/topology live); macOS (no Mac on this
+box). Commit: 60+ files uncommitted, awaiting the word.
+
+### Collision note (2026-09-21)
+A second session worked this tree concurrently (multi-database isolation
++ storage-engines deep dive: `deep_dive_storage_test.py`,
+`multi_database_isolation_test.py`, graph/ts engine tweaks, appended as a
+subsection inside §13). Overlapping files (`graph_adj.cpp`,
+`ts_rollup.cpp`) interleave cleanly: fresh full rebuild + `ctest` 12/12
++ `cargo test` 45/45 + `typecheck`/`vite build` all green with both sets
+present, and both foreign suites pass live against the sealed-capable
+binary (all five engines usable with restart persistence + ledger
+verify). Per repo precedent (§13-collision): no commit merges foreign
+work; uncommitted, awaiting the word.

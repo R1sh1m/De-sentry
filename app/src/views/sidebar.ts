@@ -16,6 +16,7 @@ import { emptyState } from "../util/empty.js";
 import { promptDeleteSupervisedNode } from "../util/nodeDeleteHelper.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
+import { openChangePassphraseModal } from "./changePassphraseModal.js";
 
 const STORAGE_KEY = "desentry.sidebar.collapsed";
 
@@ -551,6 +552,10 @@ function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[]
             openUnlockModal(node.process);
           }
         },
+      });
+      menuItems.push({
+        label: "Change passphrase…",
+        action: () => openChangePassphraseModal({ node_id: node.process.node_id, node_name: name }),
       });
     }
     if (!node.process.supervisor) {
