@@ -2,7 +2,6 @@
 #include <fstream>
 #include <sstream>
 
-#include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/supervisor/supervisor.h"
 
