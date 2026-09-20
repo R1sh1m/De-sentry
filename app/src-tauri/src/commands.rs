@@ -938,6 +938,9 @@ mod tests {
         let config_path = state.data_root.join("node.json");
         std::fs::write(&config_path, "{}").expect("temp config writes");
         assert!(config_path.exists());
+        let reserved_path = state.data_root.join(".reserved");
+        std::fs::write(&reserved_path, "{}").expect("temp reserved writes");
+        assert!(reserved_path.exists());
 
         let stored = if crate::keychain::available() {
             let reference = crate::keychain::reference_for("rollback-test");
@@ -951,10 +954,18 @@ mod tests {
         };
 
         assert_eq!(state.reserved_count(), 2, "one pair is reserved before rollback");
-        rollback_create(&state, allocation, None, stored.as_deref(), Some(&config_path));
+        rollback_create(
+            &state,
+            allocation,
+            None,
+            stored.as_deref(),
+            Some(&config_path),
+            Some(&reserved_path),
+        );
 
         assert_eq!(state.reserved_count(), 0, "rollback hands the reservation back");
         assert!(!config_path.exists(), "half-written node.json is removed");
+        assert!(!reserved_path.exists(), "half-written reservation file is removed");
         if let Some(reference) = stored {
             assert!(
                 matches!(crate::keychain::load(&reference), Err(crate::keychain::KeychainError::Missing(_))),
