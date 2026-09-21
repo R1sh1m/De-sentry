@@ -83,7 +83,7 @@ def main() -> int:
         client_a = node_a.client
         client_b = node_b.client
         client_c = node_c.client
-        sup_client = sup.client if sup else None
+        sup_client = sup.client
 
         # --------------------------------------------------------------------
         # 1. NODE USABILITY
@@ -102,7 +102,7 @@ def main() -> int:
             assert_true(len(brain.get("ledger_tip", {}).get("entry_hash", "")) == 64, f"Node {n.name} ledger tip hash exists")
 
         # Verify supervisor state
-        if sup_client:
+        if sup_client is not None:
             sup_st = sup_client.status()
             assert_true(sup_st.get("supervisor") is True, "Supervisor node correctly identifies as supervisor: true")
             topo = http_get(sup_client, "/_supervisor/topology")
@@ -326,13 +326,13 @@ def main() -> int:
         # 9a. CSV / Tabular Ingest Simulation
         # In dropbox: CSV header + rows -> suggestedEngine: columnar_lite
         http_put(client_a, "/_collection/csv_import/engine", {"engine": "columnar_lite"})
-        csv_rows = [
-            {"key": "csv_row_1", "doc": {"name": "Alice", "score": 95.5, "dept": "HR"}},
-            {"key": "csv_row_2", "doc": {"name": "Bob", "score": 88.0, "dept": "ENG"}},
-            {"key": "csv_row_3", "doc": {"name": "Charlie", "score": 92.3, "dept": "ENG"}},
+        csv_rows: list[tuple[str, dict[str, Any]]] = [
+            ("csv_row_1", {"name": "Alice", "score": 95.5, "dept": "HR"}),
+            ("csv_row_2", {"name": "Bob", "score": 88.0, "dept": "ENG"}),
+            ("csv_row_3", {"name": "Charlie", "score": 92.3, "dept": "ENG"}),
         ]
-        for r in csv_rows:
-            client_a.put("csv_import", r["key"], r["doc"])
+        for key, doc in csv_rows:
+            client_a.put("csv_import", key, doc)
         read_csv = client_a.get("csv_import", "csv_row_2")
         assert_true(read_csv.get("name") == "Bob" and read_csv.get("score") == 88.0, "CSV import via columnar_lite works")
 
@@ -374,7 +374,7 @@ def main() -> int:
         # --------------------------------------------------------------------
         log("10. Testing Crash/Restart Persistence Across All Engines...")
         # Checkpoint cleanly
-        if sup_client:
+        if sup_client is not None:
             try:
                 http_post(sup_client, "/_checkpoint", {})
             except Exception as e:
