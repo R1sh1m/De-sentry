@@ -1,6 +1,8 @@
 #include "desentry/engine/node_engine.h"
 
 #include <algorithm>
+#include <cstring>
+#include <fstream>
 
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
@@ -9,6 +11,7 @@
 #include "desentry/security/at_rest.h"
 #include "desentry/security/crypto.h"
 #include "desentry/storage/document_codec.h"
+#include "desentry/storage/engines/ts_rollup.h"
 
 namespace desentry {
 
@@ -30,6 +33,7 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
   if (!id_or.ok()) return id_or.status();
   engine->identity_ = std::make_unique<NodeIdentity>(id_or.value());
   engine->clock_ = std::make_unique<HybridLogicalClock>(engine->identity_->node_id());
+  engine->LoadClockState();
 
   StorageEngine::Options storage_opts;
   storage_opts.data_dir = options.data_dir;
@@ -85,6 +89,58 @@ NodeEngine::~NodeEngine() {
   // Wake any in-flight long poll before the ledger goes away underneath it.
   if (changes_) changes_->Stop();
   if (storage_) storage_->SetTipObserver(nullptr);
+}
+
+void NodeEngine::LoadClockState() {
+  // 20-byte LE file: u64 physical_ms + u32 logical + u64 tag counter.
+  // Missing/short file = first boot or pre-tag-persistence: the fields
+  // present still apply (clock starts at 0, WAL stamps still order). Accepts
+  // both the 12-byte (HLC only) and 20-byte shapes.
+  const std::string path = options_.data_dir + "/hlc_clock";
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) return;
+  char buf[20];
+  in.read(buf, 20);
+  const std::streamsize got = in.gcount();
+  if (got < 12) return;
+  uint64_t phys = 0;
+  uint32_t log = 0;
+  std::memcpy(&phys, buf, 8);
+  std::memcpy(&log, buf + 8, 4);
+  clock_->Restore(phys, log);
+  hlc_saved_physical_ = phys;
+  if (got >= 20) {
+    uint64_t tags = 0;
+    std::memcpy(&tags, buf + 12, 8);
+    CrdtValue::RestoreTagCounter(tags);
+  }
+}
+
+void NodeEngine::PersistClockIfDue() {
+  // Checkpoint at most ~1/s of wall advancement or every 512 ticks: crash
+  // recovery replays at most a second of HLC space, never reused stamps.
+  const uint64_t phys = clock_->last_physical();
+  if (phys < hlc_saved_physical_ + 1000 && (++hlc_save_counter_ % 512) != 0) return;
+  const uint32_t log = clock_->last_logical();
+  const uint64_t tags = CrdtValue::TagCounter();
+  const std::string path = options_.data_dir + "/hlc_clock";
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    char buf[20];
+    std::memcpy(buf, &phys, 8);
+    std::memcpy(buf + 8, &log, 4);
+    std::memcpy(buf + 12, &tags, 8);
+    out.write(buf, 20);
+    out.flush();
+    if (!out.good()) return;
+  }
+  std::string sync_err;
+  SyncFileByPath(tmp, &sync_err);
+  if (std::rename(tmp.c_str(), path.c_str()) != 0) return;
+  SyncDirForFile(path, &sync_err);
+  hlc_saved_physical_ = phys;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +240,8 @@ Status NodeEngine::PutDocument(const std::string& collection, const std::string&
     if (on_local_write_) on_local_write_(collection, key, encoded_doc);
   }
 
+  NoteDigest(collection, key, encoded_doc);
+  PersistClockIfDue();
   return Status::OK();
 }
 
@@ -244,6 +302,12 @@ Status NodeEngine::MergeRemote(const std::string& collection, const std::string&
   if (!CanWrite(collection, who)) {
     return Status::AuthError("node " + who.node_id + " may not write to collection " + collection);
   }
+  // H-1 note: unknown collections merge under the local default here; the
+  // confidentiality story is carried by replicated kAcl records (see
+  // SetCollectionAcl/ApplyRemoteAcl), not by refusing merges -- refusing
+  // them broke convergence outright (every multi-writer collection must be
+  // pre-provisioned on every node). A merge never *serves* bytes; serving
+  // stays gated on the effective ACL.
 
   CrdtValue remote;
   try {
@@ -252,8 +316,12 @@ Status NodeEngine::MergeRemote(const std::string& collection, const std::string&
     return Status::Corruption(std::string("undecodable remote document: ") + e.what());
   }
   // Causality: our next Now() is guaranteed to be after this write, even if
-  // the peer's wall clock is ahead of ours.
-  clock_->Observe(remote.MaxTimestamp());
+  // the peer's wall clock is ahead of ours. A remote stamp beyond the skew
+  // bound is rejected outright (C-5): merging it would pin the clock and let
+  // one write become permanently unoverwritable.
+  if (!clock_->Observe(remote.MaxTimestamp())) {
+    return Status::InvalidArgument("remote timestamp too far in the future; rejected");
+  }
 
   auto existing_or = storage_->GetRaw(collection, key);
   CrdtValue merged;
@@ -270,19 +338,60 @@ Status NodeEngine::MergeRemote(const std::string& collection, const std::string&
   // received it from. v2 does relay -- but in NetworkManager, where the
   // message-id dedup cache and the TTL live, so a relay is bounded and
   // loop-free by construction rather than by luck.
-  return WriteThrough(collection, key, EncodeDocument(merged), /*notify_hook=*/false);
+  const std::string merged_bytes = EncodeDocument(merged);
+  Status wst = WriteThrough(collection, key, merged_bytes, /*notify_hook=*/false);
+  if (wst.ok()) {
+    NoteDigest(collection, key, merged_bytes);
+    PersistClockIfDue();
+  }
+  return wst;
+}
+
+std::string NodeEngine::DigestCacheKey(const std::string& collection, const std::string& key) {
+  std::string k = collection;
+  k.push_back('\0');
+  k += key;
+  return k;
+}
+
+void NodeEngine::NoteDigest(const std::string& collection, const std::string& key,
+                            const std::string& encoded_doc) {
+  DigestEntryOut entry;
+  entry.key = key;
+  try {
+    entry.top_ts = DecodeDocument(encoded_doc).MaxTimestamp();
+  } catch (const std::exception&) {
+    return;  // never cache a failure; the digest path recomputes
+  }
+  // Eight bytes is plenty: this only has to distinguish two copies of the
+  // same key on two peers, and a collision costs a skipped exchange that
+  // the next write repairs -- not a wrong merge.
+  entry.content_hash = crypto::Sha256(encoded_doc).substr(0, 8);
+  std::lock_guard<std::mutex> lock(digest_mu_);
+  digest_cache_[DigestCacheKey(collection, key)] = std::move(entry);
 }
 
 std::vector<DigestEntryOut> NodeEngine::LocalDigest(const std::string& collection) {
   std::vector<DigestEntryOut> out;
   auto raw = storage_->Scan(collection, "", 0);
   out.reserve(raw.size());
+  std::lock_guard<std::mutex> lock(digest_mu_);
   for (auto& [key, bytes] : raw) {
-    // Eight bytes is plenty: this only has to distinguish two copies of the
-    // same key on two peers, and a collision costs a skipped exchange that
-    // the next write repairs -- not a wrong merge.
-    out.push_back(DigestEntryOut{key, DecodeDocument(bytes).MaxTimestamp(),
-                                 crypto::Sha256(bytes).substr(0, 8)});
+    auto it = digest_cache_.find(DigestCacheKey(collection, key));
+    if (it != digest_cache_.end()) {
+      out.push_back(it->second);
+      continue;
+    }
+    DigestEntryOut entry;
+    entry.key = key;
+    try {
+      entry.top_ts = DecodeDocument(bytes).MaxTimestamp();
+    } catch (const std::exception&) {
+      continue;  // undecodable row: digest skips it (merge path rejects too)
+    }
+    entry.content_hash = crypto::Sha256(bytes).substr(0, 8);
+    digest_cache_[DigestCacheKey(collection, key)] = entry;
+    out.push_back(std::move(entry));
   }
   return out;
 }
@@ -385,6 +494,11 @@ Status NodeEngine::HoldForOfflineOwner(const std::string& owner_node, const std:
     envelope.chunk_index = i;
     envelope.chunk_total = chunk_total;
     envelope.message_id = message_id;
+    // Content attestation (C-3 fix): hash this chunk's bytes and sign the
+    // domain-separated attestation so the owner can verify served bytes.
+    envelope.content_hash = crypto::Sha256(envelope.encoded_doc);
+    envelope.holder_sig = identity_->Sign(
+        TransitAttestMessage(envelope.key_hash, envelope.content_hash, i, chunk_total));
 
     // Ledger first, bytes second. If the process dies between the two, the
     // intent names bytes that are missing -- which a returning owner discovers
@@ -432,9 +546,10 @@ Status NodeEngine::ApplyClaimedTransit(const std::string& collection, const std:
   // every intent permanently "unclaimed" as far as the checkpoint gate can
   // tell.
   auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kTransitClaimed, identity_->node_id(), key,
-                                          LedgerKeyHash(collection, key), ts);
+                                           LedgerKeyHash(collection, key), ts);
   if (!lsn_or.ok()) return lsn_or.status();
   DSN_LOG_INFO("transit", "claimed held document " << collection << "/" << key);
+  PersistClockIfDue();
   return Status::OK();
 }
 
@@ -470,12 +585,19 @@ Status NodeEngine::RecordRemoteClaim(const std::string& owner_node, const std::s
 // ---------------------------------------------------------------------------
 
 std::string NodeEngine::LedgerTipMessage(lsn_t entry_id, const std::string& entry_hash) {
-  return std::to_string(entry_id) + ":" + entry_hash;
+  // Domain-separated (C-6/M-7 fix): the old "<id>:<hash>" string was also a
+  // plausible signature message in other contexts. Binds node identity via
+  // the signer, not the string, so VerifyPeerTip still checks DeriveNodeId.
+  return "DSN-TIP-v1:" + std::to_string(entry_id) + ":" + entry_hash;
 }
 
 std::string NodeEngine::SignLedgerTip() const {
   const WriteAheadLog::LedgerTip tip = storage_->LedgerTip();
-  return identity_->Sign(LedgerTipMessage(tip.entry_id, tip.entry_hash));
+  return SignTipFor(tip.entry_id, tip.entry_hash);
+}
+
+std::string NodeEngine::SignTipFor(lsn_t entry_id, const std::string& entry_hash) const {
+  return identity_->Sign(LedgerTipMessage(entry_id, entry_hash));
 }
 
 bool NodeEngine::VerifyPeerTip(const std::string& node_id, lsn_t entry_id,
@@ -542,6 +664,150 @@ std::vector<NodeEngine::TransitIntent> NodeEngine::TransitIntentsForSelf() {
     intents.push_back(std::move(intent));
   }
   return intents;
+}
+
+// ---------------------------------------------------------------------------
+// Replicated ACLs (H-1)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Canonical ACL JSON shared by the attestation signer and verifier: field
+// order and reader order are fixed so both sides sign the same bytes.
+std::string CanonicalAclJson(const CollectionAcl& acl, uint64_t updated_ms) {
+  std::vector<std::string> readers = acl.readers;
+  std::sort(readers.begin(), readers.end());
+  JsonValue::Object o;
+  o.emplace_back("owner_node", JsonValue(acl.owner_node));
+  o.emplace_back("private", JsonValue(acl.is_private));
+  JsonValue::Array r;
+  for (const std::string& reader : readers) r.emplace_back(JsonValue(reader));
+  o.emplace_back("readers", JsonValue(std::move(r)));
+  o.emplace_back("parent", JsonValue(acl.parent));
+  o.emplace_back("updated_ms", JsonValue(static_cast<int64_t>(updated_ms)));
+  return JsonValue(std::move(o)).Dump();
+}
+
+std::string AclAttestMessage(const std::string& collection, const std::string& canonical_acl) {
+  return "DSN-ACL-v1" + collection + '\0' + canonical_acl;
+}
+
+}  // namespace
+
+Status NodeEngine::SetCollectionAcl(const std::string& collection, const CollectionAcl& acl) {
+  Status ens_st = storage_->EnsureCollection(collection);
+  if (!ens_st.ok()) return ens_st;
+  const uint64_t ms = static_cast<uint64_t>(NowMs());
+  Status acl_st = storage_->catalog().SetAclAt(collection, acl, ms);
+  if (!acl_st.ok()) return acl_st;
+  // Attest as the owner so peers can verify (origin == owner rule). The
+  // ledger's own per-entry signature covers the envelope too; this inner
+  // attestation is what a peer verifies without the full entry content.
+  const std::string canonical = CanonicalAclJson(acl, ms);
+  JsonValue::Object env;
+  env.emplace_back("acl", JsonValue::Parse(canonical));
+  env.emplace_back("updated_ms", JsonValue(static_cast<int64_t>(ms)));
+  env.emplace_back("sig", JsonValue(identity_->Sign(AclAttestMessage(collection, canonical))));
+  const HLCTimestamp ts = clock_->Now();
+  auto lsn_or = storage_->AppendLedgerOp(WalRecordType::kAcl, collection, "",
+                                         JsonValue(std::move(env)).Dump(), ts);
+  if (!lsn_or.ok()) return lsn_or.status();
+  PersistClockIfDue();
+  return Status::OK();
+}
+
+Status NodeEngine::ApplyRemoteAcl(const std::string& origin_node_id, const std::string& collection,
+                                  const std::string& envelope_json, bool check_sig) {
+  JsonValue env;
+  try {
+    env = JsonValue::Parse(envelope_json);
+  } catch (const std::exception& e) {
+    return Status::Corruption(std::string("malformed kAcl envelope: ") + e.what());
+  }
+  if (!env.is_object()) return Status::Corruption("malformed kAcl envelope");
+  const JsonValue* acl_v = env.Find("acl");
+  const JsonValue* ms_v = env.Find("updated_ms");
+  const JsonValue* sig_v = env.Find("sig");
+  if (acl_v == nullptr || !acl_v->is_object() || ms_v == nullptr || !ms_v->is_number() ||
+      sig_v == nullptr || !sig_v->is_string()) {
+    return Status::Corruption("malformed kAcl envelope");
+  }
+  CollectionAcl acl;
+  const JsonValue* owner = acl_v->Find("owner_node");
+  if (owner && owner->is_string()) acl.owner_node = owner->AsString();
+  const JsonValue* priv = acl_v->Find("private");
+  if (priv && priv->is_bool()) acl.is_private = priv->AsBool();
+  const JsonValue* readers = acl_v->Find("readers");
+  if (readers && readers->is_array()) {
+    for (const JsonValue& r : readers->AsArray()) {
+      if (r.is_string()) acl.readers.push_back(r.AsString());
+    }
+  }
+  const JsonValue* parent = acl_v->Find("parent");
+  if (parent && parent->is_string()) acl.parent = parent->AsString();
+  const uint64_t ms = static_cast<uint64_t>(ms_v->AsInt());
+  if (check_sig) {
+    // Self-attestation only: the origin must BE the claimed owner, with a
+    // valid signature under its handshake-proven key. A peer cannot set,
+    // clear, or override another node's ACL (M-style forgery rejected).
+    if (acl.owner_node.empty() || acl.owner_node != origin_node_id) {
+      return Status::AuthError("kAcl origin is not the claimed owner; rejected");
+    }
+    const uint64_t wall = static_cast<uint64_t>(NowMs());
+    if (ms > wall + HybridLogicalClock::kMaxFutureSkewMs) {
+      return Status::InvalidArgument("kAcl version too far in the future; rejected");
+    }
+    std::string public_key;
+    if (origin_node_id == identity_->node_id()) {
+      public_key = identity_->public_key();
+    } else {
+      if (!resolve_public_key_) return Status::AuthError("no key resolver; cannot verify kAcl");
+      public_key = resolve_public_key_(origin_node_id);
+    }
+    if (public_key.empty() || NodeIdentity::DeriveNodeId(public_key) != origin_node_id) {
+      return Status::AuthError("kAcl signer key unknown or mismatched; rejected");
+    }
+    const std::string canonical = CanonicalAclJson(acl, ms);
+    if (!NodeIdentity::Verify(public_key, AclAttestMessage(collection, canonical), sig_v->AsString())) {
+      return Status::AuthError("kAcl attestation does not verify; rejected");
+    }
+  }
+  Status ens_st = storage_->EnsureCollection(collection);
+  if (!ens_st.ok()) return ens_st;
+  Status set_st = storage_->catalog().SetAclAt(collection, acl, ms);
+  // A stale version racing a newer local ACL is not an error worth
+  // propagating: last-writer-wins already picked the newer one.
+  if (!set_st.ok() && set_st.code() == StatusCode::kInvalidArgument) return Status::OK();
+  return set_st;
+}
+
+// ---------------------------------------------------------------------------
+// Retention (explicit, operator-driven)
+// ---------------------------------------------------------------------------
+
+StatusOr<size_t> NodeEngine::RunRetention(const std::string& collection) {
+  CollectionMeta meta;
+  if (!storage_->catalog().GetCopy(collection, &meta)) {
+    return Status::NotFound("no such collection: " + collection);
+  }
+  if (meta.retention_days == 0) {
+    return Status::InvalidArgument("collection '" + collection +
+                                   "' has no retention_days configured (PUT placement first)");
+  }
+  if (storage_->router().EngineNameFor(collection) != "ts_rollup") {
+    return Status::InvalidArgument("retention is only honored by the ts_rollup engine; '" +
+                                   collection + "' is on " +
+                                   storage_->router().EngineNameFor(collection));
+  }
+  EngineBackend* backend = storage_->router().BackendFor(collection);
+  auto* ts = dynamic_cast<TsRollupBackend*>(backend);
+  if (ts == nullptr) return Status::Internal("ts_rollup backend unavailable for '" + collection + "'");
+  auto dropped_or = ts->ApplyRetention(collection, meta.retention_days);
+  if (!dropped_or.ok()) return dropped_or.status();
+  DSN_LOG_INFO("retention", "collection '" << collection << "' dropped " << dropped_or.value()
+                                           << " chunk(s) older than " << meta.retention_days
+                                           << " day(s)");
+  return dropped_or.value();
 }
 
 // ---------------------------------------------------------------------------

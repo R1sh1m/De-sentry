@@ -40,6 +40,12 @@ namespace desentry {
 // moves, so a spoofed advertisement can at worst waste a connection
 // attempt -- and a spoofed `is_supervisor` can only cause a node to be
 // *excluded* from placement, never included.
+//
+// Transport scope (M-11/M-12): discovery is IPv4 broadcast only (there is
+// no broadcast equivalent on IPv6; use bootstrap_peers there). TCP and the
+// loopback API are dual-stack. With a cluster secret configured, beacons
+// carry an HMAC tag and untagged/mismatched beacons are ignored; the
+// node_id/key/hostname fields themselves stay plaintext metadata.
 struct UdpAdvertisement {
   uint16_t api_port = 0;
   std::string hostname;
@@ -56,6 +62,9 @@ class UdpDiscovery {
   ~UdpDiscovery();
 
   Status Start(PeerTable* peer_table);
+  // Cluster-membership secret (empty = open discovery). Beacons carry an
+  // HMAC tag; mismatched beacons are ignored when a secret is set.
+  void SetClusterSecret(std::string secret) { cluster_secret_ = std::move(secret); }
   void Stop();
 
   // Sends one advertisement immediately, outside the periodic loop. The app
@@ -74,6 +83,7 @@ class UdpDiscovery {
   uint16_t discovery_port_;
   uint32_t interval_ms_;
   UdpAdvertisement advert_;
+  std::string cluster_secret_;
   PeerTable* peer_table_ = nullptr;
 
   std::atomic<bool> running_{false};

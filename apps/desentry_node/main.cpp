@@ -245,6 +245,11 @@ int main(int argc, char** argv) {
   }
 
   desentry::HttpServer api(config.api_bind_addr, config.api_port);
+  // Per-boot bearer token (C-8): the desktop sidecar generates one boot and
+  // passes it here; engine-only/dev use stays unauthenticated as before.
+  if (const char* token = std::getenv("DESENTRY_API_TOKEN")) {
+    if (*token != '\0') api.SetBearerToken(token);
+  }
   desentry::RegisterRoutes(&api, engine.get(), &network);
   if (supervisor) {
     desentry::RegisterSupervisorRoutes(&api, supervisor.get(), engine.get(), &network);

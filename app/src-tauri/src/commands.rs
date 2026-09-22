@@ -68,6 +68,37 @@ pub fn app_info(app: AppHandle, state: State<'_, std::sync::Arc<AppState>>) -> R
 
 // -- process supervision -----------------------------------------------------
 
+/// The per-boot API bearer token (C-8): the webview attaches it as
+/// `Authorization: Bearer` on every direct desentryd call. Empty when the
+/// OS RNG was unavailable, in which case nodes run unauthenticated as before.
+#[tauri::command]
+pub fn api_token() -> Reply<String> {
+    Ok(std::env::var("DESENTRY_API_TOKEN").unwrap_or_default())
+}
+
+/// Cluster-membership posture for pairing UX: whether the mesh is closed,
+/// plus a fingerprint (first 8 hex of SHA-256 of the secret) so two machines
+/// can confirm they will join the SAME mesh. The secret itself never leaves.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MembershipStatus {
+    pub closed: bool,
+    pub fingerprint: String,
+}
+
+#[tauri::command]
+pub fn membership_status() -> Reply<MembershipStatus> {
+    let secret = std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Ok(MembershipStatus { closed: false, fingerprint: String::new() });
+    }
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let fingerprint: String = digest[..4].iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(MembershipStatus { closed: true, fingerprint })
+}
+
 #[tauri::command]
 pub fn list_nodes(state: State<'_, std::sync::Arc<AppState>>) -> Reply<Vec<SupervisedNode>> {
     Ok(state.views())
@@ -266,7 +297,11 @@ fn rewrite_ports(config_path: &Path, allocation: &PortAllocation) -> Reply<()> {
         object.insert("discovery_port".into(), allocation.discovery_port.into());
     }
     let body = serde_json::to_string_pretty(&value).map_err(fail)?;
-    std::fs::write(config_path, body + "\n").map_err(fail)
+    // Atomic rewrite (#7 fix): a crash between truncate and write must not
+    // leave a half-written node.json that a later scan adopts as a node.
+    let tmp = config_path.with_extension("json.tmp");
+    std::fs::write(&tmp, body + "\n").map_err(fail)?;
+    std::fs::rename(&tmp, config_path).map_err(fail)
 }
 
 // -- creation ----------------------------------------------------------------
@@ -451,11 +486,23 @@ pub fn create_node(
         dek_wrapped_hex,
         dek_tag_hex,
     };
+    // Whether the data directory predates this attempt: rollback removes a
+    // directory only when this attempt created it (#7 ghost-dir fix).
+    let dir_preexisted = data_dir.exists();
     // If upfront space reservation was requested, allocate storage.reserved now.
     let reserved_path = if request.preallocate && request.quota_mb > 0 {
         let path = data_dir.join("storage.reserved");
         if let Err(error) = preallocate_reservation_file(&path, request.quota_mb * 1024 * 1024) {
-            state.release_ports(allocation);
+            rollback_create(
+                &state,
+                allocation,
+                None,
+                None,
+                None,
+                None,
+                &data_dir,
+                dir_preexisted,
+            );
             return Err(format!("could not pre-allocate storage reservation file: {error}"));
         }
         Some(path)
@@ -473,7 +520,16 @@ pub fn create_node(
     let config_path = match config.write() {
         Ok(path) => path,
         Err(error) => {
-            rollback_create(&state, allocation, None, None, None, reserved_path.as_deref());
+            rollback_create(
+                &state,
+                allocation,
+                None,
+                None,
+                None,
+                reserved_path.as_deref(),
+                &data_dir,
+                dir_preexisted,
+            );
             return Err(format!("could not write {}: {error}", data_dir.join("node.json").display()));
         }
     };
@@ -494,7 +550,16 @@ pub fn create_node(
     let node = match state.start_node(spec) {
         Ok(node) => node,
         Err(error) => {
-            rollback_create(&state, allocation, None, None, Some(&config_path), reserved_path.as_deref());
+            rollback_create(
+                &state,
+                allocation,
+                None,
+                None,
+                Some(&config_path),
+                reserved_path.as_deref(),
+                &data_dir,
+                dir_preexisted,
+            );
             return Err(fail(error));
         }
     };
@@ -516,7 +581,16 @@ pub fn create_node(
             keychain_ref = keychain::reference_for(&node.node_id);
             if let Err(error) = keychain::store(&keychain_ref, key) {
                 let message = fail(error);
-                rollback_create(&state, allocation, Some(&node.node_id), None, Some(&config_path), reserved_path.as_deref());
+                rollback_create(
+                    &state,
+                    allocation,
+                    Some(&node.node_id),
+                    None,
+                    Some(&config_path),
+                    reserved_path.as_deref(),
+                    &data_dir,
+                    dir_preexisted,
+                );
                 return Err(message);
             }
             let mut updated = config.clone();
@@ -530,6 +604,8 @@ pub fn create_node(
                     Some(keychain_ref.as_str()),
                     Some(&config_path),
                     reserved_path.as_deref(),
+                    &data_dir,
+                    dir_preexisted,
                 );
                 return Err(message);
             }
@@ -660,10 +736,16 @@ pub fn sync_storage_reservation(data_dir: String, used_bytes: u64, quota_mb: u64
 /// stored, and removes the node.json this attempt wrote so a later directory
 /// scan does not adopt a half-created node.
 ///
-/// Only artifacts named here are touched: the data directory itself is left
-/// alone (the user may have pointed creation at a directory that already held
-/// other files), as is any key the window already held. Cleanup failures are
-/// logged and ignored -- the caller reports the original error.
+/// Only artifacts named here are touched, as is any key the window already
+/// held. Cleanup failures are logged and ignored -- the caller reports the
+/// original error.
+///
+/// Ghost-directory rule (#7 fix): files this attempt created (node.json,
+/// storage.reserved, manifest.json) are always removed. The data directory
+/// itself is removed only when it did not exist before this attempt AND is
+/// empty afterwards -- a user-chosen directory that already held files is
+/// never deleted, but a directory we created for a failed attempt does not
+/// linger as a ghost.
 fn rollback_create(
     state: &AppState,
     allocation: PortAllocation,
@@ -671,6 +753,8 @@ fn rollback_create(
     keychain_ref: Option<&str>,
     config_path: Option<&Path>,
     reserved_path: Option<&Path>,
+    data_dir: &Path,
+    dir_preexisted: bool,
 ) {
     if let Some(id) = node_id {
         // Stops the child, releases its ports, and drops its pending key.
@@ -692,6 +776,15 @@ fn rollback_create(
     }
     if let Some(path) = reserved_path {
         let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_file(data_dir.join("manifest.json"));
+    if !dir_preexisted {
+        // Only an empty directory we created: remove_dir fails on non-empty,
+        // which is exactly the guard for engine files a started child wrote
+        // or user files that appeared concurrently.
+        if let Err(error) = std::fs::remove_dir(data_dir) {
+            log::warn!("rollback: could not remove new data dir {}: {error}", data_dir.display());
+        }
     }
 }
 
@@ -1258,6 +1351,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn rollback_releases_ports_and_cleans_keychain_and_config() {
         let dir = std::env::temp_dir().join(format!("desentry-rollback-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -1294,6 +1388,8 @@ mod tests {
             stored.as_deref(),
             Some(&config_path),
             Some(&reserved_path),
+            &state.data_root,
+            true, // data_root predates the attempt: never delete it here
         );
 
         assert_eq!(state.reserved_count(), 0, "rollback hands the reservation back");

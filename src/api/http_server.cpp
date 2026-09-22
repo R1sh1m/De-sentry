@@ -139,22 +139,67 @@ bool ReadHttpRequest(dsn_socket_t fd, HttpRequest* req) {
   return true;
 }
 
-void WriteHttpResponse(dsn_socket_t fd, const HttpResponse& resp) {
+namespace {
+
+// Origins the Tauri webview actually uses. Only these are ever echoed back;
+// everything else gets no ACAO header, so a random web page cannot read the
+// loopback API even when it can reach it (C-8 fix). The localhost:5273
+// entries are the vite dev server (tauri.conf devUrl): without them
+// `npm run tauri:dev` cannot call the API at all. They are dev-only origins
+// in the sense that only a process serving that exact port can present
+// them -- and the bearer token is still required for every non-OPTIONS
+// call, so an echoed dev origin alone grants nothing.
+bool IsAllowedOrigin(const std::string& origin) {
+  return origin == "tauri://localhost" || origin == "http://tauri.localhost" ||
+         origin == "https://tauri.localhost" || origin == "http://localhost:5273" ||
+         origin == "http://127.0.0.1:5273";
+}
+
+// Constant-time bearer comparison: the token is a secret, and a byte-at-a-
+// time early-out would oracle its prefix through timing.
+bool BearerEquals(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  unsigned diff = 0;
+  for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned>(a[i] ^ b[i]);
+  return diff == 0;
+}
+
+// Host header must name loopback (DNS-rebinding defense). Accepts
+// 127.0.0.1, localhost and ::1 with optional :port, case-insensitive.
+// Absent header (HTTP/1.0, some curl uses) is allowed -- the bearer token
+// is the real gate when configured.
+bool HostIsLoopback(const std::string& host) {
+  std::string h = host;
+  auto colon = h.rfind(':');
+  // Strip :port, but not the colons inside [::1].
+  if (!h.empty() && h.front() != '[' && colon != std::string::npos) h = h.substr(0, colon);
+  if (h == "[::1]") h = "::1";
+  std::transform(h.begin(), h.end(), h.begin(), [](unsigned char c) { return std::tolower(c); });
+  return h.empty() || h == "127.0.0.1" || h == "localhost" || h == "::1";
+}
+
+}  // namespace
+
+void WriteHttpResponse(dsn_socket_t fd, const HttpResponse& resp, const std::string& origin_echo,
+                       bool strict_cors) {
   std::ostringstream out;
   out << "HTTP/1.1 " << resp.status << " " << StatusText(resp.status) << "\r\n";
   out << "Content-Type: " << resp.content_type << "\r\n";
   out << "Content-Length: " << resp.body.size() << "\r\n";
   out << "Connection: close\r\n";
   out << "Server: de-sentry\r\n";
-  // This API is loopback-only by default (config/node.example.json binds
-  // 127.0.0.1) and carries no session/cookie auth to leak, so a permissive
-  // CORS header is safe and is what lets a plain static HTML page (e.g.
-  // tools/dashboard.html, opened directly as a file:// page, or a browser
-  // extension/agent UI on another origin) call it straight from the
-  // browser without standing up a proxy.
-  out << "Access-Control-Allow-Origin: *\r\n";
+  // Strict mode (bearer configured, i.e. app-launched): echo only an
+  // allowlisted webview origin. Dev mode (no bearer): preserve the old
+  // wildcard so curl/file:// dashboard flows keep working -- with a startup
+  // warning that this is not a security boundary.
+  if (!origin_echo.empty()) {
+    out << "Access-Control-Allow-Origin: " << origin_echo << "\r\n";
+    out << "Vary: Origin\r\n";
+  } else if (!strict_cors) {
+    out << "Access-Control-Allow-Origin: *\r\n";
+  }
   out << "Access-Control-Allow-Methods: GET, PUT, POST, DELETE, OPTIONS\r\n";
-  out << "Access-Control-Allow-Headers: Content-Type\r\n";
+  out << "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
   out << "\r\n";
   out << resp.body;
   std::string s = out.str();
@@ -176,21 +221,17 @@ void HttpServer::AddRoute(const std::string& method, const std::string& pattern,
 
 bool HttpServer::Start() {
   NetInit();
-  dsn_socket_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  // Dual-stack listen (M-11 fix): same rules as the P2P transport --
+  // 127.0.0.1/0.0.0.0 stay IPv4; "::"/"::1" bind AF_INET6 dual-stack.
+  sockaddr_storage addr{};
+  dsn_socklen_t addr_len = 0;
+  if (!ParseBindAddr(bind_addr_, port_, &addr, &addr_len)) return false;
+  dsn_socket_t fd = ::socket(addr.ss_family, SOCK_STREAM, 0);
   if (!SocketValid(fd)) return false;
   SetSockOptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+  if (addr.ss_family == AF_INET6) TryDualStack(fd);
 
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port_);
-  if (bind_addr_.empty() || bind_addr_ == "0.0.0.0") {
-    addr.sin_addr.s_addr = INADDR_ANY;
-  } else if (::inet_pton(AF_INET, bind_addr_.c_str(), &addr.sin_addr) != 1) {
-    CloseSocket(fd);
-    return false;
-  }
-
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), addr_len) != 0) {
     DSN_LOG_ERROR("http", "bind() failed on " << bind_addr_ << ":" << port_ << ": " << SocketErrorString());
     CloseSocket(fd);
     return false;
@@ -202,6 +243,11 @@ bool HttpServer::Start() {
 
   listen_fd_ = fd;
   running_ = true;
+  if (bearer_token_.empty()) {
+    DSN_LOG_WARN("http", "no API bearer token configured: loopback API accepts unauthenticated "
+                         "requests and CORS is permissive. Set DESENTRY_API_TOKEN (the desktop "
+                         "sidecar always does) before exposing this port beyond loopback.");
+  }
   accept_thread_ = std::thread(&HttpServer::AcceptLoop, this);
   DSN_LOG_INFO("http", "API listening on http://" << bind_addr_ << ":" << port_);
   return true;
@@ -209,7 +255,7 @@ bool HttpServer::Start() {
 
 void HttpServer::AcceptLoop() {
   while (running_) {
-    sockaddr_in peer{};
+    sockaddr_storage peer{};
     dsn_socklen_t len = sizeof(peer);
     dsn_socket_t fd = ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &len);
     if (!SocketValid(fd)) {
@@ -224,14 +270,39 @@ void HttpServer::HandleConnection(dsn_socket_t fd) {
   HttpRequest req;
   if (ReadHttpRequest(fd, &req)) {
     HttpResponse resp = Dispatch(&req);
-    WriteHttpResponse(fd, resp);
+    std::string origin;
+    auto oit = req.headers.find("origin");
+    if (oit != req.headers.end() && IsAllowedOrigin(oit->second)) origin = oit->second;
+    WriteHttpResponse(fd, resp, origin, !bearer_token_.empty());
   } else {
-    WriteHttpResponse(fd, HttpResponse::Json(400, R"({"error":"malformed request"})"));
+    WriteHttpResponse(fd, HttpResponse::Json(400, R"({"error":"malformed request"})"), "", false);
   }
   CloseSocket(fd);
 }
 
 HttpResponse HttpServer::Dispatch(HttpRequest* req) {
+  // Host validation (DNS-rebinding defense, C-8) applies when loopback-bound:
+  // that is the case a browser can reach but must not address by another
+  // name. A non-loopback bind (0.0.0.0/"::" in containers, LAN deployments)
+  // is network-reachable by design -- its Host values are legitimately
+  // diverse (service names, container hostnames) -- so the check is skipped
+  // there and the bearer token (when configured) is the gate.
+  if (bind_addr_ == "127.0.0.1" || bind_addr_ == "localhost" || bind_addr_ == "::1") {
+    auto hit = req->headers.find("host");
+    if (hit != req->headers.end() && !HostIsLoopback(hit->second)) {
+      return HttpResponse::Json(403, R"({"error":"forbidden: host not allowed"})");
+    }
+  }
+  // Bearer gate (C-8). Preflight carries no Authorization header by design,
+  // so OPTIONS is answered without it; the real request still must present
+  // the token.
+  if (!bearer_token_.empty() && req->method != "OPTIONS") {
+    auto ait = req->headers.find("authorization");
+    const std::string want = "Bearer " + bearer_token_;
+    if (ait == req->headers.end() || !BearerEquals(ait->second, want)) {
+      return HttpResponse::Json(401, R"({"error":"unauthorized"})");
+    }
+  }
   // CORS preflight: browsers send this ahead of a "non-simple" cross-origin
   // request (e.g. PUT with a JSON body). No route ever registers OPTIONS,
   // so without this every preflight would 405 and the browser would then

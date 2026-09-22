@@ -353,13 +353,13 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
       return JsonError(400, std::string("invalid JSON body: ") + e.what());
     }
     const std::string& collection = req.params.at("collection");
-    engine->storage().EnsureCollection(collection);
 
     CollectionAcl acl;
     const JsonValue* owner = body.Find("owner_node");
     // Defaulting the owner to this node is the safe choice: a private
     // collection with no owner would be readable by nobody, including its
-    // creator, which is never what the caller meant.
+    // creator, which is never what the caller meant. Self-ownership is also
+    // what lets peers verify the replicated ACL (origin == owner rule).
     acl.owner_node = (owner && owner->is_string() && !owner->AsString().empty())
                           ? owner->AsString()
                           : engine->identity().node_id();
@@ -374,7 +374,9 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     const JsonValue* parent = body.Find("parent");
     if (parent && parent->is_string()) acl.parent = parent->AsString();
 
-    Status st = engine->storage().catalog().SetAcl(collection, acl);
+    // Versioned + replicated: the ACL is appended as a signed kAcl record so
+    // peers converge on it (H-1), not just stored locally.
+    Status st = engine->SetCollectionAcl(collection, acl);
     if (!st.ok()) return StatusError(st);
     return Ok();
   });
@@ -405,6 +407,22 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
       if (!st.ok()) return StatusError(st);
     }
     return Ok();
+  });
+
+  // Explicit retention run: POST /db/:collection/_retention/run applies the
+  // collection's configured retention_days now and reports chunks dropped.
+  // There is no background scheduler by design; the app's explorer offers
+  // this as a button next to the retention setting.
+  server->Post("/db/:collection/_retention/run", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const std::string& collection = req.params.at("collection");
+    if (!engine->CanWrite(collection, self())) return StatusError(Status::AuthError("not allowed"));
+    auto dropped_or = engine->RunRetention(collection);
+    if (!dropped_or.ok()) return StatusError(dropped_or.status());
+    JsonValue::Object obj;
+    obj.emplace_back("ok", JsonValue(true));
+    obj.emplace_back("collection", JsonValue(collection));
+    obj.emplace_back("chunks_dropped", JsonValue(static_cast<int64_t>(dropped_or.value())));
+    return JsonOk(JsonValue(std::move(obj)));
   });
 
   // -- engines available in this build ---------------------------------------
@@ -471,6 +489,9 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     // every data file needs the unlock key.
     obj.emplace_back("encrypt_at_rest", JsonValue(network->config().encrypt_at_rest));
     obj.emplace_back("at_rest_sealed", JsonValue(engine->at_rest_sealed()));
+    // Membership posture (the secret itself is never exposed): closed means
+    // HELLOs and beacons without a valid tag are refused/ignored.
+    obj.emplace_back("membership_required", JsonValue(network->membership_required()));
     obj.emplace_back("collections", JsonValue(static_cast<int64_t>(engine->ListCollections().size())));
     obj.emplace_back("known_peers", JsonValue(static_cast<int64_t>(network->peers().Size())));
     obj.emplace_back("replication_factor",

@@ -74,7 +74,30 @@ struct TransitEnvelope {
   // The original broadcast's message_id, so a held-ack can be correlated
   // with the write that caused this hold. Empty for v1 envelopes.
   std::string message_id;
+  // Content integrity (C-3 fix): SHA-256 of this chunk's encoded_doc bytes
+  // plus the holder's Ed25519 signature over the domain-separated message
+  // TransitAttestMessage(key_hash, content_hash, chunk_index, chunk_total).
+  // A holder that tampers with served bytes fails the claim-time check.
+  // Empty on envelopes written before this field existed (treated as
+  // unverifiable and rejected at claim time).
+  std::string content_hash;  // 32 raw bytes
+  std::string holder_sig;
 };
+
+// Domain-separated attestation message a holder signs for each chunk it
+// holds. Shared by the hold path (engine) and the claim verifier (net).
+inline std::string TransitAttestMessage(const std::string& key_hash, const std::string& content_hash,
+                                        uint32_t chunk_index, uint32_t chunk_total) {
+  std::string m = "DSN-TRANSIT-v1";
+  m.push_back('\0');
+  m += key_hash;
+  m += content_hash;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    m.push_back(static_cast<char>((chunk_index >> shift) & 0xFF));
+    m.push_back(static_cast<char>((chunk_total >> shift) & 0xFF));
+  }
+  return m;
+}
 
 class TransitStore {
  public:

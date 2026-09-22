@@ -96,6 +96,8 @@ Status Catalog::LoadFromDisk() {
     if (engine && engine->is_string()) meta.engine = engine->AsString();
     const JsonValue* acl = entry.Find("acl");
     if (acl != nullptr) meta.acl = DecodeAcl(*acl);
+    const JsonValue* acl_ms = entry.Find("acl_updated_ms");
+    if (acl_ms && acl_ms->is_number()) meta.acl_updated_ms = static_cast<uint64_t>(acl_ms->AsInt());
     const JsonValue* retention = entry.Find("retention_days");
     if (retention && retention->is_number()) meta.retention_days = static_cast<uint32_t>(retention->AsInt());
     const JsonValue* shard_key = entry.Find("shard_key");
@@ -124,6 +126,7 @@ Status Catalog::SaveLocked() {
     obj.emplace_back("schema", meta.has_schema ? meta.schema : JsonValue(nullptr));
     obj.emplace_back("engine", JsonValue(meta.engine));
     obj.emplace_back("acl", EncodeAcl(meta.acl));
+    obj.emplace_back("acl_updated_ms", JsonValue(static_cast<int64_t>(meta.acl_updated_ms)));
     obj.emplace_back("retention_days", JsonValue(static_cast<int64_t>(meta.retention_days)));
     obj.emplace_back("shard_key", JsonValue(meta.shard_key));
     obj.emplace_back("replication_factor", JsonValue(static_cast<int64_t>(meta.replication_factor)));
@@ -230,11 +233,20 @@ Status Catalog::SetEngine(const std::string& name, const std::string& engine) {
 }
 
 Status Catalog::SetAcl(const std::string& name, const CollectionAcl& acl) {
+  return SetAclAt(name, acl, NowMsUtc());
+}
+
+Status Catalog::SetAclAt(const std::string& name, const CollectionAcl& acl, uint64_t updated_ms) {
   std::lock_guard<std::mutex> lock(mu_);
   auto it = collections_.find(name);
   if (it == collections_.end()) return Status::NotFound("no such collection: " + name);
   if (acl.parent == name) return Status::InvalidArgument("acl.parent cannot be the collection itself");
+  if (updated_ms < it->second.acl_updated_ms) {
+    return Status::InvalidArgument("stale ACL version: " + std::to_string(updated_ms) + " < " +
+                                   std::to_string(it->second.acl_updated_ms));
+  }
   it->second.acl = acl;
+  it->second.acl_updated_ms = updated_ms;
   return SaveLocked();
 }
 

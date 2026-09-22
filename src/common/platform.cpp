@@ -12,6 +12,7 @@
   #include <aclapi.h>
 #else
   #include <dirent.h>
+  #include <fcntl.h>
 #endif
 
 namespace desentry {
@@ -285,6 +286,174 @@ bool RestrictToOwner(const std::string& path) {
 #else
   return ::chmod(path.c_str(), 0600) == 0;
 #endif
+}
+
+bool SyncFileByPath(const std::string& path, std::string* err) {
+#if defined(_WIN32)
+  HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    if (err) *err = "cannot open for sync: " + path;
+    return false;
+  }
+  bool ok = ::FlushFileBuffers(h) != 0;
+  if (!ok && err) *err = "FlushFileBuffers failed: " + path;
+  ::CloseHandle(h);
+  return ok;
+#else
+#if defined(__APPLE__)
+  int fd = ::open(path.c_str(), O_RDWR);
+  if (fd < 0) {
+    if (err) *err = "cannot open for sync: " + path + ": " + std::strerror(errno);
+    return false;
+  }
+  bool ok = (::fcntl(fd, F_FULLFSYNC) == 0);
+  if (!ok) ok = (::fsync(fd) == 0);  // fallback if F_FULLFSYNC unavailable
+  if (!ok && err) *err = "F_FULLFSYNC/fsync failed: " + path + ": " + std::strerror(errno);
+  ::close(fd);
+  return ok;
+#else
+  int fd = ::open(path.c_str(), O_RDWR);
+  if (fd < 0) {
+    if (err) *err = "cannot open for sync: " + path + ": " + std::strerror(errno);
+    return false;
+  }
+#if defined(__linux__)
+  bool ok = (::fdatasync(fd) == 0);
+#else
+  bool ok = (::fsync(fd) == 0);
+#endif
+  if (!ok && err) *err = "fdatasync/fsync failed: " + path + ": " + std::strerror(errno);
+  ::close(fd);
+  return ok;
+#endif
+#endif
+}
+
+bool SyncDirForFile(const std::string& file_path, std::string* err) {
+#if defined(_WIN32)
+  (void)file_path;
+  (void)err;
+  return true;  // Windows directory entries are durable via file flush; no-op.
+#else
+  std::string dir = file_path;
+  size_t sep = dir.find_last_of('/');
+  if (sep == std::string::npos) dir = ".";
+  else if (sep == 0) dir = "/";
+  else dir = dir.substr(0, sep);
+  int fd = ::open(dir.c_str(), O_RDONLY
+#ifdef O_DIRECTORY
+                                    | O_DIRECTORY
+#endif
+  );
+  if (fd < 0) {
+    if (err) *err = "cannot open dir for sync: " + dir;
+    return false;
+  }
+  bool ok = (::fsync(fd) == 0);
+  if (!ok && err) *err = "dir fsync failed: " + dir + ": " + std::strerror(errno);
+  ::close(fd);
+  return ok;
+#endif
+}
+
+bool ParseBindAddr(const std::string& bind_addr, uint16_t port, sockaddr_storage* out,
+                   dsn_socklen_t* out_len) {
+  std::memset(out, 0, sizeof(*out));
+  if (bind_addr.empty() || bind_addr == "0.0.0.0") {
+    auto* a = reinterpret_cast<sockaddr_in*>(out);
+    a->sin_family = AF_INET;
+    a->sin_port = htons(port);
+    a->sin_addr.s_addr = INADDR_ANY;
+    *out_len = sizeof(sockaddr_in);
+    return true;
+  }
+  if (bind_addr == "::") {
+    auto* a = reinterpret_cast<sockaddr_in6*>(out);
+    a->sin6_family = AF_INET6;
+    a->sin6_port = htons(port);
+    a->sin6_addr = in6addr_any;
+    *out_len = sizeof(sockaddr_in6);
+    return true;
+  }
+  {
+    auto* a = reinterpret_cast<sockaddr_in*>(out);
+    if (::inet_pton(AF_INET, bind_addr.c_str(), &a->sin_addr) == 1) {
+      a->sin_family = AF_INET;
+      a->sin_port = htons(port);
+      *out_len = sizeof(sockaddr_in);
+      return true;
+    }
+  }
+  {
+    auto* a = reinterpret_cast<sockaddr_in6*>(out);
+    if (::inet_pton(AF_INET6, bind_addr.c_str(), &a->sin6_addr) == 1) {
+      a->sin6_family = AF_INET6;
+      a->sin6_port = htons(port);
+      *out_len = sizeof(sockaddr_in6);
+      return true;
+    }
+  }
+  return false;
+}
+
+void TryDualStack(dsn_socket_t s) {
+  int off = 0;
+#if defined(_WIN32)
+  ::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&off), sizeof(off));
+#else
+  ::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+#endif
+}
+
+bool ResolvePeerAddr(const std::string& host, uint16_t port, sockaddr_storage* out,
+                     dsn_socklen_t* out_len) {
+  std::memset(out, 0, sizeof(*out));
+  {
+    auto* a = reinterpret_cast<sockaddr_in*>(out);
+    if (::inet_pton(AF_INET, host.c_str(), &a->sin_addr) == 1) {
+      a->sin_family = AF_INET;
+      a->sin_port = htons(port);
+      *out_len = sizeof(sockaddr_in);
+      return true;
+    }
+  }
+  {
+    auto* a = reinterpret_cast<sockaddr_in6*>(out);
+    std::string h = host;
+    // Strip brackets: [::1]:port style and bare [::1].
+    if (h.size() > 2 && h.front() == '[') {
+      auto end = h.find(']');
+      if (end == std::string::npos) return false;
+      h = h.substr(1, end - 1);
+    }
+    if (::inet_pton(AF_INET6, h.c_str(), &a->sin6_addr) == 1) {
+      a->sin6_family = AF_INET6;
+      a->sin6_port = htons(port);
+      *out_len = sizeof(sockaddr_in6);
+      return true;
+    }
+  }
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* res = nullptr;
+  if (::getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || res == nullptr) return false;
+  bool ok = false;
+  if (res->ai_family == AF_INET && res->ai_addrlen >= sizeof(sockaddr_in)) {
+    std::memcpy(out, res->ai_addr, sizeof(sockaddr_in));
+    reinterpret_cast<sockaddr_in*>(out)->sin_port = htons(port);
+    *out_len = sizeof(sockaddr_in);
+    ok = true;
+  } else if (res->ai_family == AF_INET6 && res->ai_addrlen >= sizeof(sockaddr_in6)) {
+    std::memcpy(out, res->ai_addr, sizeof(sockaddr_in6));
+    reinterpret_cast<sockaddr_in6*>(out)->sin6_port = htons(port);
+    *out_len = sizeof(sockaddr_in6);
+    ok = true;
+  }
+  ::freeaddrinfo(res);
+  return ok;
 }
 
 uint64_t FileSize(const std::string& path) {

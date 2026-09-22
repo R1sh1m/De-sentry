@@ -75,6 +75,10 @@ struct CollectionMeta {
   std::string engine;
 
   CollectionAcl acl;
+  // Wall-ms of the last ACL write (local or replicated). LWW merge key for
+  // replicated kAcl records (H-1): the newest attested ACL wins. 0 == never
+  // set (default-public).
+  uint64_t acl_updated_ms = 0;
 
   // Time-series retention in days; 0 == keep everything. Honoured by the
   // ts_rollup backend's ApplyRetention/Prune when called -- there is no
@@ -124,6 +128,10 @@ class Catalog {
   // -- v2 ----------------------------------------------------------------
   Status SetEngine(const std::string& name, const std::string& engine);
   Status SetAcl(const std::string& name, const CollectionAcl& acl);
+  // Like SetAcl but stamps an explicit version (replicated kAcl path, H-1).
+  // Refuses to move the version backwards: a stale attestation never
+  // overwrites a newer ACL.
+  Status SetAclAt(const std::string& name, const CollectionAcl& acl, uint64_t updated_ms);
   Status SetRetentionDays(const std::string& name, uint32_t days);
   Status SetPlacement(const std::string& name, const std::string& shard_key, uint32_t replication_factor);
 

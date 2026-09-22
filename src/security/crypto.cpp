@@ -1,6 +1,7 @@
 #include "desentry/security/crypto.h"
 
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/kdf.h>
 #include <openssl/rand.h>
 
@@ -131,6 +132,18 @@ std::string Sha256(const std::string& data) {
   if (EVP_Digest(data.data(), data.size(), reinterpret_cast<unsigned char*>(out.data()), &len, EVP_sha256(),
                   nullptr) <= 0) {
     ThrowOpenSsl("EVP_Digest(sha256)");
+  }
+  out.resize(len);
+  return out;
+}
+
+std::string HmacSha256(const std::string& key, const std::string& data) {
+  std::string out(kSha256Len, '\0');
+  unsigned int len = 0;
+  if (::HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+             reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+             reinterpret_cast<unsigned char*>(out.data()), &len) == nullptr) {
+    ThrowOpenSsl("HMAC(sha256)");
   }
   out.resize(len);
   return out;

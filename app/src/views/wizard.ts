@@ -104,6 +104,8 @@ interface Draft {
   spec: NodeSpec | null;
   sizing: boolean;
   sizingError: string;
+  /** Monotonic run id so a timed-out sizing promise cannot overwrite a newer run. */
+  sizingGeneration?: number;
   manualEngines: Set<string>;
   engines: EngineInfo[];
   // 5 -- creation
@@ -378,8 +380,10 @@ export function createWizard(): WizardHandles {
   async function scan(): Promise<void> {
     const port = store.state.supervisorPort;
     if (port === null) {
-      draft.sizingError = "The supervisor is not running, so hardware cannot be scanned.";
-      render();
+      // Placement-step failure belongs on the placement step: the old code
+      // wrote it into sizingError, which step 3 renders, so step 1 showed
+      // nothing while step 3 showed a stale, unrelated error.
+      store.toast("error", "Could not scan for storage", "The supervisor is not running, so hardware cannot be scanned.");
       return;
     }
     draft.scanning = true;
@@ -405,6 +409,9 @@ export function createWizard(): WizardHandles {
         quota_split: { db_pct: 60, transit_store_pct: 15, cache_hash_pct: 10, ledger_pct: 10, net_buffers_pct: 5 },
         shard_key: "",
         replication_factor: 3,
+        // Secondary indexes are persisted-but-never-queried (experimental):
+        // the wizard deliberately offers no index picker until a query path
+        // lands, rather than selling a feature that does nothing.
         secondary_indexes: [],
         retention_days: 0,
         collections: [],
@@ -911,26 +918,42 @@ export function createWizard(): WizardHandles {
       draft.manualEngines = new Set(draft.engines.length > 0 ? draft.engines.map((engine) => engine.name) : ["kv"]);
     }
     render();
+    // Generation guard: a 15s timeout rejects the race, but the orphaned
+    // sizeWorkload promise would still mutate draft.spec when it later
+    // resolves -- a stale proposal landing after the error. Only the latest
+    // run may write.
+    const generation = (draft.sizingGeneration = (draft.sizingGeneration ?? 0) + 1);
     try {
       const sizing = sidecar.sizeWorkload(draft.description, draft.quotaMb);
-      draft.spec = await Promise.race([
+      const spec = await Promise.race([
         sizing,
         new Promise<never>((_, reject) => {
           window.setTimeout(() => reject(new Error("Sizing took too long to respond. Choose the engines manually and continue.")), 15000);
         }),
       ]);
+      // The race loser still settles: swallow the orphan so an unhandled
+      // rejection never surfaces in the console after a timeout.
+      void sizing.then(
+        () => undefined,
+        () => undefined,
+      );
+      if (generation !== draft.sizingGeneration) return;
+      draft.spec = spec;
       draft.manualEngines = new Set(draft.spec.engines);
       syncCollectionsWithEngines();
       draft.engines = store.state.engines;
     } catch (error) {
+      if (generation !== draft.sizingGeneration) return;
       draft.sizingError = describeError(error);
       draft.engines = store.state.engines;
       if (draft.manualEngines.size === 0) {
         draft.manualEngines = new Set(draft.engines.length > 0 ? draft.engines.map((engine) => engine.name) : ["kv"]);
       }
     } finally {
-      draft.sizing = false;
-      render();
+      if (generation === draft.sizingGeneration) {
+        draft.sizing = false;
+        render();
+      }
     }
   }
 
@@ -1463,15 +1486,29 @@ export function createWizard(): WizardHandles {
       draft.verifyOrder = null;
       draft.verifyProgress = 0;
       draft.step = 5;
-      await refreshNodeList();
-      await refreshTopology();
-      store.select({ kind: "node", nodeId: result.node.node_id });
     } catch (error) {
       draft.createError = describeError(error);
       draft.step = 4;
     } finally {
       draft.creating = false;
       render();
+    }
+    // Post-creation refreshes run OUTSIDE the creation try: the node exists
+    // even when a list refresh fails, and reporting success-then-silently-
+    // staying is better than misreporting a created node as a creation
+    // failure. Refresh errors toast without touching the wizard step.
+    if (draft.created !== null) {
+      try {
+        await refreshNodeList();
+      } catch (error) {
+        store.toast("error", "Node list refresh failed", describeError(error));
+      }
+      try {
+        await refreshTopology();
+      } catch (error) {
+        store.toast("error", "Topology refresh failed", describeError(error));
+      }
+      store.select({ kind: "node", nodeId: draft.created.node_id });
     }
   }
 

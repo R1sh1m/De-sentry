@@ -39,8 +39,13 @@ pub fn get(port: u16, path: &str, timeout: Duration) -> Result<String, HttpError
 
     // `Connection: close` is what lets the read loop end at EOF instead of
     // needing to parse Content-Length to know when to stop.
+    let auth = std::env::var("DESENTRY_API_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: de-sentry-app\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: de-sentry-app\r\n{auth}Connection: close\r\nAccept: application/json\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())

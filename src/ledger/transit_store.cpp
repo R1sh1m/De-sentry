@@ -22,9 +22,11 @@ namespace {
 // cross-engine index. A truncated tail from a crash costs the last record.
 constexpr uint32_t kTransitMagic = 0x44534E54;  // "DSNT"
 // v2 adds the striping fields (doc_size_bytes, chunk_index, chunk_total).
+// v3 adds content_hash + holder_sig (C-3 integrity).
 // transit.log is node-local -- never shipped -- so no mixed-version wire
-// concern: Load() reads both versions, new holds always write v2.
-constexpr uint32_t kTransitVersion = 2;
+// concern: Load() reads all versions, new holds always write v3.
+constexpr uint32_t kTransitVersion = 3;
+constexpr uint32_t kTransitVersionV2 = 2;
 constexpr uint32_t kTransitVersionV1 = 1;
 constexpr uint32_t kTransitRecordCap = 1u << 20;  // 1MiB: absurdly generous for one envelope
 
@@ -94,6 +96,8 @@ std::string TransitStore::EncodeEnvelope(const TransitEnvelope& envelope) {
   w.U32(envelope.chunk_index);
   w.U32(envelope.chunk_total);
   w.Bytes(envelope.message_id);
+  w.Bytes(envelope.content_hash);
+  w.Bytes(envelope.holder_sig);
   return w.TakeString();
 }
 
@@ -119,7 +123,8 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
     ByteReader r(body);
     if (r.U32() != kTransitMagic) return Status::Corruption("transit record is not an envelope");
     const uint32_t version = r.U32();
-    if (version != kTransitVersion && version != kTransitVersionV1) {
+    if (version != kTransitVersion && version != kTransitVersionV2 &&
+        version != kTransitVersionV1) {
       return Status::Corruption("transit record has an unsupported envelope version");
     }
     const uint8_t kind = r.U8();
@@ -144,7 +149,7 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
     envelope.holder_node = r.Bytes();
     envelope.intent_lsn = r.I64();
     envelope.expires_ms = r.I64();
-    if (version == kTransitVersion) {
+    if (version == kTransitVersion || version == kTransitVersionV2) {
       envelope.doc_size_bytes = r.U64();
       envelope.chunk_index = r.U32();
       envelope.chunk_total = r.U32();
@@ -153,6 +158,11 @@ StatusOr<TransitEnvelope> TransitStore::DecodeBody(const std::string& body, bool
       }
       // message_id is the last field for v2 records (v1 records don't have it)
       if (r.remaining() > 0) envelope.message_id = r.Bytes();
+      if (version == kTransitVersion) {
+        // v3 integrity tail (C-3); tolerant so a torn write still parses.
+        if (r.remaining() > 0) envelope.content_hash = r.Bytes();
+        if (r.remaining() > 0) envelope.holder_sig = r.Bytes();
+      }
     }
     // else: v1 record -- whole-document defaults (chunk_total == 1) stand.
     if (r.remaining() != 0) return Status::Corruption("transit record has trailing bytes");

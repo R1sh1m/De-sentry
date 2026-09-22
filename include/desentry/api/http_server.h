@@ -50,6 +50,12 @@ class HttpServer {
   void Post(const std::string& pattern, HttpHandler handler) { AddRoute("POST", pattern, std::move(handler)); }
   void Del(const std::string& pattern, HttpHandler handler) { AddRoute("DELETE", pattern, std::move(handler)); }
 
+  // Per-boot bearer token (C-8 fix). Empty = no auth (dev/engine-only
+  // default, preserves curl + cluster-script behavior). When set -- the
+  // desktop sidecar always sets one via DESENTRY_API_TOKEN -- every
+  // non-OPTIONS request must carry `Authorization: Bearer <token>`.
+  void SetBearerToken(std::string token) { bearer_token_ = std::move(token); }
+
   bool Start();
   void Stop();
 
@@ -67,6 +73,7 @@ class HttpServer {
 
   std::string bind_addr_;
   uint16_t port_;
+  std::string bearer_token_;
   std::vector<Route> routes_;
   std::atomic<bool> running_{false};
   dsn_socket_t listen_fd_ = kInvalidSocket;

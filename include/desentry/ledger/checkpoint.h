@@ -30,10 +30,11 @@
 // An unverified replica is not a vote: a node reporting the right hash
 // without having verified its own chain is asserting agreement it has not
 // checked. A tip carrying a non-empty signature that does not verify is not
-// a vote either; an unsigned tip whose chain segment verified locally may
-// still vote (that is the only kind the ledger-digest path produces --
-// NetworkManager::CollectReplicaTips checks the chain links itself rather
-// than trusting a boolean, which is the stronger check).
+// a vote either. An unsigned tip may still vote only when its chain segment
+// verified locally AND the responder is handshake-known -- but a signed tip
+// whose signature verifies is the stronger, preferred vote: it binds the
+// reported tip to the responder's identity, which bare linkage cannot do
+// (anyone can fabricate a self-consistent chain of arbitrary bytes).
 //
 // Only supervisors run this (routes.cpp refuses it with 403 elsewhere, and
 // Supervisor::AttemptCheckpoint drives the periodic pass). This header is the
@@ -59,7 +60,7 @@ struct ReplicaTip {
   std::string entry_hash;  // 32 raw bytes
   bool self_verified = false;
   bool signature_valid = false;
-  std::string signature;  // Ed25519 over "<entry_id>:<entry_hash>"; may be empty
+  std::string signature;  // Ed25519 over LedgerTipMessage(entry_id, entry_hash); may be empty
 };
 
 // The gate's verdict. On refusal, `reason` always says why and the counts

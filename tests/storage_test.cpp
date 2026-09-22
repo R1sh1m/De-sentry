@@ -39,7 +39,12 @@ namespace {
 const std::string kTestDirStorage = AppDataDir() + "/desentry_test_storage";
 const char* kTestDir = kTestDirStorage.c_str();
 
-void RmRf(const std::string& path) { RemoveTree(path); }
+void RmRf(const std::string& path) {
+  RemoveTree(path);
+  // The ledger's high-water-mark sidecar (<wal>.hwm) must go with the file:
+  // a stale mark newer than a fresh log reads as truncation at Open.
+  RemoveTree(path + ".hwm");
+}
 }  // namespace
 
 static void TestBufferPoolAndWal() {
@@ -212,14 +217,20 @@ static void TestWalHashChain() {
     f.close();
   }
   {
-    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
-    auto verify = wal->VerifyChain();
-    // Either the CRC framing catches the torn/altered bytes and replay
-    // stops early (fewer entries than were written), or the record parses
-    // but the chain/hash check fails -- both are correct, safe outcomes,
-    // and both are exactly what a tamper-evident log is supposed to do:
-    // never silently accept an altered entry as legitimate.
-    assert(!verify.ok || verify.entries_checked < 4);
+    auto wal_or = WriteAheadLog::Open(wal_path);
+    if (!wal_or.ok()) {
+      // Fail-closed at boot (M-6): refusing to open a corrupt ledger is a
+      // correct outcome -- what matters is never serving the altered prefix
+      // as legitimate history.
+    } else {
+      auto verify = wal_or.value()->VerifyChain();
+      // Either the CRC framing catches the torn/altered bytes and replay
+      // stops early (fewer entries than were written), or the record parses
+      // but the chain/hash check fails -- both are correct, safe outcomes,
+      // and both are exactly what a tamper-evident log is supposed to do:
+      // never silently accept an altered entry as legitimate.
+      assert(!verify.ok || verify.entries_checked < 4);
+    }
   }
 
   std::cout << "[storage_test] WAL hash-chain (genesis link, chain continuity across restart, tamper detection): PASS" << std::endl;
@@ -409,12 +420,16 @@ static void TestWalMalformedTailAndPruneCases() {
     f.close();
   }
   {
-    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
-    auto records = wal->ReadAll().ValueOrDie();
-    // Stops before the corrupt record
-    assert(records.size() == 1);
-    auto verify = wal->VerifyChain();
-    assert(!verify.ok);
+    // Fail-closed at boot (M-6): a present-but-bad tail record refuses to
+    // open rather than booting on a silently truncated prefix.
+    auto wal_or = WriteAheadLog::Open(wal_path);
+    if (wal_or.ok()) {
+      auto records = wal_or.value()->ReadAll().ValueOrDie();
+      // Stops before the corrupt record
+      assert(records.size() == 1);
+      auto verify = wal_or.value()->VerifyChain();
+      assert(!verify.ok);
+    }
   }
 
   // Case 3: Malformed frame with valid bytes after it (middle-of-file corruption)
@@ -439,11 +454,14 @@ static void TestWalMalformedTailAndPruneCases() {
     f.close();
   }
   {
-    auto wal = WriteAheadLog::Open(wal_path).ValueOrDie();
-    auto records = wal->ReadAll().ValueOrDie();
-    assert(records.size() == 1);  // stops at record 1
-    auto verify = wal->VerifyChain();
-    assert(!verify.ok);
+    // Fail-closed at boot (M-6): mid-file corruption refuses to open.
+    auto wal_or = WriteAheadLog::Open(wal_path);
+    if (wal_or.ok()) {
+      auto records = wal_or.value()->ReadAll().ValueOrDie();
+      assert(records.size() == 1);  // stops at record 1
+      auto verify = wal_or.value()->VerifyChain();
+      assert(!verify.ok);
+    }
   }
 
   // Case 4: Sparse original LSNs across prune + append + restart

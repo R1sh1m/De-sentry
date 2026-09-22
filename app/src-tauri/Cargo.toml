@@ -34,9 +34,25 @@ getrandom = "0.2"
 # Service. One crate rather than three `#[cfg]` blocks over three C APIs.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
+# Audited primitives for the passphrase KDF (M-4 fix): the hand-rolled
+# SHA-256/HMAC/PBKDF2 they replace were byte-identical standards
+# implementations, so existing wrapped DEKs keep working -- but reviewable
+# beats reimplemented for anything touching keys. Pure-Rust, no network at
+# build time. The DEK *wrapping construction* (XOR stream + HMAC tag) is
+# unchanged and documented in passphrase.rs.
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+
 # Autostart on login. Official Tauri plugin; on Linux it writes a .desktop
 # file, on macOS a login item, on Windows a Run key.
 tauri-plugin-autostart = "2"
+
+# Signed self-updates (M-13 fix): the app checks the release feed on boot and
+# installs only artifacts whose minisign signature verifies against the
+# bundled pubkey (tauri.conf.json plugins.updater). Without this there was no
+# channel at all to ship a security fix to an installed user.
+tauri-plugin-updater = "2"
 
 [target.'cfg(unix)'.dependencies]
 # One call: SIGTERM to a child, so `desentryd` gets to flush and close instead
@@ -76,6 +92,12 @@ version = "0.20"
 optional = true
 default-features = false
 features = ["onig"]
+
+[dev-dependencies]
+# Keychain tests touch the live OS credential store (no mock): they must run
+# serially, not across threads (#2 fix). Documents the old
+# `-- --test-threads=1` workaround as code instead of lore.
+serial_test = "3"
 
 [profile.release]
 # The installers ship one binary per platform and are downloaded rarely; size

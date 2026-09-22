@@ -108,6 +108,12 @@ jobs:
         uses: tauri-apps/tauri-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Minisign key for updater artifacts (M-13). One-time setup: run
+          # `npx @tauri-apps/cli signer generate`, keep the private key OUT
+          # of the repo, store it as this secret. Without it the release
+          # still builds, but updater bundles are unsigned and clients refuse
+          # them -- fail closed, never silently unsigned.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           projectPath: app
           tagName: ${{ github.ref_name }}

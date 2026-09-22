@@ -17,7 +17,10 @@ static void TestIdempotence() {
   auto j = JsonValue::Parse(R"({"name":"Asha","age":21,"tags":["admin","staff"]})");
   auto doc = CrdtValue::FromJson(j, clock.Now());
   auto merged = CrdtValue::Merge(doc, doc);
-  assert(merged.ToJson().Dump() == doc.ToJson().Dump());
+  // CanonicalDump: merge stores fields in canonical (sorted) order by
+  // design (H-3), so insertion-order Dump differs while the document is
+  // semantically identical.
+  assert(merged.ToJson().CanonicalDump() == doc.ToJson().CanonicalDump());
   std::cout << "[crdt_test] idempotence: PASS" << std::endl;
 }
 
@@ -101,10 +104,13 @@ static void TestBinaryCodecRoundTrip() {
 
   std::string bytes = doc2.Encode();
   auto decoded = CrdtValue::Decode(bytes);
-  assert(decoded.ToJson().Dump() == doc2.ToJson().Dump());
+  // CanonicalDump: Encode() emits fields/tags in canonical (sorted) order
+  // (H-3), so an order-sensitive Dump differs from the insertion-ordered
+  // in-memory tree while the document is identical.
+  assert(decoded.ToJson().CanonicalDump() == doc2.ToJson().CanonicalDump());
 
   auto merged = CrdtValue::Merge(doc2, decoded);
-  assert(merged.ToJson().Dump() == doc2.ToJson().Dump());
+  assert(merged.ToJson().CanonicalDump() == doc2.ToJson().CanonicalDump());
 
   std::cout << "[crdt_test] binary codec round-trip + merge (" << bytes.size() << " bytes): PASS" << std::endl;
 }

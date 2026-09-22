@@ -784,10 +784,33 @@ export async function boot(): Promise<void> {
   store.state.ready = true;
   store.notify();
 
+  // Signed self-update check (M-13): fire-and-forget after boot so a slow or
+  // absent feed never blocks the UI. An available update downloads and
+  // installs staged (minisign-verified) and applies on next start; failures
+  // stay silent by design -- the app must work fully offline, and an update
+  // feed is best-effort, not a dependency.
+  void checkForUpdates();
+
   // 30-second auto-poll for newly discovered nodes (covers LAN peers that
   // appear without a volume or network event, e.g. a node started by hand on
   // another machine while the app is open).
   window.setInterval(() => {
     void refreshDiscovered();
   }, 30_000);
+}
+
+/** Signed update check: see the call in boot() for the policy. */
+async function checkForUpdates(): Promise<void> {
+  try {
+    const { isTauri } = await import("./bridge.js");
+    if (!isTauri()) return;
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const update = await check();
+    if (update === null) return;
+    store.toast("info", "Update available", `De-Sentry ${update.version} is downloading; it applies on your next start.`);
+    await update.downloadAndInstall();
+    store.toast("success", "Update installed", `De-Sentry ${update.version} will apply when you restart the app.`);
+  } catch {
+    // Offline, no feed, or no release yet: silent (see above).
+  }
 }

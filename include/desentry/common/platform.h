@@ -85,9 +85,24 @@ void SetSockOptInt(dsn_socket_t s, int level, int optname, int value);
 
 // Datagram send/recv wrappers (same int-vs-size_t reason as above).
 dsn_iolen_t SocketSendTo(dsn_socket_t s, const char* buf, size_t len,
-                          const struct sockaddr* dest, dsn_socklen_t dest_len);
+                           const struct sockaddr* dest, dsn_socklen_t dest_len);
 dsn_iolen_t SocketRecvFrom(dsn_socket_t s, char* buf, size_t len,
-                            struct sockaddr* from, dsn_socklen_t* from_len);
+                             struct sockaddr* from, dsn_socklen_t* from_len);
+
+// Dual-stack bind helper (M-11 fix). Resolves `bind_addr` for `port` into
+// `out`: IPv4 literals/0.0.0.0 stay AF_INET (backwards compatible);
+// IPv6 literals, "::" or empty-with-v6-available use AF_INET6. Returns false
+// on unparseable input. Callers create the socket with out->ss_family,
+// best-effort clear IPV6_V6ONLY for dual-stack, then bind.
+bool ParseBindAddr(const std::string& bind_addr, uint16_t port, sockaddr_storage* out,
+                   dsn_socklen_t* out_len);
+// Best-effort IPV6_V6ONLY=0 (dual-stack accept of IPv4-mapped peers).
+// No-op on AF_INET sockets; failures ignored (single-stack is still fine).
+void TryDualStack(dsn_socket_t s);
+// Resolves `host` (literal or name, v4 or v6) for `port` into `out`.
+// Returns false when unresolvable.
+bool ResolvePeerAddr(const std::string& host, uint16_t port, sockaddr_storage* out,
+                     dsn_socklen_t* out_len);
 
 // True if the last socket error was a benign interruption worth retrying
 // (EINTR / WSAEINTR) rather than a real failure.
@@ -118,6 +133,14 @@ bool IsDirectory(const std::string& path);
 bool RestrictToOwner(const std::string& path);
 // Size in bytes, or 0 if unavailable.
 uint64_t FileSize(const std::string& path);
+// Durably persists file content to stable storage (C-1 fix). flush() only
+// drains userspace buffers into the OS page cache; this issues fdatasync /
+// F_FULLFSYNC (macOS) / FlushFileBuffers (Windows) so a power loss after
+// return cannot lose acked writes. Returns false + err message on failure.
+bool SyncFileByPath(const std::string& path, std::string* err);
+// fsyncs the containing directory so a newly created file's directory entry
+// itself survives a crash (required after WAL/data file creation).
+bool SyncDirForFile(const std::string& file_path, std::string* err);
 // Non-recursive directory listing of entry names (no "." / "..").
 std::vector<std::string> ListDir(const std::string& path);
 // Recursive delete; returns true on success. Used only by tests and by the

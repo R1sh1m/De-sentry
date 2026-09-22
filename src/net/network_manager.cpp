@@ -7,6 +7,9 @@
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/net/identity.h"
+#include "desentry/security/at_rest.h"
+#include "desentry/security/crypto.h"
 
 namespace desentry {
 
@@ -32,12 +35,86 @@ int64_t StaleThresholdMs(const NodeConfig& config) {
   return static_cast<int64_t>(config.gossip_interval_ms) * 3 + 5000;
 }
 
+// Verifies one served transit entry (C-3 fix). The old check recomputed
+// LedgerKeyHash from the same attacker-supplied (collection, key) and
+// compared it to the attacker-supplied key_hash -- self-consistent by
+// construction for any attacker, saying nothing about encoded_doc. This
+// checks what actually binds bytes to intent:
+//   1. key_hash matches (collection, key) -- keeps the cheap mislabel filter;
+//   2. content_hash == SHA-256(encoded_doc) -- the bytes are what the holder
+//      attested to, not arbitrary substitution;
+//   3. holder_sig verifies under the responding holder's handshake-proven
+//      key -- a Sybil that was never designated a holder cannot mint it.
+// Entries without an integrity tail (pre-fix holders) are rejected.
+bool VerifyTransitEntry(const TransitEntry& entry, const std::string& holder_node,
+                        const std::string& holder_pubkey) {
+  if (LedgerKeyHash(entry.collection, entry.key) != entry.key_hash &&
+      TransitChunkKeyHash(LedgerKeyHash(entry.collection, entry.key), entry.chunk_index) !=
+          entry.key_hash) {
+    return false;
+  }
+  if (entry.content_hash.empty() || entry.holder_sig.empty()) return false;
+  if (crypto::Sha256(entry.encoded_doc) != entry.content_hash) return false;
+  if (holder_pubkey.empty()) return false;
+  const std::string msg =
+      TransitAttestMessage(entry.key_hash, entry.content_hash, entry.chunk_index, entry.chunk_total);
+  return NodeIdentity::Verify(holder_pubkey, msg, entry.holder_sig);
+}
+
 }  // namespace
 
 NetworkManager::~NetworkManager() { Stop(); }
 
+namespace {
+
+// Decodes the cluster-membership secret from the environment. Accepted forms:
+// 64 hex chars (32 bytes) or any non-empty string used as key material
+// directly. Empty/missing = open mesh. Never logged.
+bool DecodeClusterSecret(const char* env, std::string* out) {
+  if (env == nullptr || *env == '\0') return false;
+  const std::string raw(env);
+  auto hexval = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  if (raw.size() == 64) {
+    std::string bytes;
+    bytes.reserve(32);
+    for (size_t i = 0; i < 64; i += 2) {
+      int hi = hexval(raw[i]);
+      int lo = hexval(raw[i + 1]);
+      if (hi < 0 || lo < 0) return false;
+      bytes.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    *out = std::move(bytes);
+    return true;
+  }
+  *out = raw;
+  return true;
+}
+
+}  // namespace
+
 Status NetworkManager::Start() {
   NetInit();
+
+  // Cluster membership: a shared secret (never on disk, never logged) that
+  // authenticates HELLOs and discovery beacons. Without it the mesh is open:
+  // anyone on the LAN can join, handshake, and gossip. With it, outsiders
+  // fail the handshake and their beacons are ignored. Mixed rollout is
+  // fail-open per direction (an unconfigured node accepts everything), so
+  // configure it on every node to actually close the mesh.
+  std::string cluster_secret;
+  if (DecodeClusterSecret(std::getenv("DESENTRY_CLUSTER_SECRET"), &cluster_secret)) {
+    cluster_secret_ = cluster_secret;
+    at_rest::Zeroize(cluster_secret);
+    DSN_LOG_INFO("network", "cluster membership required (secret configured)");
+  } else {
+    DSN_LOG_WARN("network", "no cluster secret: mesh is OPEN, any LAN peer may join. "
+                            "Set DESENTRY_CLUSTER_SECRET (the desktop sidecar does) to close it.");
+  }
 
   limiter_ = std::make_unique<TokenBucketLimiter>(config_.peer_rate_limit_per_sec,
                                                    config_.peer_rate_burst);
@@ -70,10 +147,20 @@ Status NetworkManager::Start() {
   engine_->SetPublicKeyResolver([this](const std::string& node_id) -> std::string {
     PeerInfo info;
     if (!peer_table_.Get(node_id, &info)) return std::string();
+    // Only handshake-proven keys are trust anchors (C-2): a discovery-only
+    // entry must never verify ledger signatures.
+    if (!info.handshake_proven) return std::string();
     return info.ed25519_pubkey;
   });
 
   transport_ = std::make_unique<TcpTransport>(&engine_->identity(), config_.p2p_port);
+  transport_->SetClusterSecret(cluster_secret_);
+  transport_->SetHandshakeCallback([this](const std::string& node_id, const std::string& pubkey,
+                                          uint16_t p2p_port) {
+    // Both dial directions land here; the HELLO already proved
+    // node_id == SHA-256(pubkey), so this binding is trustworthy.
+    peer_table_.MarkHandshakeProven(node_id, pubkey, "", p2p_port);
+  });
   Status listen_st = transport_->StartListening(
       config_.p2p_bind_addr, [this](const std::string& peer_id, const WireMessage& req) {
         return HandleRequest(peer_id, req);
@@ -88,6 +175,7 @@ Status NetworkManager::Start() {
     discovery_ = std::make_unique<UdpDiscovery>(&engine_->identity(), config_.p2p_port,
                                                  config_.discovery_port, config_.discovery_interval_ms,
                                                  advert);
+    discovery_->SetClusterSecret(cluster_secret_);
     discovery_->Start(&peer_table_);
   }
 
@@ -107,7 +195,7 @@ Status NetworkManager::Start() {
     info.host = host;
     info.p2p_port = port;
     info.last_seen_ms = NowMs();
-    peer_table_.Upsert(info);
+    peer_table_.Upsert(info, PeerSource::kBootstrap);
     DSN_LOG_INFO("network", "added bootstrap peer " << spec);
   }
 
@@ -149,6 +237,8 @@ engine_->SetLocalWriteHook([this](const std::string& collection, const std::stri
 
 void NetworkManager::Stop() {
   running_ = false;
+  at_rest::Zeroize(cluster_secret_);
+  cluster_secret_.clear();
   if (probe_thread_.joinable()) probe_thread_.join();
   if (gossip_) gossip_->Stop();
   if (discovery_) discovery_->Stop();
@@ -180,7 +270,8 @@ WireMessage NetworkManager::HandleRequest(const std::string& peer_node_id,
   PeerInfo seen;
   if (peer_table_.Get(peer_node_id, &seen)) {
     seen.last_seen_ms = NowMs();
-    peer_table_.Upsert(seen);
+    // Handshake-proven id: liveness refresh only; Upsert gates the rest.
+    peer_table_.Upsert(seen, PeerSource::kHandshake);
   }
 
   try {
@@ -291,9 +382,12 @@ WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
   // Bounded relay. v1 refused to relay at all, because without dedup a relay
   // is a broadcast storm. With a message id and a TTL, one extra hop cuts
   // convergence latency on a partially-connected mesh and terminates by
-  // construction.
+  // construction. The TTL is clamped to our own maximum (H-9 fix): a sender
+  // claiming ttl=255 must not buy a 255-hop storm at our expense.
+  constexpr uint8_t kMaxRelayTtl = 3;
   if (broadcast.ttl > 0) {
     OpBroadcastPayload relayed = broadcast;
+    if (relayed.ttl > kMaxRelayTtl) relayed.ttl = kMaxRelayTtl;
     relayed.ttl = static_cast<uint8_t>(broadcast.ttl - 1);
     FanOut(relayed, peer_node_id);
   }
@@ -308,8 +402,10 @@ WireMessage NetworkManager::HandleOpBroadcast(const std::string& peer_node_id,
     receipt.key_hash = LedgerKeyHash(broadcast.collection, broadcast.docs[0].key);
     receipt.applier_node = engine_->identity().node_id();
     receipt.applied_lsn = engine_->LedgerTip().entry_id;
-    // Sign: Ed25519 over (message_id || key_hash || applied_lsn)
-    const std::string message = receipt.message_id + receipt.key_hash + std::to_string(receipt.applied_lsn);
+    // Sign (M-7 fix): domain-separated so a held-ack signature is not
+    // replayable as a merge receipt or vice versa.
+    const std::string message = std::string("DSN-RECEIPT-v1") + receipt.message_id + receipt.key_hash +
+                                std::to_string(receipt.applied_lsn);
     receipt.signature = engine_->identity().Sign(message);
     DSN_LOG_DEBUG("network", "HandleOpBroadcast: receipt encoded, size=" << receipt.Encode().size());
     return WireMessage{MessageType::kPong, receipt.Encode()};
@@ -353,6 +449,8 @@ WireMessage NetworkManager::HandleTransitQuery(const std::string& peer_node_id,
     entry.doc_size_bytes = envelope.doc_size_bytes;
     entry.chunk_index = envelope.chunk_index;
     entry.chunk_total = envelope.chunk_total;
+    entry.content_hash = envelope.content_hash;
+    entry.holder_sig = envelope.holder_sig;
     response.entries.push_back(std::move(entry));
   }
   response.next_offset = query.offset + response.entries.size();
@@ -391,7 +489,7 @@ WireMessage NetworkManager::HandleTransitHeld(const std::string& peer_node_id,
 
 WireMessage NetworkManager::HandleLedgerDigest(const std::string& peer_node_id,
                                                 const LedgerDigestPayload& digest) {
-  LedgerDeltaPayload response;
+    LedgerDeltaPayload response;
   const Requestor who = Requestor::Peer(peer_node_id);
 
   const lsn_t local_tip = engine_->LedgerTip().entry_id;
@@ -431,7 +529,22 @@ WireMessage NetworkManager::HandleLedgerDigest(const std::string& peer_node_id,
     } else {
       response.hashes_only = true;
     }
+    if (rec.type == WalRecordType::kAcl) {
+      // Replicated ACLs (H-1) are metadata, not user bytes: the collection
+      // name and the signed envelope go to every peer so confidentiality
+      // converges along with the data. The envelope verifies without any
+      // other record content (owner self-attestation).
+      summary.collection = rec.collection;
+      summary.acl_json = rec.document_bytes;
+    }
     response.entries.push_back(std::move(summary));
+  }
+  // Attest the delta's tip (C-6): the collector verifies this against our
+  // handshake-proven key. Signs entries.back (which may lag our current tip
+  // under truncation), never an unrelated height.
+  if (!response.entries.empty()) {
+    const LedgerEntrySummary& back = response.entries.back();
+    response.tip_signature = engine_->SignTipFor(back.entry_id, back.entry_hash);
   }
   return WireMessage{MessageType::kLedgerDelta, response.Encode()};
 }
@@ -463,10 +576,12 @@ WireMessage NetworkManager::HandleHeartbeat(const std::string& peer_node_id,
                            request.quota_limited, request.transit_bytes_held,
                            request.transit_budget_bytes);
   if (request.is_supervisor) {
+    // Heartbeat arrived over the authenticated channel, so the sender really
+    // is peer_node_id; supervisor flag from here is handshake-adjacent.
     PeerInfo info;
     if (peer_table_.Get(peer_node_id, &info) && !info.is_supervisor) {
       info.is_supervisor = true;
-      peer_table_.Upsert(info);
+      peer_table_.Upsert(info, PeerSource::kProbe);
       if (placement_) placement_->Rebuild(peer_table_);
     }
   }
@@ -545,7 +660,7 @@ void NetworkManager::ProbePeer(PeerInfo peer) {
   // marking (the peer proved it is back); condemning takes sustained
   // failure via the suspicion tiers above.
   if (seen.state == NodeLifecycleState::kDegraded) seen.state = NodeLifecycleState::kRunning;
-  peer_table_.Upsert(seen);
+  peer_table_.Upsert(seen, PeerSource::kProbe);
   if (seen.is_supervisor && placement_) placement_->Rebuild(peer_table_);
 }
 
@@ -582,8 +697,8 @@ void NetworkManager::FanOut(const OpBroadcastPayload& payload, const std::string
             // Verify the signature matches the applier's public key.
             const std::string public_key = ResolvePublicKey(receipt.applier_node);
             if (!public_key.empty() && NodeIdentity::DeriveNodeId(public_key) == receipt.applier_node) {
-              const std::string message = receipt.message_id + receipt.key_hash +
-                                          std::to_string(receipt.applied_lsn);
+              const std::string message = std::string("DSN-RECEIPT-v1") + receipt.message_id +
+                                          receipt.key_hash + std::to_string(receipt.applied_lsn);
               if (NodeIdentity::Verify(public_key, message, receipt.signature)) {
                 if (receipt_tracker_) receipt_tracker_->NoteReceipt(receipt);
               }
@@ -604,12 +719,21 @@ void NetworkManager::FanOut(const OpBroadcastPayload& payload, const std::string
   }
 }
 
+thread_local std::string NetworkManager::thread_next_broadcast_id_;
+
 void NetworkManager::BroadcastLocalWrite(const std::string& collection, const std::string& key,
                                           const std::string& encoded_doc) {
   OpBroadcastPayload payload;
   payload.collection = collection;
   payload.docs.push_back(DocEntry{key, encoded_doc});
-  payload.message_id = MessageDedup::NewMessageId(engine_->identity().node_id());
+  // Prefer the API-assigned id for this thread (durability wait shares it);
+  // otherwise mint one (replication-path writes, outbox flush).
+  if (!thread_next_broadcast_id_.empty()) {
+    payload.message_id = std::move(thread_next_broadcast_id_);
+    thread_next_broadcast_id_.clear();
+  } else {
+    payload.message_id = MessageDedup::NewMessageId(engine_->identity().node_id());
+  }
   payload.ttl = 1;
   // Record our own id so a relay coming back to us is recognised as a
   // duplicate rather than merged a second time.
@@ -713,37 +837,161 @@ void NetworkManager::HoldForUnreachableOwners(const std::string& collection, con
                                                                         << st.message());
       continue;
     }
-    // Send held-ack to the writer (the offline owner) so they can count it
-    // toward their durability target. The intent LSNs were just appended
-    // with our holder_node; fetch them and send a signed ack per chunk.
-    auto intents = engine_->TransitIntentsForSelf();
-    for (const auto& intent : intents) {
-      // TransitIntentsForSelf already filters to intents where collection == self.
-      // Check if this intent is for one of our chunks.
-      bool is_ours = false;
-      for (uint32_t c : my_chunks) {
-        if (intent.chunk_index == c) { is_ours = true; break; }
-      }
-      if (!is_ours) continue;
-      // Fetch the envelope to get the original message_id.
-      auto env_or = engine_->transit().Lookup(replica, intent.key_hash);
-      if (!env_or.ok()) continue;
-      const TransitEnvelope& env = env_or.value();
-      // Send held-ack to the writer (replica is the owner_node)
-      PeerInfo holder_info;
-      if (!peer_table_.Get(replica, &holder_info) || holder_info.p2p_port == 0) continue;
-      TransitHeldPayload held;
-      held.message_id = env.message_id;
-      held.key_hash = intent.key_hash;
-      held.holder_node = self;
-      held.intent_lsn = intent.intent_lsn;
-      // Sign the held-ack
-      const std::string message = held.message_id + held.key_hash + std::to_string(held.intent_lsn);
-      held.signature = engine_->identity().Sign(message);
-      transport_->SendRequest(holder_info.host, holder_info.p2p_port,
-                              WireMessage{MessageType::kTransitHeld, held.Encode()});
-    }
+    // No held-ack dial here (M-10 fix). The old code dialled `replica` --
+    // the offline owner, unreachable by definition (each dial was a doomed
+    // connection attempt), under a comment confusing the writer with the
+    // owner. On this path (local writes only -- the sole caller is
+    // BroadcastLocalWrite) the writer is this node itself, and the durable
+    // record of the hold is the TRANSIT_INTENT just appended to our ledger
+    // plus the envelope (which preserves message_id for correlation). The
+    // owner discovers the hold via intents on return and claims it; nothing
+    // is sent to an unreachable peer. Worse, the old loop read
+    // TransitIntentsForSelf -- intents where WE are the owner, not the
+    // holder -- and matched them to these chunks by chunk_index alone, so it
+    // could ack unrelated intents. Deleted, not repointed.
+    DSN_LOG_INFO("transit", "held " << my_chunks.size() << " chunk(s) of " << collection << "/"
+                                    << key << " for offline owner " << replica
+                                    << " (intent on our ledger; no ack dial)");
   }
+}
+
+size_t NetworkManager::ApplyHolderEntries(const std::string& holder_node,
+                                           const std::vector<TransitEntry>& entries,
+                                           ClaimReport& report, TransitClaimPayload& claim_out) {
+  // The holder must be handshake-known: its signature is the trust root for
+  // these bytes, and an unproven key verifies nothing (C-2/C-3).
+  PeerInfo holder_info;
+  std::string holder_pubkey;
+  if (peer_table_.Get(holder_node, &holder_info) && holder_info.handshake_proven) {
+    holder_pubkey = holder_info.ed25519_pubkey;
+  }
+  if (holder_pubkey.empty()) {
+    DSN_LOG_WARN("transit", "ignoring " << entries.size() << " entries from unverified holder "
+                                        << holder_node);
+    report.failures += entries.size();
+    return 0;
+  }
+  // Local intents are the cross-check: which (key_hash, chunk_total, holder)
+  // we actually expect. Entries for anything else are refused.
+  std::map<std::string, NodeEngine::TransitIntent> intent_by_hash;
+  for (const auto& intent : engine_->TransitIntentsForSelf()) {
+    intent_by_hash[intent.key_hash] = intent;
+  }
+  // Ring-designation inputs, built once per response. Mirrors the hold-time
+  // candidate construction (HoldForUnreachableOwners): self plus dialable,
+  // non-supervisor, non-reclaimed, non-dead peers, minus the owner (self).
+  const std::string self = engine_->identity().node_id();
+  const int64_t threshold = config_.liveness_threshold_ms > 0
+                                ? static_cast<int64_t>(config_.liveness_threshold_ms)
+                                : 5000;
+  const int64_t now = NowMs();
+  std::vector<std::string> holder_candidates;
+  for (const PeerInfo& peer : peer_table_.List()) {
+    if (peer.node_id == self || peer.p2p_port == 0) continue;
+    if (peer.node_id.rfind("bootstrap#", 0) == 0) continue;
+    if (peer.is_supervisor) continue;
+    if (peer.state == NodeLifecycleState::kReclaimed) continue;
+    if (peer.Suspicion(now, threshold) == PeerSuspicion::kDead) continue;
+    holder_candidates.push_back(peer.node_id);
+  }
+  const uint32_t max_holders = config_.transit_max_holders > 0 ? config_.transit_max_holders : 3;
+  // Group verified chunks by document.
+  std::map<std::string, std::vector<const TransitEntry*>> by_doc;
+  for (const TransitEntry& entry : entries) {
+    if (!VerifyTransitEntry(entry, holder_node, holder_pubkey)) {
+      DSN_LOG_WARN("transit", "holder " << holder_node
+                                        << " served unverifiable bytes; ignoring entry");
+      ++report.failures;
+      continue;
+    }
+    // Ring-designation check (C-3): the responder must be a deterministically
+    // designated holder for this chunk (SelectTransitHolders over the same
+    // inputs the hold path used). An off-ring Sybil -- even a
+    // handshake-proven mesh member -- cannot inject bytes; designated
+    // holders already receive plaintext via broadcast, so passing this check
+    // grants no new trust. A locally-held intent disagreeing on
+    // holder/chunk_total is still refused below (defense in depth).
+    const std::string doc_hash = LedgerKeyHash(entry.collection, entry.key);
+    const std::vector<std::string> designated =
+        SelectTransitHolders(self, doc_hash, holder_candidates, max_holders, entry.chunk_index);
+    if (std::find(designated.begin(), designated.end(), holder_node) == designated.end()) {
+      DSN_LOG_WARN("transit", "holder " << holder_node << " is not a designated holder for "
+                                        << entry.collection << "/" << entry.key << " chunk "
+                                        << entry.chunk_index << "; ignoring");
+      ++report.failures;
+      continue;
+    }
+    auto it = intent_by_hash.find(entry.key_hash);
+    if (it != intent_by_hash.end()) {
+      const auto& intent = it->second;
+      if (intent.holder_node != holder_node || intent.chunk_total != entry.chunk_total) {
+        DSN_LOG_WARN("transit", "holder " << holder_node << " served entry disagreeing with local "
+                                          << "intent (holder/chunk_total); ignoring");
+        ++report.failures;
+        continue;
+      }
+    }
+    std::string doc_key = entry.collection;
+    doc_key.push_back('\0');
+    doc_key += entry.key;
+    by_doc[doc_key].push_back(&entry);
+  }
+  size_t applied = 0;
+  for (const auto& [doc_key, chunks] : by_doc) {
+    const TransitEntry* first = chunks.front();
+    std::string full_bytes;
+    if (first->chunk_total == 1) {
+      if (chunks.size() != 1) {
+        ++report.failures;
+        continue;
+      }
+      full_bytes = first->encoded_doc;
+    } else {
+      // Reassemble striped document (C-3): every chunk 0..total-1 exactly
+      // once, concatenated size matching the attested doc_size.
+      const uint32_t total = first->chunk_total;
+      if (total > 4096 || first->doc_size_bytes > (64u << 20)) {
+        ++report.failures;
+        continue;
+      }
+      std::vector<const TransitEntry*> ordered(total, nullptr);
+      bool ok = true;
+      for (const TransitEntry* e : chunks) {
+        if (e->chunk_total != total || e->doc_size_bytes != first->doc_size_bytes ||
+            e->chunk_index >= total || ordered[e->chunk_index] != nullptr) {
+          ok = false;
+          break;
+        }
+        ordered[e->chunk_index] = e;
+      }
+      for (const TransitEntry* e : ordered) {
+        if (e == nullptr) { ok = false; break; }
+      }
+      if (!ok) {
+        ++report.failures;
+        continue;
+      }
+      size_t sum = 0;
+      for (const TransitEntry* e : ordered) sum += e->encoded_doc.size();
+      if (sum != first->doc_size_bytes) {
+        ++report.failures;
+        continue;
+      }
+      full_bytes.reserve(sum);
+      for (const TransitEntry* e : ordered) full_bytes += e->encoded_doc;
+    }
+    Status st = engine_->ApplyClaimedTransit(first->collection, first->key, full_bytes);
+    if (!st.ok()) {
+      DSN_LOG_WARN("transit", "could not apply held document " << first->collection << "/"
+                                                               << first->key << ": " << st.message());
+      ++report.failures;
+      continue;
+    }
+    for (const TransitEntry* e : chunks) claim_out.key_hashes.push_back(e->key_hash);
+    ++report.documents_claimed;
+    ++applied;
+  }
+  return applied;
 }
 
 NetworkManager::ClaimReport NetworkManager::ClaimPendingTransit() {
@@ -794,26 +1042,9 @@ NetworkManager::ClaimReport NetworkManager::ClaimPendingTransit() {
 
         TransitClaimPayload claim;
         claim.claimer_node = self;
-        bool any = false;
-        for (const TransitEntry& entry : payload.entries) {
-          if (LedgerKeyHash(entry.collection, entry.key) != entry.key_hash) {
-            DSN_LOG_WARN("transit", "holder " << holder << " returned an entry whose key does not "
-                                              << "match its key_hash; ignoring");
-            ++report.failures;
-            continue;
-          }
-          Status st = engine_->ApplyClaimedTransit(entry.collection, entry.key, entry.encoded_doc);
-          if (!st.ok()) {
-            DSN_LOG_WARN("transit", "could not apply held document " << entry.collection << "/"
-                                                                      << entry.key << ": " << st.message());
-            ++report.failures;
-            continue;
-          }
-          claim.key_hashes.push_back(entry.key_hash);
-          ++report.documents_claimed;
-          any = true;
-        }
-        if (any) {
+        const size_t applied =
+            ApplyHolderEntries(holder, payload.entries, report, claim);
+        if (applied > 0) {
           transport_->SendRequest(holder_info.host, holder_info.p2p_port,
                                   WireMessage{MessageType::kTransitClaim, claim.Encode()});
         }
@@ -823,66 +1054,48 @@ NetworkManager::ClaimReport NetworkManager::ClaimPendingTransit() {
     }
   }
 
-  // Phase 2: fallback ask-everyone sweep for any holders not captured
-  // by local intents (e.g., intents from a peer we haven't synced with
-  // yet, or a new holder since our last gossip round).
-  for (const PeerInfo& peer : peer_table_.Ranked()) {
-    if (peer.p2p_port == 0 || peer.node_id == self) continue;
-    // Skip holders we already queried in Phase 1.
-    if (!local_intents.empty()) {
-      bool skip = false;
-      for (const auto& intent : local_intents) {
-        if (intent.holder_node == peer.node_id) { skip = true; break; }
-      }
-      if (skip) continue;
-    }
-    ++report.peers_asked;
+  // Phase 2: ask-everyone sweep for holders not captured by local intents
+  // (e.g. intents from a peer we haven't synced with yet -- the returning
+  // owner that was offline for the write has NO local intent). Sound because
+  // ApplyHolderEntries verifies per entry: content hash + holder attestation
+  // against the responder's proven key AND ring-designation
+  // (SelectTransitHolders). An off-ring Sybil's bytes are ignored no matter
+  // what they attest.
+  {
+    std::map<std::string, bool> queried;
+    for (const auto& intent : local_intents) queried[intent.holder_node] = true;
+    for (const PeerInfo& peer : peer_table_.Ranked()) {
+      if (peer.p2p_port == 0 || peer.node_id == self) continue;
+      if (queried.count(peer.node_id) != 0) continue;  // asked in Phase 1
+      ++report.peers_asked;
 
-    auto response = transport_->SendRequest(peer.host, peer.p2p_port,
-                                             WireMessage{MessageType::kTransitQuery, ""});
-    if (!response.ok() || response.value().type != MessageType::kTransitResponse) {
-      ++report.failures;
-      continue;
-    }
-
-    TransitResponsePayload payload;
-    try {
-      payload = TransitResponsePayload::Decode(response.value().payload);
-    } catch (const std::exception&) {
-      ++report.failures;
-      continue;
-    }
-    if (payload.entries.empty()) continue;
-
-    TransitClaimPayload claim;
-    claim.claimer_node = self;
-    for (const TransitEntry& entry : payload.entries) {
-      // Verify the bytes actually hash to the key they are labelled with:
-      // a holder that returned the wrong document for a key_hash would
-      // otherwise be applied verbatim.
-      if (LedgerKeyHash(entry.collection, entry.key) != entry.key_hash) {
-        DSN_LOG_WARN("transit", "holder " << peer.node_id << " returned an entry whose key does not "
-                                            << "match its key_hash; ignoring");
+      auto response = transport_->SendRequest(peer.host, peer.p2p_port,
+                                               WireMessage{MessageType::kTransitQuery, ""});
+      if (!response.ok() || response.value().type != MessageType::kTransitResponse) {
         ++report.failures;
         continue;
       }
-      Status st = engine_->ApplyClaimedTransit(entry.collection, entry.key, entry.encoded_doc);
-      if (!st.ok()) {
-        DSN_LOG_WARN("transit", "could not apply held document " << entry.collection << "/"
-                                                                  << entry.key << ": " << st.message());
+
+      TransitResponsePayload payload;
+      try {
+        payload = TransitResponsePayload::Decode(response.value().payload);
+      } catch (const std::exception&) {
         ++report.failures;
         continue;
       }
-      claim.key_hashes.push_back(entry.key_hash);
-      ++report.documents_claimed;
-    }
+      if (payload.entries.empty()) continue;
 
-    if (!claim.key_hashes.empty()) {
-      // Telling the holder is what lets it record TRANSIT_CLAIMED and
-      // eventually release the bytes. A failure here is not fatal: the
-      // envelope simply expires on its TTL instead.
-      transport_->SendRequest(peer.host, peer.p2p_port,
-                              WireMessage{MessageType::kTransitClaim, claim.Encode()});
+      TransitClaimPayload claim;
+      claim.claimer_node = self;
+      ApplyHolderEntries(peer.node_id, payload.entries, report, claim);
+
+      if (!claim.key_hashes.empty()) {
+        // Telling the holder is what lets it record TRANSIT_CLAIMED and
+        // eventually release the bytes. A failure here is not fatal: the
+        // envelope simply expires on its TTL instead.
+        transport_->SendRequest(peer.host, peer.p2p_port,
+                                WireMessage{MessageType::kTransitClaim, claim.Encode()});
+      }
     }
   }
 
@@ -915,10 +1128,14 @@ std::vector<ReplicaTip> NetworkManager::CollectReplicaTips() {
     tip.node_id = peer.node_id;
     tip.entry_id = delta.entries.back().entry_id;
     tip.entry_hash = delta.entries.back().entry_hash;
+    tip.signature = delta.tip_signature;
     // A peer's *self-reported* verification result is not evidence on its
-    // own; what we can check locally is that the chain segment it sent links
-    // correctly and that its origin signatures verify against the public keys
-    // the handshake proved. That is a stronger check than trusting a boolean.
+    // own. What we check locally: the segment links to itself, AND the
+    // responder's tip signature verifies against its handshake-proven key
+    // (C-6 fix -- previously the signature field was never populated, so an
+    // empty string was "verified"). Origin signatures cannot be recomputed
+    // from summaries (document bytes are stripped for non-readers), so a tip
+    // without a valid signature is not a vote; see checkpoint.h.
     tip.self_verified = true;
     std::string expected_prev;
     for (const LedgerEntrySummary& entry : delta.entries) {
@@ -928,8 +1145,9 @@ std::vector<ReplicaTip> NetworkManager::CollectReplicaTips() {
       }
       expected_prev = entry.entry_hash;
     }
-    tip.signature_valid = engine_->VerifyPeerTip(peer.node_id, tip.entry_id, tip.entry_hash,
-                                                  tip.signature);
+    tip.signature_valid = !tip.signature.empty() &&
+                          engine_->VerifyPeerTip(peer.node_id, tip.entry_id, tip.entry_hash,
+                                                 tip.signature);
     tips.push_back(std::move(tip));
   }
   return tips;

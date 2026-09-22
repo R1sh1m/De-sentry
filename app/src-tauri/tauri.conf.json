@@ -81,11 +81,19 @@
         "bundleMediaFramework": false
       }
     },
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "shell": {
       "open": false
+    },
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/R1sh1m/De-sentry/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzOEI0M0U0MTI1RTU3MgpSV1J5NVNWQlByUTREUFpKT2Yvb1dxbnAwcktnWGI0N01aNmdyeGZGdmVyQkhiMG9VNlNIZ0MrSQo="
     }
   }
 }

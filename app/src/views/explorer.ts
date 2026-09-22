@@ -16,6 +16,12 @@ import { emptyState } from "../util/empty.js";
 
 const PAGE_SIZE = 200;
 
+/** Monotonic navigation id: stale page turns must not install their stacks. */
+let loadGeneration = 0;
+
+/** Pending key-filter debounce, shared so a re-render retires the orphan. */
+let sharedFilterTimer = 0;
+
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -196,6 +202,7 @@ export function createExplorer(): ExplorerHandles {
   ): Promise<void> {
     const node = store.node(nodeId);
     if (node === undefined) return;
+    loadGeneration++;
     if (state !== null) {
       state.loading = true;
       state.error = "";
@@ -361,10 +368,13 @@ export function createExplorer(): ExplorerHandles {
     }) as HTMLInputElement;
 
     // Debounced so fast typing does not re-filter the list per keystroke.
-    let filterTimer = 0;
+    // Shared across renders (not per-input): a re-render replaces the input
+    // while the old timer is still pending, and the orphan would then write
+    // a stale filter into the new page. Clearing here retires it.
+    window.clearTimeout(sharedFilterTimer);
     on(searchInput, "input", () => {
-      window.clearTimeout(filterTimer);
-      filterTimer = window.setTimeout(() => {
+      window.clearTimeout(sharedFilterTimer);
+      sharedFilterTimer = window.setTimeout(() => {
         current.keyFilter = searchInput.value.trim().toLowerCase();
         renderKeysOnly();
       }, 200);
@@ -417,11 +427,15 @@ export function createExplorer(): ExplorerHandles {
   }
 
   function pager(current: ExplorerState): HTMLElement {
+    // Paging is locked while a load is in flight: rapid Next/Back clicks
+    // otherwise interleave loads and the .then below applies one page's
+    // stack to another page's rows.
+    const busy = current.loading;
     const back = el("button", {
       class: "btn btn--sm btn--ghost",
       type: "button",
       text: "Back",
-      disabled: current.pageStack.length === 0,
+      disabled: busy || current.pageStack.length === 0,
     });
     on(back, "click", () => {
       const previous = current.pageStack.pop() ?? "";
@@ -432,16 +446,20 @@ export function createExplorer(): ExplorerHandles {
       class: "btn btn--sm btn--ghost",
       type: "button",
       text: "Next",
-      disabled: !current.mayHaveMore,
+      disabled: busy || !current.mayHaveMore,
     });
     on(next, "click", () => {
       const last = current.rows[current.rows.length - 1];
       if (last === undefined) return;
       const stack = [...current.pageStack, current.rows[0]?.key ?? ""];
+      // Generation guard: only the latest navigation may install its stack.
+      const generation = ++loadGeneration;
       // Inclusive bound + drop-first (see load()): correct for every key,
       // including ones ending in a space.
       void load(current.nodeId, current.collection, last.key, last.key).then(() => {
-        if (state !== null) state.pageStack = stack;
+        if (state !== null && generation === loadGeneration) {
+          state.pageStack = stack;
+        }
         render();
       });
     });
@@ -453,6 +471,33 @@ export function createExplorer(): ExplorerHandles {
       current.rows.length > 0
         ? `${truncate(current.rows[0].key, 18)} → ${truncate(current.rows[current.rows.length - 1].key, 18)}`
         : "empty page";
+    // Explicit retention run (no background scheduler by design): applies the
+    // collection's configured retention_days now. Only meaningful on
+    // ts_rollup collections; anything else explains itself via the API error.
+    const retain = el("button", {
+      class: "btn btn--sm btn--ghost",
+      type: "button",
+      text: "Run retention",
+      title: "Apply this collection's retention_days now (ts_rollup only)",
+    });
+    on(retain, "click", () => {
+      const node = store.node(current.nodeId);
+      if (node === undefined) return;
+      retain.textContent = "Running…";
+      (retain as HTMLButtonElement).disabled = true;
+      void apiFor(node.process.api_port)
+        .runRetention(current.collection)
+        .then((result) => {
+          store.toast("success", "Retention", `Dropped ${result.chunks_dropped} chunk(s) in ${current.collection}.`, 4000);
+        })
+        .catch((error: unknown) => {
+          store.toast("error", "Retention", describeError(error), 5000);
+        })
+        .finally(() => {
+          retain.textContent = "Run retention";
+          (retain as HTMLButtonElement).disabled = false;
+        });
+    });
     return el(
       "div",
       { class: "row row--between" },
@@ -462,7 +507,7 @@ export function createExplorer(): ExplorerHandles {
         title: "Page-local range; the filter box below also applies to this page only",
         text: `${count(current.rows.length)} keys (${range})`,
       }),
-      el("div", { class: "row" }, back, next),
+      el("div", { class: "row" }, retain, back, next),
     );
   }
 

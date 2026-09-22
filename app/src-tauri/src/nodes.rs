@@ -226,6 +226,21 @@ fn spawn_child(
     // and nothing else, and an inherited variable that changed behaviour would
     // be invisible in the app.
     command.env_remove("DESENTRY_CONFIG");
+    // The per-boot API bearer token (C-8) is the deliberate exception: it is
+    // passed explicitly (not merely inherited) so a future env-clearing
+    // change cannot silently drop auth.
+    if let Ok(token) = std::env::var("DESENTRY_API_TOKEN") {
+        if !token.is_empty() {
+            command.env("DESENTRY_API_TOKEN", token);
+        }
+    }
+    // Same treatment for the cluster-membership secret: explicit, so every
+    // child joins the same closed mesh (or the same open one, when unset).
+    if let Ok(secret) = std::env::var("DESENTRY_CLUSTER_SECRET") {
+        if !secret.is_empty() {
+            command.env("DESENTRY_CLUSTER_SECRET", secret);
+        }
+    }
 
     #[cfg(windows)]
     {

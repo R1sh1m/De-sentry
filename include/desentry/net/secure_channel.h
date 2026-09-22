@@ -6,6 +6,13 @@
 // share a nonce space. Ephemeral keys mean every connection gets a fresh
 // secret -- compromising a node's long-term identity key later does not
 // let an attacker decrypt a session recorded earlier.
+//
+// H-5 hardening (wire-breaking vs pre-H-5 peers, by design): after the two
+// HELLOs, each side signs the full transcript (client hello, then server
+// hello -- kConfirm) and verifies the peer's. The transcript binds
+// identities, ephemeral keys and ports, so a recorded HELLO replays into
+// nothing: the replayer cannot produce the confirm signature. The KDF salt
+// additionally binds both node ids (client, then server).
 
 #include <cstdint>
 #include <string>
@@ -31,10 +38,14 @@ struct HandshakeResult {
 };
 
 // Client side: we initiated the TCP connection.
-StatusOr<HandshakeResult> ClientHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
+StatusOr<HandshakeResult> ClientHandshake(dsn_socket_t sockfd, const NodeIdentity& identity,
+                                           uint16_t our_p2p_port,
+                                           const std::string& cluster_secret = std::string());
 
 // Server side: we accepted the TCP connection.
-StatusOr<HandshakeResult> ServerHandshake(dsn_socket_t sockfd, const NodeIdentity& identity, uint16_t our_p2p_port);
+StatusOr<HandshakeResult> ServerHandshake(dsn_socket_t sockfd, const NodeIdentity& identity,
+                                           uint16_t our_p2p_port,
+                                           const std::string& cluster_secret = std::string());
 
 // Encrypts `msg` and writes it as one length-prefixed frame; advances
 // keys->send_counter.

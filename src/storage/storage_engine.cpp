@@ -83,9 +83,45 @@ Status StorageEngine::ReplayLedger() {
   DSN_LOG_INFO("storage", "replaying " << records.size() << " ledger record(s)...");
   size_t applied = 0;
   for (const WalRecord& rec : records) {
-    // Only document mutations rebuild state. Transit and checkpoint entries
-    // are ledger bookkeeping -- replaying a TRANSIT_INTENT as a document
-    // write would materialise an envelope as if it were user data.
+    // Only document mutations rebuild state. Transit, checkpoint and ABORT
+    // entries are ledger bookkeeping -- replaying a TRANSIT_INTENT as a
+    // document write would materialise an envelope as if it were user data,
+    // and an ABORT explicitly attests that its PUT never materialised.
+    if (rec.type == WalRecordType::kAcl) {
+      // Replicated ACL (H-1): no signature re-check at boot -- the record
+      // was attested when received live, and the chain's own integrity is
+      // verified before serving. LWW by updated_ms, same as the live path.
+      try {
+        JsonValue env = JsonValue::Parse(rec.document_bytes);
+        const JsonValue* acl_v = env.Find("acl");
+        const JsonValue* ms_v = env.Find("updated_ms");
+        if (acl_v != nullptr && acl_v->is_object() && ms_v != nullptr && ms_v->is_number()) {
+          CollectionAcl acl;
+          const JsonValue* owner = acl_v->Find("owner_node");
+          if (owner && owner->is_string()) acl.owner_node = owner->AsString();
+          const JsonValue* priv = acl_v->Find("private");
+          if (priv && priv->is_bool()) acl.is_private = priv->AsBool();
+          const JsonValue* readers = acl_v->Find("readers");
+          if (readers && readers->is_array()) {
+            for (const JsonValue& r : readers->AsArray()) {
+              if (r.is_string()) acl.readers.push_back(r.AsString());
+            }
+          }
+          const JsonValue* parent = acl_v->Find("parent");
+          if (parent && parent->is_string()) acl.parent = parent->AsString();
+          EnsureCollection(rec.collection);
+          Status set_st = catalog_->SetAclAt(rec.collection, acl,
+                                             static_cast<uint64_t>(ms_v->AsInt()));
+          if (!set_st.ok() && set_st.code() != StatusCode::kInvalidArgument) {
+            DSN_LOG_WARN("storage", "replay: kAcl for '" << rec.collection << "' refused: "
+                                                         << set_st.message());
+          }
+        }
+      } catch (const std::exception& e) {
+        DSN_LOG_WARN("storage", "replay: malformed kAcl at LSN " << rec.lsn << ": " << e.what());
+      }
+      continue;
+    }
     if (rec.type != WalRecordType::kPut) continue;
     // Replay goes through the router, not the ledger: appending again would
     // duplicate the entry and break the chain's relationship to history.
@@ -193,11 +229,24 @@ Status StorageEngine::PutRaw(const std::string& collection, const std::string& k
     // The ledger already attests to this LSN (append + fsync above), so a
     // materialisation failure is a ledger/materialised gap by construction.
     // Pre-validation above makes this unreachable for bad keys/docs; the
-    // remaining causes are quota races and I/O errors. Log loudly with the
-    // LSN so the gap is traceable, and leave recovery to ReplayLedger (which
-    // retries with the merge overdraft) rather than pretending here.
-    DSN_LOG_ERROR("storage", "ledger " << lsn_or.value() << " has no materialised row (" << collection
-                                        << "/" << key << "): " << st.message());
+    // remaining causes are quota races and I/O errors. Append a compensating
+    // ABORT (ops #1 fix) so the gap is explicit history -- auditors can tell
+    // "claimed but never stored" from "stored" -- rather than a silent
+    // divergence the ledger claims and storage lacks. Best-effort: if the
+    // abort append itself fails, the loud log below is still the backstop,
+    // and ReplayLedger retries the PUT with the merge overdraft.
+    const lsn_t failed_lsn = lsn_or.value();
+    WriteAheadLog::AppendOptions abort_options;
+    auto abort_or = wal_->Append(WalRecordType::kAbort, collection, key, "", abort_options);
+    if (abort_or.ok()) {
+      DSN_LOG_ERROR("storage", "ledger " << failed_lsn << " aborted at " << abort_or.value() << " (" <<
+                                       collection << "/" << key << "): " << st.message());
+    } else {
+      DSN_LOG_ERROR("storage", "ledger " << failed_lsn << " has no materialised row (" << collection
+                                          << "/" << key << "): " << st.message()
+                                          << " (abort record failed: " << abort_or.status().message()
+                                          << ")");
+    }
     return st;
   }
 
@@ -241,13 +290,10 @@ void StorageEngine::Checkpoint() {
 }
 
 StatusOr<std::vector<WalRecord>> StorageEngine::LedgerEntries(lsn_t from, lsn_t to) {
-  auto records_or = wal_->ReadAll();
-  if (!records_or.ok()) return records_or.status();
-  std::vector<WalRecord> out;
-  for (const WalRecord& rec : records_or.value()) {
-    if (rec.lsn >= from && rec.lsn <= to) out.push_back(rec);
-  }
-  return out;
+  // Bounded range read (H-2 fix): the old ReadAll()+filter parsed and
+  // unsealed the entire ledger -- including every document body -- on every
+  // inbound gossip digest. A 40-byte digest could cost a 1GB read.
+  return wal_->ReadRange(from, to);
 }
 
 StorageEngine::VerifyReport StorageEngine::VerifyAll(

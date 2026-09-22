@@ -188,6 +188,10 @@ page_id_t DiskManager::AllocatePage() {
 Status DiskManager::Sync() {
   std::lock_guard<std::mutex> lock(io_mu_);
   file_.flush();
+  std::string sync_err;
+  if (!SyncFileByPath(path_, &sync_err)) {
+    return Status::IOError("disk sync failed: " + sync_err);
+  }
   return Status::OK();
 }
 

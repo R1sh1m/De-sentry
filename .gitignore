@@ -200,3 +200,4 @@ app/src-tauri/binaries/
 # nobody can review does not belong in a source tree.
 app/resources/model/*
 !app/resources/model/README.md
+digest.txt

@@ -108,6 +108,15 @@ struct PeerFitness {
   double Score(lsn_t network_max_entry_id) const;
 };
 
+// Where a peer-table entry came from. Discovery datagrams are unsigned, so
+// they must never overwrite handshake-proven fields (C-2 fix).
+enum class PeerSource : uint8_t {
+  kBootstrap = 0,
+  kDiscovery = 1,
+  kHandshake = 2,
+  kProbe = 3,
+};
+
 struct PeerInfo {
   std::string node_id;
   std::string ed25519_pubkey;  // empty until we've actually handshaked with them
@@ -117,6 +126,10 @@ struct PeerInfo {
   std::string hostname;        // mDNS-style label, e.g. "studio-imac.local"
   int64_t last_seen_ms = 0;
   bool is_supervisor = false;  // app-local supervisors are never placement targets
+  // True once a handshake proved node_id == SHA256(pubkey) on an
+  // authenticated channel. Discovery-sourced updates must not change
+  // pubkey/host/port/supervisor while this is set.
+  bool handshake_proven = false;
   NodeLifecycleState state = NodeLifecycleState::kDiscovered;
   PeerFitness fitness;
 
@@ -128,7 +141,14 @@ struct PeerInfo {
 
 class PeerTable {
  public:
-  void Upsert(const PeerInfo& info);
+  static constexpr size_t kMaxPeers = 4096;
+  void Upsert(const PeerInfo& info, PeerSource source = PeerSource::kDiscovery);
+  // Records a handshake-proven identity (node_id == SHA-256(pubkey) verified
+  // on the authenticated channel). Creates the entry if missing, marks it
+  // proven, and binds the key. This is the only path that sets
+  // handshake_proven = true.
+  void MarkHandshakeProven(const std::string& node_id, const std::string& pubkey,
+                           const std::string& host, uint16_t p2p_port);
   std::vector<PeerInfo> List() const;
   size_t Size() const;
   bool Contains(const std::string& node_id) const;

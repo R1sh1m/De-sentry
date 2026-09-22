@@ -307,6 +307,10 @@ pub fn run() {
             // flag that a user could also pass by hand.
             None,
         ))
+        // Signed self-updates (M-13): artifacts are minisign-verified against
+        // the bundled pubkey before install. No auto-relaunch: an update
+        // installs staged and applies on the user's next start.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_nodes,
@@ -328,6 +332,8 @@ pub fn run() {
             commands::change_passphrase,
             commands::lock_node,
             commands::pick_directory,
+            commands::api_token,
+            commands::membership_status,
             commands::pick_save_file,
             commands::reveal_node_files,
             commands::set_autostart,
@@ -348,6 +354,37 @@ pub fn run() {
                 // bundle.
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
             });
+
+            // Per-boot API bearer token (C-8): 256 bits from the OS RNG,
+            // installed in our own environment so every desentryd child
+            // inherits it (spawn_child passes it explicitly). The webview
+            // reads it back via the api_token command and attaches it to
+            // every sidecar-proxied and direct API call.
+            if std::env::var("DESENTRY_API_TOKEN").unwrap_or_default().is_empty() {
+                let mut raw = [0u8; 32];
+                if getrandom::getrandom(&mut raw).is_ok() {
+                    let hex: String = raw.iter().map(|b| format!("{:02x}", b)).collect();
+                    std::env::set_var("DESENTRY_API_TOKEN", hex);
+                } else {
+                    log::warn!("OS RNG unavailable: API bearer token disabled");
+                }
+            }
+            // Cluster-membership secret (closed mesh): 256 bits from the OS
+            // RNG, shared by every desentryd child via inheritance (passed
+            // explicitly in spawn_child). Nodes without it stay open; with
+            // it, outsiders fail the handshake and their beacons are
+            // ignored. Never written to disk, never sent to the webview --
+            // only the fingerprint leaves, so two meshes can be compared
+            // when pairing ("both show a3f9c2...").
+            if std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default().is_empty() {
+                let mut raw = [0u8; 32];
+                if getrandom::getrandom(&mut raw).is_ok() {
+                    let hex: String = raw.iter().map(|b| format!("{:02x}", b)).collect();
+                    std::env::set_var("DESENTRY_CLUSTER_SECRET", hex);
+                } else {
+                    log::warn!("OS RNG unavailable: cluster stays OPEN (no membership secret)");
+                }
+            }
 
             let state = Arc::new(AppState::new(binary, data_root, resource_dir));
             handle.manage(Arc::clone(&state));

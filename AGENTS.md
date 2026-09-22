@@ -169,17 +169,22 @@ in the tree depends on which one you use.
 
 ## 4. Conventions that are load-bearing
 
-**`Status` / `StatusOr`, never exceptions.** `include/desentry/common/status.h`.
+**`Status` / `StatusOr`, never exceptions on new paths.** `include/desentry/common/status.h`.
 Every fallible call returns one; check it. `StatusOr<T>` holds the value —
-`std::move(x.value())` to take ownership out of it. There are no `throw`
-statements in engine code and adding one will surprise callers that have no
-handler anywhere up the stack.
+`std::move(x.value())` to take ownership out of it. New code must not `throw`:
+callers up the stack have no handlers. Honest legacy note: `ByteReader::Need()`
+throws `std::runtime_error` on over-read (it does not return a `Status`), and a
+handful of older paths throw; every network decode site already catches
+`std::exception`, which is why this is a resource-exhaustion concern rather
+than a crash. Prefer `Status` for anything new.
 
 **`ByteWriter` / `ByteReader` for every codec.**
 `include/desentry/common/byte_buffer.h`. All on-disk and on-wire encoding goes
-through them: fixed little-endian integers, length-prefixed bytes, bounds
-checked on read. Do not `memcpy` a struct and do not use `std::ostream`. A
-reader that runs past the end returns a failed `Status`; it does not read
+through them: host-byte-order fixed-width integers (historically documented as
+little-endian; the mesh is little-endian-only in practice -- `HLCTimestamp`
+is explicitly little-endian since the H-3/M-3 pass), length-prefixed bytes,
+bounds checked on read. Do not `memcpy` a struct and do not use `std::ostream`.
+A reader that runs past the end throws (see above); it does not read
 adjacent memory.
 
 **Tests assert, and assertions must stay live.** Test binaries are compiled

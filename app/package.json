@@ -2,7 +2,7 @@
   "name": "de-sentry-app",
   "version": "2.0.0",
   "private": true,
-  "description": "De-Sentry control room \u2014 the single point of access to a peer-to-peer database mesh.",
+  "description": "De-Sentry control room — the single point of access to a peer-to-peer database mesh.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,7 +20,8 @@
     "stage-sidecar": "node scripts/stage-sidecar.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-updater": "^2.12.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

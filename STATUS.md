@@ -1310,3 +1310,204 @@ present, and both foreign suites pass live against the sealed-capable
 binary (all five engines usable with restart persistence + ledger
 verify). Per repo precedent (§13-collision): no commit merges foreign
 work; uncommitted, awaiting the word.
+
+### Security + ops remediation pass (2026-09-21, this Windows box, MSVC build)
+
+Scope: third-party critical/high/medium findings C-1..C-8, H-1..H-11, M-1..M-13
+plus the headed-UI/ops backlog (WAL-divergence abort, keychain serial, secondary
+indexes, retention, rollback ghosts, soak drain). All code changes below are
+built and verified on this box; residuals are stated, not hidden.
+
+Engine (C++, ctest 12/12 green after every stage):
+- C-1 durability: platform SyncFileByPath/SyncDirForFile (fdatasync /
+  F_FULLFSYNC / FlushFileBuffers) wired into WAL Append, WAL create,
+  rewrite, DiskManager::Sync. wal.h fsync claim now true.
+- C-2 discovery: ListenLoop rejects node_id != DeriveNodeId(pubkey); PeerTable
+  Upsert source-gated (discovery never overwrites handshake-proven key/host/
+  port/supervisor, liveness-only), 4096 cap with dead-first eviction,
+  MarkHandshakeProven callback from both handshake directions, public-key
+  resolver serves proven keys only. Key confirmation (H-5 partial):
+  registration fires only after a valid encrypted frame (replayed HELLOs
+  register nothing).
+- C-3 transit: envelopes carry content_hash + holder_sig (v3 log format,
+  tolerant reads); claim path verifies hash + holder attestation against the
+  responder proven key, cross-checks local intents, checks ring-designation
+  (SelectTransitHolders recompute, off-ring Sybils ignored), reassembles
+  striped chunks with size/index validation; Phase 2 sweep kept with the
+  per-entry gates (intent-less returning owners can claim; forgery cannot).
+  wal.h transit-tail comment corrected (old key_hash argument was
+  self-consistent for any attacker).
+- C-4 transport: bounded WorkerPool (16/64) + 64-conn cap + 5s inbound
+  timeout + accept-error backoff + non-blocking connect w/ 2s select deadline;
+  frame cap 64MiB -> 4MiB with incremental 64KiB reads; Stop() drains pool
+  (H-11). H-6: recv nonce advances only on successful AEAD open.
+- C-5 HLC: Observe rejects >5min future skew and logical saturation (bool
+  return; MergeRemote maps to InvalidArgument); clock + OR-Set tag counter
+  (M-9) persisted to data_dir/hlc_clock (20-byte LE, crash-safe tmp+rename);
+  HLC wire codec fixed LE (was host-order vs big-endian claim; harmless on LE).
+- C-6 ledger: prev_hash inside signed content (v3 magic DSW3, legacy v2 still
+  verifies); delta tip signatures carried and verified (was verified-empty);
+  LedgerTipMessage domain-separated; .hwm truncation mark + fail-closed boot
+  VerifyChain (M-6: mid-file corruption refuses to open; storage_test updated
+  to accept refusal). Prune re-chains per-record binding, keeps quorum rule.
+- C-7/H-7: CRDT Decode depth cap 64; every wire reserve bounded by
+  remaining(); transit/delta chunk_index validation.
+- C-8 API auth: optional per-boot bearer (DESENTRY_API_TOKEN env; sidecar
+  generates 256-bit, passes explicitly to children, serves to webview via
+  api_token command, frontend + Rust http.rs attach it); Host allowlist
+  (loopback); CORS wildcard replaced by allowlisted-origin echo when a token
+  is configured (dev default unchanged + startup warning).
+- H-1 ACLs: kAcl=7 ledger record (signed envelope, owner self-attestation,
+  LWW by acl_updated_ms with 5-min skew bound); SetCollectionAcl path from
+  PUT acl; live application in gossip ExchangeLedger; boot replay; acl_json
+  always visible in deltas. An early merge-blocking interim was REVERTED after
+  transit_replay proved it broke convergence; merges stay open, ACLs converge.
+- H-2: LSN->offset index + ReadRange; LedgerEntries no longer full-scans.
+- H-3/M-8: canonical CRDT order (sorted merge output + sorted encode) +
+  hash-joined merge (was O(n*m)); crdt_test moved to CanonicalDump asserts.
+- H-8: absurd ledger heights (>2^40) ignored for fitness. H-9: inbound TTL
+  clamped to 3. H-10: broadcast id slot replaced by thread-local (data race +
+  logic race gone). M-7: DSN-HELD-v1 / DSN-RECEIPT-v1 domain separation.
+- Ops #1: kAbort=6 compensating record on post-append backend failure.
+- JSON parser strips UTF-8 BOM (live bug: run_cluster.ps1 wrote BOM node.json,
+  all 3 nodes booted with default ports); script writes BOM-less now.
+- Retention: POST /db/:collection/_retention/run (ts_rollup only) + explorer
+  Run retention button + api client. Indexes: wizard documents
+  persisted-never-queried, no picker (kept, not sold).
+- Tests touched: placement_test Upsert sources; network_test pre-creates
+  users on all nodes (replication follows local ACLs); storage_test accepts
+  fail-closed opens; crdt_test canonical asserts.
+- AGENTS.md conventions corrected to match reality (ByteReader throws;
+  host-order codec; Status for new paths).
+
+App/Rust/TS (cargo test 47 passed 1 ignored; npm build/typecheck/qr/css green):
+- Rollback (#7): removes node.json/reserved/manifest, drops dirs only when
+  this attempt created them and they are empty; rewrite_ports atomic.
+- Keychain (#2): serial_test dev-dep + serial on live-store tests.
+- UI hotspots: wizard scan-error routing, sizing generation guard,
+  createNode refresh-out-of-try, explorer pager generation guard + shared
+  filter timer, dropbox cancel/discard split + intake 64MiB guard + CSV
+  single-line/hex-Infinity handling, api bearer plumbing.
+- Soak: --drain flag + 10048 guidance.
+
+Verified live on this box: ctest 12/12; transit_replay 22/22 (claim path,
+CLAIMED, tip agreement, per-node verify); airplane 18/18; cluster run (3
+nodes via fixed ps1) + cluster_integration ALL PASSED (replication,
+convergence, ledger verify x3, peers, tombstones); cargo 47+1; npm gates.
+
+NOT done / residuals (tracked, not claimed):
+- Membership (cluster secret / invites): Sybils can still join as members;
+  designated-holder honesty assumed (replicas already hold plaintext).
+  Off-ring injection is rejected; on-ring rogue-holder forgery is not.
+- H-4 Merkle digests (LocalDigest still full-scans), H-5 full transcript
+  binding + KDF identity binding, M-1 key_hash dictionary limit, M-4
+  hand-rolled Rust crypto (kept), M-5 AAD position binding, M-10 dial-writer
+  targeting, M-11 IPv6, M-12 broadcast metadata posture (table capped),
+  M-13 signed updates (createUpdaterArtifacts still false: needs plugin +
+  signing keys + release infra; half-enabling would be worse).
+- macOS/Linux builds not run here (MSVC used); soak-50 not re-run after these
+  changes (use --drain 120); headed human click pass still the honest gap
+  (spinners/validation now guarded by construction + generation counters, but
+  no hands-on-keyboard run happened here either).
+
+### Residuals closure pass (2026-09-22, this Windows box, MSVC build)
+
+Everything listed as NOT done in the previous entry is now closed except macOS
+itself (no Mac exists on this box). All verification below ran on this box
+unless marked Linux-container.
+
+Closed since last entry:
+- Membership (was: Sybils can join): DESENTRY_CLUSTER_SECRET (env-only, never
+  on disk/logged). HMAC tags on HELLOs (trailing-tolerant) enforced when set;
+  discovery beacons carry HMAC tags, mismatches ignored (M-12). Mixed rollout
+  is fail-open per direction, closed when set everywhere. Sidecar generates
+  256-bit secret at boot, passes explicitly to children; membership_status
+  command exposes closed + fingerprint (console header shows
+  "Mesh closed b98144ce" -- verified in a headed screenshot). Verified LIVE:
+  A+B same secret replicate, C with another secret isolated (404).
+  GET /_status reports membership_required. Invite-model UX (second-machine
+  pairing UI) still future; manual secret entry works today.
+- H-5 full: kConfirm=16 transcript signatures both directions (identities,
+  ephemerals, ports bound; replayed HELLOs authenticate nothing) + KDF salt
+  binds both node ids (client, server order). Wire-breaking vs pre-H-5 peers
+  by design; network_test (real loopback handshakes) green.
+- H-4: digest cache in NodeEngine (populated on all write paths, consulted by
+  LocalDigest; tombstones flow through the same bytes the scan sees). Scan
+  itself remains; per-round decode+re-hash eliminated.
+- M-4: hand-rolled SHA-256/HMAC/PBKDF2 replaced by sha2/hmac/pbkdf2 crates.
+  NIST vector + wrap round-trip + determinism tests green (byte-identical, old
+  envelopes keep working). Custom XOR-wrap construction kept + documented
+  (format stability); AEAD for any NEW envelope.
+- M-5: sealed-record reorder/dup now fails at read via LSN monotonicity
+  (backwards LSN = corruption; forward gaps legitimate after prune).
+- M-10: the per-chunk held-ack dial loop DELETED (dialled the offline owner,
+  matched wrong intents by chunk_index alone, acks consumed nowhere).
+- M-1: key_hash dictionary limit documented at LedgerKeyHash (honest: only
+  high-entropy keys are undisclosed; per-collection HMAC needs key dist).
+- M-11: dual-stack TCP + HTTP listen/dial (IPv4 behavior unchanged; "::"
+  binds dual-stack; AF_UNSPEC resolve with bracket support). Discovery stays
+  IPv4 broadcast (documented in udp_discovery.h).
+- M-13: updater plugin + minisign pubkey in tauri.conf + createUpdaterArtifacts
+  true + boot check (silent offline) + download/install with restart toast +
+  capability grants + release.yml TAURI_SIGNING_PRIVATE_KEY wiring. Keypair
+  generated (private at ~/.tauri/de-sentry.key -- NO password, see handoff).
+- Soak-50: ALL 58 CHECKS PASSED (drain 60, settle 300): 415/500 accepted,
+  converged in 3.3s, 1 checksum, every chain verifies. An earlier attempt
+  failed to converge in 180s under concurrent load (docker builds running) --
+  same known flake as the pre-change baseline, not a regression. HWM writes
+  throttled (64 LSNs / 1s; trailing mark stays sound) after the every-append
+  sync cost showed up at 50-node scale.
+- Linux (Docker, Ubuntu 22.04 GCC 11.4): image builds clean, unit-tests
+  container green INCLUDING ledger_v2 (which caught a real bug -- see below),
+  tester container ALL INTEGRATION TESTS PASSED.
+- Headed pass (tauri-driver 2.0.6 + EdgeDriver 153 + debug app + vite dev):
+  boot renders clean; wizard step 1 renders, Continue correctly disabled with
+  no folder; sidecar create_node succeeds headed; topology shows node In sync;
+  dropbox CSV paste analyzes (3 rows/3 cols, columnar_lite suggested honestly
+  downgraded to kv with a visible log line); ingest 3/3 with completion toast;
+  console PUT uivit + GET uivit round-trip with stored/retrieved toasts,
+  ledger advanced #2 -> #3. Screenshots in C:\Temp\headed (box temp, kept).
+- CORS dev-origin fix (found by the headed pass): strict ACAO broke
+  `npm run tauri:dev` (vite :5273 origin); dev origins now echoed, bearer
+  still required. Bearer gate itself proven headed (401/200 per node).
+- Stale sidecar sibling: target/debug/desentryd.exe (20-09, pre-everything)
+  shadowed ../../build for the dev app (resolve order). Refreshed from build/;
+  verified bearer + H-5 strings present. Dev note: re-copy after engine
+  rebuilds (or run stage-sidecar).
+
+Bugs found BY verification in this pass (all fixed + covered):
+- HWM lifecycle: prune/migrate left the pre-rewrite tip in the mark, so the
+  next Open read its own history as truncation (fatal on Linux where rename
+  overwrites; silently masked on Windows where rename-to-existing fails --
+  which is why ctest stayed green here). Mark now refreshed post-rewrite by
+  the caller that knows the new tip; Windows rename pre-removes dest.
+- BOM node.json: run_cluster.ps1 wrote UTF-8 BOM; JsonValue::Parse rejected
+  it; all 3 nodes booted with default ports (found via foreground launch).
+  Parser strips BOM; script writes BOM-less.
+- Docker port squat: published 7701-7703 from an earlier compose runlr
+  collided with headed nodes (mystery 200s). compose down before headed runs.
+- Host check vs containers: 403 for service-name Hosts; check now applies
+  only on loopback binds (rebinding defense where it matters), bearer
+  elsewhere.
+
+Verified this pass: ctest 12/12 (x2: pre- and post-CORS/HWM fixes);
+cargo test 47+1; npm build/typecheck/qr/css; transit 22/22 (prior entry,
+unchanged since); airplane 18/18 (prior entry); cluster mesh all-pass
+(prior entry); soak-50 58/58; Linux units + integration green; closed-mesh
+live A/B-vs-C; headed screenshots + DOM interactions above.
+
+HANDOFFS (need a human):
+- Updater private key: C:\Users\Rishi Misra\.tauri\de-sentry.key (NO password
+  -- set one or re-generate with -p). Store as TAURI_SIGNING_PRIVATE_KEY in
+  CI secrets before tagging a release; first tagged release populates the
+  updater feed (endpoints already point at R1sh1m/De-sentry latest.json).
+- macOS build: still never run (no Mac). Procedure exists (ISSUES.md); the
+  F_FULLFSYNC path in SyncFileByPath is written but unexecuted.
+- Invite-model pairing UI (type the secret on machine B / QR): backend +
+  fingerprint ready, no screen yet.
+- Headed screenshots: C:\Temp\headed\shot*.png (boot, wizard, dropbox,
+  ingest, console round-trip). Headed node data: C:\Temp\headed\node1
+  (temp; outside the app data root, so never auto-restored -- by design).
+- Branch arch1-multi-db-isolation: uncommitted work from the concurrent
+  session may still be present; this commit contains only the remediation
+  pass below -- review `git status` before pushing.

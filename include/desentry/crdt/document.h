@@ -109,7 +109,16 @@ class CrdtValue {
   // convergence (see ARCHITECTURE.md §7.5).
   HLCTimestamp MaxTimestamp() const;
 
+ public:
+  // OR-Set tag counter persistence (M-9 fix): tags must stay unique across
+  // restarts, or two distinct elements merge as one (silent loss). The engine
+  // checkpoints the counter next to the HLC state and restores the max.
+  static uint64_t TagCounter();
+  static void RestoreTagCounter(uint64_t value);
+
  private:
+  static constexpr size_t kMaxDecodeDepth = 64;
+  static CrdtValue DecodeAt(const std::string& bytes, size_t depth);
   static std::string NextTag(const HLCTimestamp& ts);
   static bool JsonEquals(const JsonValue& a, const JsonValue& b);
   static CrdtValue MakeTombstone(const HLCTimestamp& ts);

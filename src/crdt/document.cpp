@@ -1,6 +1,9 @@
 #include "desentry/crdt/document.h"
 
+#include <algorithm>
 #include <atomic>
+#include <stdexcept>
+#include <unordered_map>
 
 #include "desentry/common/byte_buffer.h"
 
@@ -10,9 +13,23 @@ namespace {
 enum class WireKind : uint8_t { kNull = 0, kBool = 1, kInt = 2, kDouble = 3, kString = 4, kArray = 5, kObject = 6 };
 }  // namespace
 
-std::string CrdtValue::NextTag(const HLCTimestamp& ts) {
+namespace {
+std::atomic<uint64_t>& TagCounterRef() {
   static std::atomic<uint64_t> counter{0};
-  uint64_t seq = counter.fetch_add(1);
+  return counter;
+}
+}  // namespace
+
+uint64_t CrdtValue::TagCounter() { return TagCounterRef().load(); }
+
+void CrdtValue::RestoreTagCounter(uint64_t value) {
+  uint64_t cur = TagCounterRef().load();
+  while (value > cur && !TagCounterRef().compare_exchange_weak(cur, value)) {
+  }
+}
+
+std::string CrdtValue::NextTag(const HLCTimestamp& ts) {
+  uint64_t seq = TagCounterRef().fetch_add(1);
   return ts.node_id + ":" + std::to_string(ts.physical_ms) + "." + std::to_string(ts.logical) +
          "#" + std::to_string(seq);
 }
@@ -184,20 +201,24 @@ CrdtValue CrdtValue::Merge(const CrdtValue& a, const CrdtValue& b) {
     result.kind_ = Kind::kObject;
     result.ts_ = (b.ts_ > a.ts_) ? b.ts_ : a.ts_;
 
+    // Hash-joined merge (M-8 fix): the old linear scan per key was O(n*m) --
+    // a peer-supplied 100k-key document cost ~1e10 comparisons per merge.
+    std::unordered_map<std::string, const CrdtValue*> bmap;
+    bmap.reserve(b.object_v_.size() * 2 + 1);
+    for (auto& kv : b.object_v_) bmap[kv.first] = &kv.second;
     for (auto& [key, av] : a.object_v_) {
-      const CrdtValue* bv = nullptr;
-      for (auto& kv : b.object_v_) {
-        if (kv.first == key) { bv = &kv.second; break; }
-      }
-      result.object_v_.emplace_back(key, bv ? Merge(av, *bv) : av);
+      auto it = bmap.find(key);
+      result.object_v_.emplace_back(key, it != bmap.end() ? Merge(av, *it->second) : av);
+      if (it != bmap.end()) bmap.erase(it);
     }
     for (auto& [key, bv] : b.object_v_) {
-      bool seen = false;
-      for (auto& kv : a.object_v_) {
-        if (kv.first == key) { seen = true; break; }
-      }
-      if (!seen) result.object_v_.emplace_back(key, bv);
+      if (bmap.count(key) != 0u) result.object_v_.emplace_back(key, bv);
     }
+    // Canonical field order (H-3 fix): merged-in-different-order peers must
+    // hold byte-identical trees, or content-hash digests never settle and
+    // gossip re-exchanges the document every round, forever.
+    std::sort(result.object_v_.begin(), result.object_v_.end(),
+              [](const auto& x, const auto& y) { return x.first < y.first; });
     return result;
   }
 
@@ -206,28 +227,27 @@ CrdtValue CrdtValue::Merge(const CrdtValue& a, const CrdtValue& b) {
     result.kind_ = Kind::kArray;
     result.ts_ = (b.ts_ > a.ts_) ? b.ts_ : a.ts_;
 
+    std::unordered_map<std::string, const ArrayElem*> bmap;
+    bmap.reserve(b.array_v_.size() * 2 + 1);
+    for (auto& e : b.array_v_) bmap[e.tag] = &e;
     for (auto& ae : a.array_v_) {
-      const ArrayElem* be = nullptr;
-      for (auto& e : b.array_v_) {
-        if (e.tag == ae.tag) { be = &e; break; }
-      }
-      if (be) {
+      auto it = bmap.find(ae.tag);
+      if (it != bmap.end()) {
         ArrayElem merged;
         merged.tag = ae.tag;
-        merged.value = Merge(ae.value, be->value);
-        merged.tombstone = ae.tombstone || be->tombstone;  // sticky removal
+        merged.value = Merge(ae.value, it->second->value);
+        merged.tombstone = ae.tombstone || it->second->tombstone;  // sticky removal
         result.array_v_.push_back(std::move(merged));
+        bmap.erase(it);
       } else {
         result.array_v_.push_back(ae);
       }
     }
     for (auto& be : b.array_v_) {
-      bool seen = false;
-      for (auto& e : a.array_v_) {
-        if (e.tag == be.tag) { seen = true; break; }
-      }
-      if (!seen) result.array_v_.push_back(be);
+      if (bmap.count(be.tag) != 0u) result.array_v_.push_back(be);
     }
+    std::sort(result.array_v_.begin(), result.array_v_.end(),
+              [](const ArrayElem& x, const ArrayElem& y) { return x.tag < y.tag; });
     return result;
   }
 
@@ -289,19 +309,31 @@ std::string CrdtValue::Encode() const {
     case Kind::kDouble: w.F64(double_v_); break;
     case Kind::kString: w.Bytes(str_v_); break;
     case Kind::kArray: {
+      // Canonical order (H-3): sorted by tag so layout is order-independent.
       w.U32(static_cast<uint32_t>(array_v_.size()));
-      for (auto& e : array_v_) {
-        w.Bytes(e.tag);
-        w.U8(e.tombstone ? 1 : 0);
-        w.Bytes(e.value.Encode());
+      std::vector<const ArrayElem*> order;
+      order.reserve(array_v_.size());
+      for (auto& e : array_v_) order.push_back(&e);
+      std::sort(order.begin(), order.end(),
+                [](const ArrayElem* x, const ArrayElem* y) { return x->tag < y->tag; });
+      for (const ArrayElem* e : order) {
+        w.Bytes(e->tag);
+        w.U8(e->tombstone ? 1 : 0);
+        w.Bytes(e->value.Encode());
       }
       break;
     }
     case Kind::kObject: {
+      // Canonical order (H-3): sorted by key.
       w.U32(static_cast<uint32_t>(object_v_.size()));
-      for (auto& [k, v] : object_v_) {
-        w.Bytes(k);
-        w.Bytes(v.Encode());
+      std::vector<const std::pair<std::string, CrdtValue>*> order;
+      order.reserve(object_v_.size());
+      for (auto& kv : object_v_) order.push_back(&kv);
+      std::sort(order.begin(), order.end(),
+                [](const auto* x, const auto* y) { return x->first < y->first; });
+      for (const auto* kv : order) {
+        w.Bytes(kv->first);
+        w.Bytes(kv->second.Encode());
       }
       break;
     }
@@ -309,7 +341,13 @@ std::string CrdtValue::Encode() const {
   return w.TakeString();
 }
 
-CrdtValue CrdtValue::Decode(const std::string& bytes) {
+CrdtValue CrdtValue::Decode(const std::string& bytes) { return DecodeAt(bytes, 0); }
+
+CrdtValue CrdtValue::DecodeAt(const std::string& bytes, size_t depth) {
+  // Recursion depth cap (C-7 fix): nesting arrives from the wire, so an
+  // uncapped recurse is a remote stack-overflow crash. Every caller already
+  // catches std::exception, so exceeding the cap throws like truncation.
+  if (depth > kMaxDecodeDepth) throw std::runtime_error("CRDT nesting exceeds depth cap");
   ByteReader r(bytes);
   CrdtValue v;
   auto wk = static_cast<WireKind>(r.U8());
@@ -325,12 +363,15 @@ CrdtValue CrdtValue::Decode(const std::string& bytes) {
     case WireKind::kArray: {
       v.kind_ = Kind::kArray;
       uint32_t n = r.U32();
-      v.array_v_.reserve(n);
+      // Bound against the buffer that actually arrived (H-7).
+      size_t cap = r.remaining() + 1;
+      if (cap > 65536) cap = 65536;
+      v.array_v_.reserve(std::min<size_t>(n, cap));
       for (uint32_t i = 0; i < n; ++i) {
         CrdtArrayElem e;
         e.tag = r.Bytes();
         e.tombstone = r.U8() != 0;
-        e.value = Decode(r.Bytes());
+        e.value = DecodeAt(r.Bytes(), depth + 1);
         v.array_v_.push_back(std::move(e));
       }
       break;
@@ -338,10 +379,12 @@ CrdtValue CrdtValue::Decode(const std::string& bytes) {
     case WireKind::kObject: {
       v.kind_ = Kind::kObject;
       uint32_t n = r.U32();
-      v.object_v_.reserve(n);
+      size_t cap = r.remaining() + 1;
+      if (cap > 65536) cap = 65536;
+      v.object_v_.reserve(std::min<size_t>(n, cap));
       for (uint32_t i = 0; i < n; ++i) {
         std::string k = r.Bytes();
-        CrdtValue child = Decode(r.Bytes());
+        CrdtValue child = DecodeAt(r.Bytes(), depth + 1);
         v.object_v_.emplace_back(std::move(k), std::move(child));
       }
       break;

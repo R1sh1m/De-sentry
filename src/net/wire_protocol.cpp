@@ -1,10 +1,21 @@
 #include "desentry/net/wire_protocol.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "desentry/common/byte_buffer.h"
 
 namespace desentry {
+
+namespace {
+// Bounds a peer-supplied element count before reserve(). Defined early so
+// every Decode below can use it (H-7 fix).
+inline size_t BoundedCount(uint32_t n, size_t remaining) {
+  size_t cap = remaining + 1;
+  if (cap > 65536) cap = 65536;
+  return std::min<size_t>(n, cap);
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Payload encodings
@@ -17,6 +28,7 @@ std::string HelloPayload::Encode() const {
   w.Bytes(x25519_ephemeral_pubkey);
   w.Bytes(signature);
   w.U16(p2p_port);
+  w.Bytes(membership_tag);
   return w.TakeString();
 }
 HelloPayload HelloPayload::Decode(const std::string& bytes) {
@@ -27,7 +39,46 @@ HelloPayload HelloPayload::Decode(const std::string& bytes) {
   h.x25519_ephemeral_pubkey = r.Bytes();
   h.signature = r.Bytes();
   h.p2p_port = r.U16();
+  // Trailing-tolerant: pre-membership peers end here.
+  if (r.remaining() > 0) h.membership_tag = r.Bytes();
   return h;
+}
+
+std::string ConfirmPayload::Encode() const {
+  ByteWriter w;
+  w.Bytes(transcript_signature);
+  return w.TakeString();
+}
+ConfirmPayload ConfirmPayload::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  ConfirmPayload c;
+  c.transcript_signature = r.Bytes();
+  return c;
+}
+
+std::string TranscriptMessage(const std::string& client_hello, const std::string& server_hello) {
+  std::string m = "DSN-HS-v2";
+  m.push_back('\0');
+  ByteWriter w;
+  w.Bytes(client_hello);
+  w.Bytes(server_hello);
+  m += w.TakeString();
+  return m;
+}
+
+std::string MembershipHelloMessage(const std::string& ephemeral_pubkey) {
+  return "DSN-MEMBER-HELLO-v1" + ephemeral_pubkey;
+}
+
+std::string MembershipBeaconMessage(const std::string& node_id, const std::string& pubkey,
+                                    uint16_t p2p_port) {
+  std::string m = "DSN-MEMBER-DISCO-v1";
+  m += node_id;
+  m.push_back('\0');
+  m += pubkey;
+  m.push_back(static_cast<char>((p2p_port >> 8) & 0xFF));
+  m.push_back(static_cast<char>(p2p_port & 0xFF));
+  return m;
 }
 
 std::string DigestPayload::Encode() const {
@@ -46,7 +97,7 @@ DigestPayload DigestPayload::Decode(const std::string& bytes) {
   DigestPayload d;
   d.collection = r.Bytes();
   uint32_t n = r.U32();
-  d.entries.reserve(n);
+  d.entries.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) {
     DigestEntry e;
     e.key = r.Bytes();
@@ -71,7 +122,7 @@ DeltaResponsePayload DeltaResponsePayload::Decode(const std::string& bytes) {
   DeltaResponsePayload d;
   d.collection = r.Bytes();
   uint32_t n = r.U32();
-  d.pushed.reserve(n);
+  d.pushed.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) {
     DocEntry e;
     e.key = r.Bytes();
@@ -79,7 +130,7 @@ DeltaResponsePayload DeltaResponsePayload::Decode(const std::string& bytes) {
     d.pushed.push_back(std::move(e));
   }
   uint32_t m = r.U32();
-  d.wanted_keys.reserve(m);
+  d.wanted_keys.reserve(BoundedCount(m, r.remaining()));
   for (uint32_t i = 0; i < m; ++i) d.wanted_keys.push_back(r.Bytes());
   return d;
 }
@@ -98,7 +149,7 @@ OpBroadcastPayload OpBroadcastPayload::Decode(const std::string& bytes) {
   OpBroadcastPayload o;
   o.collection = r.Bytes();
   uint32_t n = r.U32();
-  o.docs.reserve(n);
+  o.docs.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) {
     DocEntry e;
     e.key = r.Bytes();
@@ -165,6 +216,8 @@ std::string TransitResponsePayload::Encode() const {
     w.U64(e.doc_size_bytes);
     w.U32(e.chunk_index);
     w.U32(e.chunk_total);
+    w.Bytes(e.content_hash);
+    w.Bytes(e.holder_sig);
   }
   w.U8(truncated ? 1 : 0);
   w.U64(next_offset);
@@ -178,7 +231,7 @@ TransitResponsePayload TransitResponsePayload::Decode(const std::string& bytes) 
     ByteReader r(bytes);
     TransitResponsePayload p;
     uint32_t n = r.U32();
-    p.entries.reserve(n);
+    p.entries.reserve(BoundedCount(n, r.remaining()));
     for (uint32_t i = 0; i < n; ++i) {
       TransitEntry e;
       e.collection = r.Bytes();
@@ -196,7 +249,7 @@ TransitResponsePayload TransitResponsePayload::Decode(const std::string& bytes) 
   (void)r.U32();  // magic
   TransitResponsePayload p;
   uint32_t n = r.U32();
-  p.entries.reserve(n);
+  p.entries.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) {
     TransitEntry e;
     e.collection = r.Bytes();
@@ -209,6 +262,11 @@ TransitResponsePayload TransitResponsePayload::Decode(const std::string& bytes) 
     e.chunk_index = r.U32();
     e.chunk_total = r.U32();
     if (e.chunk_total == 0) e.chunk_total = 1;
+    if (e.chunk_index >= e.chunk_total) throw std::runtime_error("transit chunk index out of range");
+    // Integrity tail (C-3): trailing-tolerant so pre-fix holders stay
+    // readable; entries without it are rejected at claim time.
+    if (r.remaining() > 0) e.content_hash = r.Bytes();
+    if (r.remaining() > 0) e.holder_sig = r.Bytes();
     p.entries.push_back(std::move(e));
   }
   if (r.remaining() > 0) p.truncated = r.U8() != 0;
@@ -228,7 +286,7 @@ TransitClaimPayload TransitClaimPayload::Decode(const std::string& bytes) {
   TransitClaimPayload p;
   p.claimer_node = r.Bytes();
   uint32_t n = r.U32();
-  p.key_hashes.reserve(n);
+  p.key_hashes.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) p.key_hashes.push_back(r.Bytes());
   return p;
 }
@@ -291,7 +349,7 @@ LedgerDigestPayload LedgerDigestPayload::Decode(const std::string& bytes) {
   p.tip_signature = r.Bytes();
   p.from_entry_id = r.I64();
   uint32_t n = r.U32();
-  p.entry_hashes.reserve(n);
+  p.entry_hashes.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) p.entry_hashes.push_back(r.Bytes());
   return p;
 }
@@ -317,7 +375,9 @@ std::string LedgerDeltaPayload::Encode() const {
     w.U64(e.transit_size_bytes);
     w.U32(e.transit_chunk_index);
     w.U32(e.transit_chunk_total);
+    w.Bytes(e.acl_json);
   }
+  w.Bytes(tip_signature);
   return w.TakeString();
 }
 
@@ -351,7 +411,7 @@ LedgerDeltaPayload LedgerDeltaPayload::Decode(const std::string& bytes) {
     LedgerDeltaPayload p;
     p.hashes_only = r.U8() != 0;
     uint32_t n = r.U32();
-    p.entries.reserve(n);
+    p.entries.reserve(BoundedCount(n, r.remaining()));
     for (uint32_t i = 0; i < n; ++i) p.entries.push_back(DecodeLedgerEntryV1(&r));
     return p;
   }
@@ -360,7 +420,7 @@ LedgerDeltaPayload LedgerDeltaPayload::Decode(const std::string& bytes) {
   LedgerDeltaPayload p;
   p.hashes_only = r.U8() != 0;
   uint32_t n = r.U32();
-  p.entries.reserve(n);
+  p.entries.reserve(BoundedCount(n, r.remaining()));
   for (uint32_t i = 0; i < n; ++i) {
     LedgerEntrySummary e = DecodeLedgerEntryV1(&r);
     e.transit_holder = r.Bytes();
@@ -368,8 +428,15 @@ LedgerDeltaPayload LedgerDeltaPayload::Decode(const std::string& bytes) {
     e.transit_chunk_index = r.U32();
     e.transit_chunk_total = r.U32();
     if (e.transit_chunk_total == 0) e.transit_chunk_total = 1;
+    if (e.transit_chunk_index >= e.transit_chunk_total) {
+      throw std::runtime_error("ledger delta chunk index out of range");
+    }
+    // Replicated ACL bytes (H-1): trailing-tolerant, absent on old deltas.
+    if (r.remaining() > 0) e.acl_json = r.Bytes();
     p.entries.push_back(std::move(e));
   }
+  // Responder's tip signature (C-6): trailing-tolerant, absent on v1 deltas.
+  if (r.remaining() > 0) p.tip_signature = r.Bytes();
   return p;
 }
 
@@ -421,6 +488,7 @@ const char* MessageTypeName(MessageType type) {
     case MessageType::kHeartbeat: return "HEARTBEAT";
     case MessageType::kMergeReceipt: return "MERGE_RECEIPT";
     case MessageType::kTransitHeld: return "TRANSIT_HELD";
+    case MessageType::kConfirm: return "CONFIRM";
   }
   return "UNKNOWN";
 }
@@ -480,15 +548,21 @@ StatusOr<std::string> ReadFrame(dsn_socket_t sockfd, size_t max_len) {
   uint32_t len = ntohl(len_be);
   if (len > max_len) return Status::InvalidArgument("frame exceeds max_len (" + std::to_string(len) + " > " + std::to_string(max_len) + ")");
 
-  std::string body(len, '\0');
+  // Incremental read in 64KiB chunks (C-4 fix): never commit `len` resident
+  // up front from an unauthenticated prefix.
+  std::string body;
+  body.reserve(std::min<uint32_t>(len, 65536));
   size_t body_got = 0;
+  char chunk[65536];
   while (body_got < len) {
-    dsn_iolen_t n = SocketRecv(sockfd, body.data() + body_got, len - body_got);
+    size_t want = std::min<size_t>(sizeof(chunk), len - body_got);
+    dsn_iolen_t n = SocketRecv(sockfd, chunk, want);
     if (n == 0) return Status::NetworkError("connection closed while reading frame body");
     if (n < 0) {
       if (SocketRetryable()) continue;
       return Status::NetworkError("recv failed: " + SocketErrorString());
     }
+    body.append(chunk, static_cast<size_t>(n));
     body_got += static_cast<size_t>(n);
   }
   return body;

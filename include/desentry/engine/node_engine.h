@@ -25,7 +25,9 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "desentry/common/status.h"
@@ -265,6 +267,9 @@ class NodeEngine {
   // guarantee for individual entries; this remains the cheap whole-history
   // attestation a peer checks first.
   std::string SignLedgerTip() const;
+  // Signs an arbitrary (entry_id, entry_hash) pair -- used to attest a
+  // truncated delta's tip, which may lag the node's current tip (C-6).
+  std::string SignTipFor(lsn_t entry_id, const std::string& entry_hash) const;
   static std::string LedgerTipMessage(lsn_t entry_id, const std::string& entry_hash);
   bool VerifyPeerTip(const std::string& node_id, lsn_t entry_id, const std::string& entry_hash,
                       const std::string& signature) const;
@@ -277,10 +282,31 @@ class NodeEngine {
   StorageEngine::QuotaStatus Quota() const { return storage_->Quota(); }
   HybridLogicalClock& clock() { return *clock_; }
 
+  // Runs the catalog's retention_days for `collection` now (explicit,
+  // operator-driven -- there is no background scheduler). Only ts_rollup
+  // honors retention; other engines report InvalidArgument. Returns chunks
+  // dropped.
+  StatusOr<size_t> RunRetention(const std::string& collection);
+
+  // Sets a collection's ACL locally AND appends a signed kAcl ledger record
+  // so the ACL replicates (H-1 fix). Peers apply it via ApplyRemoteAcl.
+  Status SetCollectionAcl(const std::string& collection, const CollectionAcl& acl);
+  // Applies a kAcl envelope received from `origin_node_id` (live gossip or
+  // peer sync). Verifies the owner attestation against the handshake-proven
+  // key and LWW-merges by updated_ms. With check_sig=false (boot replay,
+  // where the chain's own integrity is the guarantee) only structure + LWW
+  // apply.
+  Status ApplyRemoteAcl(const std::string& origin_node_id, const std::string& collection,
+                        const std::string& envelope_json, bool check_sig = true);
+
  private:
   NodeEngine() = default;
   Status WriteThrough(const std::string& collection, const std::string& key,
                        const std::string& encoded_doc, bool notify_hook);
+  // HLC durability (C-5): the clock's state is checkpointed to
+  // <data_dir>/hlc_clock so a restart never re-issues used timestamps.
+  void LoadClockState();
+  void PersistClockIfDue();
 
   Options options_;
   // Whether files are sealed. Kept as a bool (not the DEK) so the raw key
@@ -296,6 +322,22 @@ class NodeEngine {
   std::function<void(const std::string&, const std::string&, const std::string&)> on_local_write_;
   std::function<std::string(const std::string&)> resolve_public_key_;
   std::function<bool()> reachability_provider_;
+  uint64_t hlc_saved_physical_ = 0;
+  uint64_t hlc_save_counter_ = 0;
+  // Digest cache (H-4 fix): (collection, key) -> last-computed digest entry.
+  // LocalDigest used to full-scan, re-decode and re-hash every document per
+  // peer per round. Hits skip the decode+hash; misses compute once and
+  // populate. Invalidated (not merely updated) on every write path, so a
+  // stale entry is impossible: the only mutations are PutDocument,
+  // MergeRemote and DeleteDocument (via PutDocument), all of which note here,
+  // and boot replay runs before anything is served. Cardinality follows the
+  // data itself (one small entry per stored key); tombstones drop their entry
+  // and are recomputed from the stored row on the next miss.
+  mutable std::mutex digest_mu_;
+  std::unordered_map<std::string, DigestEntryOut> digest_cache_;
+  static std::string DigestCacheKey(const std::string& collection, const std::string& key);
+  void NoteDigest(const std::string& collection, const std::string& key,
+                  const std::string& encoded_doc);
 };
 
 }  // namespace desentry

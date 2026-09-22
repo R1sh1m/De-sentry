@@ -25,9 +25,11 @@
 //     and /_brain-derived capacity reports.
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "desentry/common/config.h"
 #include "desentry/common/status.h"
@@ -76,6 +78,11 @@ class NetworkManager {
   };
   ClaimReport ClaimPendingTransit();
 
+  // True when a cluster-membership secret is configured (closed mesh).
+  // Surfaced on GET /_membership so the app can show it; the secret itself
+  // is never exposed.
+  bool membership_required() const { return !cluster_secret_.empty(); }
+
   // Collects signed ledger tips from every peer, for the supervisor's
   // checkpoint quorum check.
   std::vector<ReplicaTip> CollectReplicaTips();
@@ -103,16 +110,20 @@ class NetworkManager {
   };
   ProbeStats probe_stats() const;
 
-  // Sets the message_id to be used for the NEXT local write broadcast.
-  // Used by the API layer to ensure the broadcast and the durability wait
-  // share the same message_id. Must be called immediately before the write.
+  // Sets the message_id to be used for the NEXT local write broadcast on
+  // THIS thread. Used by the API layer to ensure the broadcast and the
+  // durability wait share the same message_id. Must be called immediately
+  // before the write on the same thread (each HTTP request runs on its own
+  // connection thread, and the write hook fires synchronously on that
+  // thread, so thread-local is exact -- unlike the old shared slot, which
+  // was both a data race and a logic race under concurrent PUTs, H-10).
   void SetNextBroadcastMessageId(std::string message_id) {
-    next_broadcast_message_id_ = std::move(message_id);
+    thread_next_broadcast_id_ = std::move(message_id);
   }
 
  private:
   // ... existing private members ...
-  std::optional<std::string> next_broadcast_message_id_;
+  static thread_local std::string thread_next_broadcast_id_;
   WireMessage HandleRequest(const std::string& peer_node_id, const WireMessage& request);
   WireMessage HandleDigest(const std::string& peer_node_id, const DigestPayload& digest);
   WireMessage HandleOpBroadcast(const std::string& peer_node_id, const OpBroadcastPayload& broadcast);
@@ -137,6 +148,12 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   // back to the original write.
   void HoldForUnreachableOwners(const std::string& collection, const std::string& key,
                                  const std::string& encoded_doc, const std::string& message_id);
+  // Verifies entries served by one holder and applies them (C-3): per-entry
+  // content-hash + holder-signature check against the holder's proven key,
+  // chunk reassembly with local-intent cross-check, one apply per document.
+  // Applied key_hashes are appended to claim_out. Returns documents applied.
+  size_t ApplyHolderEntries(const std::string& holder_node, const std::vector<TransitEntry>& entries,
+                            ClaimReport& report, TransitClaimPayload& claim_out);
   // Builds this node's outbound heartbeat: ledger tip, quota/load figures
   // and self-assessed servability (degraded when over quota, running
   // otherwise). Informational for peers' fitness tables; lifecycle
@@ -171,6 +188,9 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   ReceiptTracker* receipt_tracker_ = nullptr;
   std::unique_ptr<TokenBucketLimiter> limiter_;
   std::unique_ptr<MessageDedup> dedup_;
+  // Cluster-membership secret from DESENTRY_CLUSTER_SECRET (empty = open).
+  // Passed to the transport and discovery; never logged, never served.
+  std::string cluster_secret_;
 
   std::atomic<bool> running_{false};
   std::thread probe_thread_;

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "desentry/common/platform.h"
+
 namespace desentry {
 
 const char* NodeLifecycleStateName(NodeLifecycleState state) {
@@ -104,28 +106,83 @@ double PeerFitness::Score(lsn_t network_max_entry_id) const {
   return 0.45 * reliability + 0.25 * latency_term + 0.20 * freshness + 0.10 * capacity;
 }
 
-void PeerTable::Upsert(const PeerInfo& info) {
+void PeerTable::Upsert(const PeerInfo& info, PeerSource source) {
   std::lock_guard<std::mutex> lock(mu_);
   auto it = peers_.find(info.node_id);
   if (it == peers_.end()) {
-    peers_[info.node_id] = info;
+    if (peers_.size() >= kMaxPeers) {
+      // Evict a dead/suspect entry first; otherwise refuse (unbounded table
+      // is a memory-exhaustion vector, C-2).
+      bool evicted = false;
+      for (auto e = peers_.begin(); e != peers_.end(); ++e) {
+        if (e->second.Suspicion(info.last_seen_ms, 5000) == PeerSuspicion::kDead) {
+          peers_.erase(e);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) return;
+    }
+    PeerInfo fresh = info;
+    // Discovery must never create a proven or supervisor entry.
+    if (source == PeerSource::kDiscovery) {
+      fresh.handshake_proven = false;
+      fresh.is_supervisor = false;
+    }
+    peers_[info.node_id] = std::move(fresh);
     return;
   }
   // Keep whichever info is freshest; don't clobber a known pubkey with an
   // empty one from a discovery broadcast that hasn't handshaked yet, and
   // never let a discovery packet reset accumulated fitness history.
   PeerInfo& existing = it->second;
+  // Discovery-sourced updates to a handshake-proven entry are liveness-only
+  // (C-2 fix): no key/host/port/supervisor changes, no fitness reset.
+  if (existing.handshake_proven && source == PeerSource::kDiscovery) {
+    existing.last_seen_ms = info.last_seen_ms;
+    if (existing.api_port == 0 && info.api_port != 0) existing.api_port = info.api_port;
+    if (existing.hostname.empty() && !info.hostname.empty()) existing.hostname = info.hostname;
+    return;
+  }
   existing.host = info.host;
   existing.p2p_port = info.p2p_port;
   existing.last_seen_ms = info.last_seen_ms;
   if (!info.ed25519_pubkey.empty()) existing.ed25519_pubkey = info.ed25519_pubkey;
   if (info.api_port != 0) existing.api_port = info.api_port;
   if (!info.hostname.empty()) existing.hostname = info.hostname;
-  if (info.is_supervisor) existing.is_supervisor = true;
+  // A spoofed is_supervisor from an unsigned datagram must never include a
+  // node in (or exclude everyone from) placement: only non-discovery sources
+  // may set it, and nothing here ever clears a proven value via discovery.
+  if (info.is_supervisor && source != PeerSource::kDiscovery) existing.is_supervisor = true;
+  if (source == PeerSource::kHandshake) existing.handshake_proven = true;
   if (info.state != NodeLifecycleState::kDiscovered &&
       ValidNodeTransition(existing.state, info.state)) {
     existing.state = info.state;
   }
+}
+
+void PeerTable::MarkHandshakeProven(const std::string& node_id, const std::string& pubkey,
+                                    const std::string& host, uint16_t p2p_port) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = peers_.find(node_id);
+  if (it == peers_.end()) {
+    if (peers_.size() >= kMaxPeers) return;
+    PeerInfo info;
+    info.node_id = node_id;
+    info.ed25519_pubkey = pubkey;
+    info.host = host;
+    info.p2p_port = p2p_port;
+    info.last_seen_ms = NowMs();
+    info.handshake_proven = true;
+    peers_[node_id] = std::move(info);
+    return;
+  }
+  PeerInfo& existing = it->second;
+  existing.ed25519_pubkey = pubkey;
+  if (!host.empty()) existing.host = host;
+  if (p2p_port != 0) existing.p2p_port = p2p_port;
+  existing.handshake_proven = true;
+  existing.last_seen_ms = NowMs();
 }
 
 std::vector<PeerInfo> PeerTable::List() const {
@@ -175,13 +232,24 @@ void PeerTable::RecordProbe(const std::string& node_id, double latency_ms, bool 
   ++fitness.probes;
 }
 
+namespace {
+// A peer reporting a ledger tip past this is lying or broken: 2^40 entries
+// is many orders of magnitude past any real ledger, and an INT64_MAX report
+// would drive every honest peer's freshness term to ~0 (H-8 fix). Absurd
+// heights are ignored rather than stored.
+constexpr lsn_t kMaxPlausibleLedgerHeight = static_cast<lsn_t>(1LL << 40);
+bool PlausibleHeight(lsn_t id) { return id >= -1 && id <= kMaxPlausibleLedgerHeight; }
+}  // namespace
+
 void PeerTable::RecordReport(const std::string& node_id, lsn_t ledger_entry_id,
                               uint64_t free_quota_mb, bool quota_limited,
                               uint64_t transit_bytes_held, uint64_t transit_budget_bytes) {
   std::lock_guard<std::mutex> lock(mu_);
   auto it = peers_.find(node_id);
   if (it == peers_.end()) return;
-  it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
+  if (PlausibleHeight(ledger_entry_id)) {
+    it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
+  }
   it->second.fitness.free_quota_mb = free_quota_mb;
   // An unlimited node reports free == 0 with quota_limited == false; only a
   // limited node with a real figure counts as having reported quota, so the
@@ -196,7 +264,9 @@ void PeerTable::RecordLedgerHeight(const std::string& node_id, lsn_t ledger_entr
   std::lock_guard<std::mutex> lock(mu_);
   auto it = peers_.find(node_id);
   if (it == peers_.end()) return;
-  it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
+  if (PlausibleHeight(ledger_entry_id)) {
+    it->second.fitness.ledger_freshness_entry_id = ledger_entry_id;
+  }
 }
 
 bool PeerTable::AdoptIdentity(const std::string& old_id, const std::string& real_id) {

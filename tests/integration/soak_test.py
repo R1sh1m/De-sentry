@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle", type=float, default=180.0,
                         help="seconds allowed for convergence afterwards")
     parser.add_argument("--engine", default=None, help="path to desentryd")
+    parser.add_argument("--drain", type=float, default=0.0,
+                        help="seconds to wait before starting so a previous run's "
+                             "TIME_WAIT sockets clear (Windows: 10048 port exhaustion "
+                             "needs ~120s after a 50-node run; the MSL drain, not a bug)")
     parser.add_argument("--sealed", action="store_true",
                         help="seal every node at rest: per-node random recovery keys "
                              "on stdin (the sidecar path) with encrypt_at_rest on")
@@ -80,6 +84,9 @@ def main() -> int:
     report = Report("soak_test")
     random.seed(20260906)  # reproducible chaos
 
+    if args.drain > 0:
+        print(f"[0] draining {args.drain:.0f}s for TIME_WAIT release from a previous run")
+        time.sleep(args.drain)
     print(f"[1] starting {args.nodes} nodes (this takes a while)"
           + (" -- sealed at rest" if args.sealed else ""))
     with Cluster(engine=args.engine) as cluster:
@@ -113,6 +120,9 @@ def main() -> int:
             except Exception as error:
                 print(f"      {node.name} did not start: {error}")
         report.check(started == args.nodes, f"all {args.nodes} nodes started ({started} did)")
+        if started < args.nodes:
+            print("      if nodes failed with WinError 10048 (address in use), a previous "
+                  "run's sockets are still in TIME_WAIT: re-run with --drain 120")
         if started < 2:
             return report.finish()
 

@@ -70,6 +70,19 @@ enum class WalRecordType : uint8_t {
   // The owner came back, pulled those bytes, and applied them. Once a
   // CHECKPOINT covers a matching INTENT/CLAIMED pair, both can be pruned.
   kTransitClaimed = 5,
+  // Compensating abort (ops #1 fix): a PUT that was appended to the ledger
+  // but failed to materialise in the backend (quota race, I/O error after
+  // pre-validation passed). The abort names the same collection/key with an
+  // empty document so auditors can tell "claimed but never stored" from
+  // "stored"; replay skips it like any non-PUT, and it is never pruned.
+  kAbort = 6,
+  // Replicated collection ACL (H-1 fix): carries a collection's access
+  // metadata so peers converge on confidentiality, not just bytes.
+  // document_bytes is a JSON envelope {"acl": {...}, "updated_ms": N,
+  // "sig": "<owner attestation>"}; key is empty and key_hash covers
+  // (collection, ""). Applied LWW by updated_ms via ApplyRemoteAcl; never
+  // pruned (like PUT/DEL/CHECKPOINT, it is history the chain attests to).
+  kAcl = 7,
 };
 
 const char* WalRecordTypeName(WalRecordType type);
@@ -81,6 +94,10 @@ constexpr size_t kWalHashLen = 32;
 // 8-byte LSN, so this both identifies the format and makes a v1 file
 // unmistakable on open.
 constexpr uint32_t kWalRecordMagicV2 = 0x44535732;  // "DSW2"
+// v3 (C-6 fix): identical framing, but the signed content ends with prev_hash
+// (position binding). v2 bodies verify via the legacy path; v3 via the bound
+// path. New appends always write v3.
+constexpr uint32_t kWalRecordMagicV3 = 0x44535733;  // "DSW3"
 
 struct WalRecord {
   lsn_t lsn = kInvalidLsn;
@@ -102,17 +119,23 @@ struct WalRecord {
   // signed content above (which is unchanged) and ignore the tail, while
   // new readers learn whom to ask without querying every peer.
   //
-  // Unsigned is deliberate, not an oversight. The security-critical fields
-  // (key_hash, collection/key) stay inside the signed content; a holder
-  // that tampers with the tail can only misdirect the owner to a peer with
-  // no bytes (detected: key_hash verification on claim fails or the bytes
-  // never arrive) -- never to silently wrong bytes, which the claim-time
-  // key_hash check rules out. Misdirection degrades to the ask-everyone
-  // fallback and gossip convergence, exactly as if no intent existed.
+  // Unsigned is deliberate, not an oversight -- but it is NOT the integrity
+  // mechanism (the old comment claiming the claim-time key_hash check "rules
+  // out silently wrong bytes" was wrong: that check was self-consistent for
+  // any attacker). Integrity comes from the holder's content attestation
+  // (TransitEnvelope::content_hash + holder_sig, verified at claim time in
+  // net/network_manager.cpp against the holder's handshake-proven key) plus
+  // querying only intent-named holders. A tampered tail can at most
+  // misdirect the owner to a peer with no bytes.
   std::string transit_holder;        // node_id holding the bytes; empty if unknown
   uint64_t transit_size_bytes = 0;   // full document size, not just this chunk
   uint32_t transit_chunk_index = 0;  // 0-based; 0 with total 1 == whole document
   uint32_t transit_chunk_total = 1;
+  // True when the record's signed content includes prev_hash (v3 appends).
+  // Preserved across prune-rewrites so each survivor keeps verifying under
+  // the layout it was written with. Not serialized separately -- the body
+  // magic (v2 vs v3) carries it.
+  bool position_bound = false;
 
   bool IsTransit() const {
     return type == WalRecordType::kTransitIntent || type == WalRecordType::kTransitClaimed;
@@ -170,9 +193,10 @@ class WriteAheadLog {
         : transit_size_bytes(0), transit_chunk_index(0), transit_chunk_total(1) {}
   };
 
-  // Appends a record and fsyncs before returning -- this is the durability
-  // point. Extends the hash chain and, if an origin is installed, signs the
-  // entry. Returns the assigned LSN.
+  // Appends a record and durably syncs (fdatasync / F_FULLFSYNC /
+  // FlushFileBuffers via SyncFileByPath) before returning -- this is the
+  // durability point. Extends the hash chain and, if an origin is installed,
+  // signs the entry. Returns the assigned LSN.
   StatusOr<lsn_t> Append(WalRecordType type, const std::string& collection, const std::string& key,
                           const std::string& document_bytes, const AppendOptions& options = {});
 
@@ -181,6 +205,13 @@ class WriteAheadLog {
   // from a crash mid-append) ends the read there -- everything before it is
   // trusted, per standard WAL semantics.
   StatusOr<std::vector<WalRecord>> ReadAll();
+
+  // Bounded range read (H-2 fix): seeks to `from` via the LSN -> frame-offset
+  // index maintained by every read/append/rewrite, then parses only through
+  // `to`. Stops early (rather than failing) on any framing/CRC boundary, so
+  // callers never pay a full-ledger read + parse + unseal per gossip round.
+  // Pruned LSN gaps are skipped, not errors.
+  StatusOr<std::vector<WalRecord>> ReadRange(lsn_t from, lsn_t to);
 
   lsn_t LastLsn() const { return next_lsn_ - 1; }
 
@@ -248,11 +279,15 @@ class WriteAheadLog {
   WriteAheadLog(std::fstream file, std::string path, lsn_t next_lsn, std::string tip_hash)
       : file_(std::move(file)), path_(std::move(path)), next_lsn_(next_lsn), tip_hash_(std::move(tip_hash)) {}
 
-  // Canonical byte layout hashed into entry_hash and signed by the origin:
-  // everything about the record except the chain/signature fields
-  // themselves. Shared by Append() (to produce them) and VerifyChain() (to
-  // recompute and check them).
+  // Canonical byte layout hashed into entry_hash and signed by the origin.
+  // Includes prev_hash (C-6 fix): signatures now bind chain position, so a
+  // signature does not survive re-chaining after selective deletion.
+  // Shared by Append() (to produce them) and VerifyChain() (to recompute
+  // and check them). BuildContentLegacy is the pre-fix layout (no
+  // prev_hash), accepted by VerifyChain only for records written before the
+  // fix, so an upgrade does not invalidate existing history.
   static std::string BuildContent(const WalRecord& record);
+  static std::string BuildContentLegacy(const WalRecord& record);
   static std::string EncodeBody(const WalRecord& record);
   static Status DecodeBody(const std::string& body, WalRecord* out);
   // v1 body parser, used only by the one-time migration on Open().
@@ -270,10 +305,21 @@ class WriteAheadLog {
    // read. Empty file: new log in the current mode. Mismatch: Corruption.
    static Status DetectMode(const std::string& wal_file, bool have_key, bool* sealed);
 
+  // Throttled high-water-mark writer (see WriteHwmBestEffort): the mark is
+  // best-effort and only needs to trail the tip, so appends refresh it at
+  // most every 64 LSNs or 1s of monotonic time instead of paying 2 syncs +
+  // a rename per write. Caller holds mu_.
+  void WriteHwmIfDueLocked(lsn_t tip_id, const std::string& tip_hash);
+  int64_t hwm_saved_lsn_ = -1;
+  int64_t hwm_saved_ms_ = 0;
+
   std::fstream file_;
   std::string path_;
   mutable std::mutex mu_;
   lsn_t next_lsn_;
+  // Frame-start file offset per LSN (-1 for pruned gaps). Maintained on
+  // every read/append/rewrite; powers ReadRange seeks (H-2).
+  std::vector<int64_t> lsn_offsets_;
   std::string tip_hash_;  // 32 raw bytes; running chain tip, updated on every Append()
   lsn_t last_checkpoint_lsn_ = kInvalidLsn;
   // Set by ReadAllLocked(): true when the most recent replay stopped on a

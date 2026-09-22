@@ -130,7 +130,11 @@ function Start-DesentryNode {
 
     # -Depth 5 because quota_split is nested; the default of 2 would serialise
     # it as a type name and the node would silently fall back to defaults.
-    $config | ConvertTo-Json -Depth 5 | Out-File -FilePath $configPath -Encoding utf8
+    # Written BOM-less via .NET: Out-File -Encoding utf8 emits a BOM under
+    # Windows PowerShell 5.1, and the engine used to reject the file and boot
+    # with default ports (all nodes on 7701). The parser is BOM-tolerant now,
+    # but the file should never have one in the first place.
+    [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding $false))
 
     # The config path is quoted: Start-Process splits unquoted array elements
     # on spaces, which breaks for data dirs under a profile like "Rishi Misra".

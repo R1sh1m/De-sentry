@@ -250,6 +250,21 @@ export const sidecar = {
     return invoke<AppInfo>("app_info");
   },
 
+  /** Per-boot API bearer token (empty in browser-dev or when the OS RNG failed). */
+  apiToken(): Promise<string> {
+    if (!isTauri()) return Promise.resolve("");
+    return invoke<string>("api_token").catch(() => "");
+  },
+
+  /** Cluster-membership posture: closed mesh + fingerprint for pairing checks. */
+  membershipStatus(): Promise<{ closed: boolean; fingerprint: string }> {
+    if (!isTauri()) return Promise.resolve({ closed: false, fingerprint: "" });
+    return invoke<{ closed: boolean; fingerprint: string }>("membership_status").catch(() => ({
+      closed: false,
+      fingerprint: "",
+    }));
+  },
+
   /** Every `desentryd` this app owns, supervisor included. */
   listNodes(): Promise<SupervisedNode[]> {
     return invoke<SupervisedNode[]>("list_nodes");

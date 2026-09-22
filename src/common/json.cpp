@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <string_view>
 
 namespace desentry {
 
@@ -210,7 +211,18 @@ class Parser {
 }  // namespace
 
 JsonValue JsonValue::Parse(const std::string& text) {
-  Parser p(text);
+  // Tolerate a leading UTF-8 BOM: Windows tooling (PowerShell Set-Content,
+  // Notepad) writes one by default, and a config file that parses on Linux
+  // but boots with silent defaults on Windows is a trap, not a feature.
+  // Found live: run_cluster.ps1-written node.json files were rejected and
+  // every node booted with default ports.
+  std::string_view view(text);
+  if (view.size() >= 3 && static_cast<unsigned char>(view[0]) == 0xEF &&
+      static_cast<unsigned char>(view[1]) == 0xBB && static_cast<unsigned char>(view[2]) == 0xBF) {
+    view.remove_prefix(3);
+  }
+  std::string owned(view);
+  Parser p(owned);
   JsonValue v = p.ParseValue();
   p.ExpectEnd();
   return v;

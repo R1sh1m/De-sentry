@@ -46,8 +46,13 @@ export function createDropbox(): DropboxHandles {
     targetNodeId: string;
     targetCollection: string;
     isIngesting: boolean;
+    /** Set by Discard: the detached PUT loop checks it per record and stops. */
+    cancelled: boolean;
     logs: string[];
   }
+
+  /** Files bigger than this are refused before readAsText (memory guard). */
+  const MAX_INTAKE_BYTES = 64 * 1024 * 1024;
 
   let staged: StagedItem[] = [];
   let nextStagedId = 1;
@@ -153,10 +158,15 @@ export function createDropbox(): DropboxHandles {
 
     // 2. Check for CSV. Quoted fields may contain the delimiter and
     // doubled quotes ("") escape a literal quote -- a naive split() turns
-    // `"a, b",c` into three fields instead of two.
-    if (trimmed.includes("\n") && (trimmed.includes(",") || trimmed.includes("\t"))) {
+    // `"a, b",c` into three fields instead of two. A delimiter with no
+    // newline is headers without rows (not "raw text"): it stages zero
+    // records with an honest summary rather than misfiling the headers.
+    if (trimmed.includes(",") || trimmed.includes("\t")) {
       const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
-      if (lines.length > 1) {
+      // Multi-row, or a single header-like row with at least 3 fields: a lone
+      // "hello, world" is prose, not a header row, and stays on the raw path.
+      const firstFields = lines.length > 0 ? lines[0].split(/[,\t]/).length : 0;
+      if (lines.length > 1 || firstFields >= 3) {
         const delimiter = trimmed.includes("\t") ? "\t" : ",";
         const splitRow = (line: string): string[] => {
           const fields: string[] = [];
@@ -196,15 +206,21 @@ export function createDropbox(): DropboxHandles {
           const obj: Record<string, unknown> = {};
           headers.forEach((h, idx) => {
             const val = parts[idx] ?? "";
+            // Numeric coercion is conservative: hex ("0x10"), Infinity and
+            // NaN-shaped strings stay strings (Number() accepts them all),
+            // and only finite decimal numbers convert.
             const num = Number(val);
-            obj[h] = !isNaN(num) && val !== "" ? num : val;
+            obj[h] = val !== "" && Number.isFinite(num) && !/^0x/i.test(val.trim()) ? num : val;
           });
           records.push({ key: `row_${i}`, doc: obj });
         }
         return {
           workload: "tabular",
           title: "CSV / Tabular Dataset",
-          summary: `${records.length} rows with ${headers.length} columns: ${headers.slice(0, 4).join(", ")}...`,
+          summary:
+            records.length === 0
+              ? `Headers found (${headers.length} columns) but no data rows — paste the full CSV to ingest.`
+              : `${records.length} rows with ${headers.length} columns: ${headers.slice(0, 4).join(", ")}...`,
           suggestedCollection: filename ? filename.replace(/\.[^/.]+$/, "") : "tables",
           // columnar_lite: the built-in segment engine for tabular data.
           // (duckdb is vendored and usually not compiled in.)
@@ -462,10 +478,20 @@ export function createDropbox(): DropboxHandles {
       item.isIngesting ? "Ingesting…" : `Ingest ${payload.records.length} records`,
     );
 
-    const cancelBtn = el("button", { class: "btn btn--ghost", type: "button" }, "Discard");
+    // Discard is disabled while ingesting: removing the card mid-loop used
+    // to leave the PUT loop running on a detached item. Discarding now marks
+    // the item cancelled first, and the loop checks per record.
+    const cancelBtn = el("button", {
+      class: "btn btn--ghost",
+      type: "button",
+      text: item.isIngesting ? "Cancel" : "Discard",
+    });
     on(cancelBtn, "click", () => {
-      staged = staged.filter((s) => s.id !== item.id);
-      render();
+      item.cancelled = true;
+      if (!item.isIngesting) {
+        staged = staged.filter((s) => s.id !== item.id);
+        render();
+      }
     });
 
     on(commitBtn, "click", () => void commitIngestion(item));
@@ -517,6 +543,10 @@ export function createDropbox(): DropboxHandles {
   }
 
   function readFile(file: File): void {
+    if (file.size > MAX_INTAKE_BYTES) {
+      store.toast("error", `Could not read '${file.name}'`, `File is ${file.size} bytes; the intake limit is ${MAX_INTAKE_BYTES} bytes. Split it and retry.`);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result !== "string") {
@@ -600,6 +630,7 @@ export function createDropbox(): DropboxHandles {
       targetCollection: payload.suggestedCollection,
       targetNodeId: best ? best.process.node_id : (store.dataNodes()[0]?.process.node_id ?? ""),
       isIngesting: false,
+      cancelled: false,
       logs: [],
     }];
     render();
@@ -608,7 +639,10 @@ export function createDropbox(): DropboxHandles {
   async function ingestAll(): Promise<void> {
     for (const item of staged) {
       if (item.isIngesting) continue;
-      if (!item.targetNodeId || !item.targetCollection) continue;
+      if (!item.targetNodeId || !item.targetCollection) {
+        store.toast("warning", "Ingestion skipped", `Set a destination node and collection for '${item.sourceName || item.payload.title}' first.`);
+        continue;
+      }
       await commitIngestion(item);
     }
   }
@@ -649,6 +683,10 @@ export function createDropbox(): DropboxHandles {
         item.logs.push(`Split ${item.payload.records.length} oversized record(s) into ${outgoing.length} chunked writes (page budget ~4 KiB).`);
       }
       for (const r of outgoing) {
+        if (item.cancelled) {
+          item.logs.push("Cancelled by the user; remaining records were not sent.");
+          break;
+        }
         try {
           const res = await api.putDocument(item.targetCollection, r.key, r.doc);
           successCount++;
@@ -659,6 +697,10 @@ export function createDropbox(): DropboxHandles {
           failCount++;
           item.logs.push(`✗ Failed "${r.key}": ${describeError(err)}`);
         }
+      }
+      // A cancelled card leaves the list; an uncancelled one stays with its log.
+      if (item.cancelled) {
+        staged = staged.filter((s) => s.id !== item.id);
       }
 
       const total = outgoing.length;

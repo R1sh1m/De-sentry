@@ -8,10 +8,35 @@
  * of ~30 endpoints is small enough to keep honest by reading.
  *
  * All requests go to loopback. The node API binds to 127.0.0.1 and attributes
- * every local call to the node's own identity (routes.cpp `self`), so there is
- * no auth header to send: "who is asking" is never taken from something a
- * caller could set.
+ * every local call to the node's own identity (routes.cpp `self`). When the
+ * desktop sidecar launches a node it sets a per-boot bearer token
+ * (DESENTRY_API_TOKEN), fetched once via the `api_token` command and sent as
+ * `Authorization: Bearer` below; engine-only nodes without a token stay
+ * unauthenticated as before.
  */
+
+let cachedToken: string | null = null;
+
+/** Bearer token for direct node calls; empty when none is configured. */
+export async function apiToken(): Promise<string> {
+  if (cachedToken !== null) return cachedToken;
+  try {
+    // Dynamic import: bridge.js is already a shared chunk, and a static edge
+    // from api.js would only re-chunk it (vite reporter note, benign either
+    // way). Laziness here also defers sidecar init until the first call.
+    const { sidecar } = await import("./bridge.js");
+    cachedToken = await sidecar.apiToken();
+  } catch {
+    cachedToken = "";
+  }
+  return cachedToken;
+}
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra ?? {}) };
+  if (cachedToken) headers["Authorization"] = `Bearer ${cachedToken}`;
+  return headers;
+}
 
 // -- error handling ----------------------------------------------------------
 
@@ -444,12 +469,15 @@ export class NodeApi {
     const onAbort = () => controller.abort();
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
+    if (cachedToken === null) await apiToken();
     let response: Response;
     try {
+      const base: Record<string, string> =
+        body === undefined ? {} : { "Content-Type": "application/json" };
       response = await fetch(url, {
         method,
         signal: controller.signal,
-        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        headers: authHeaders(base),
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (cause) {
@@ -510,12 +538,15 @@ export class NodeApi {
     const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    if (cachedToken === null) await apiToken();
     let response: Response;
     try {
+      const base: Record<string, string> =
+        body === undefined ? {} : { "Content-Type": "application/json" };
       response = await fetch(url, {
         method,
         signal: controller.signal,
-        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        headers: authHeaders(base),
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (cause) {
@@ -659,6 +690,19 @@ export class NodeApi {
   placementFor(collection: string, key: string, options?: RequestOptions): Promise<PlacementResult> {
     return this.get<PlacementResult>(
       `/_placement/${encodeURIComponent(collection)}/${encodeURIComponent(key)}`,
+      options,
+    );
+  }
+
+  /** Runs the collection's configured retention_days now; reports chunks dropped. */
+  runRetention(
+    collection: string,
+    options?: RequestOptions,
+  ): Promise<{ ok: boolean; collection: string; chunks_dropped: number }> {
+    return this.request(
+      "POST",
+      `/db/${encodeURIComponent(collection)}/_retention/run`,
+      {},
       options,
     );
   }

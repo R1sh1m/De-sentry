@@ -104,7 +104,9 @@ mod tests {
 
     /// Only meaningful where a keychain actually exists; skipped otherwise so
     /// CI on a headless box does not fail on the absence of a desktop service.
+    /// Serial: the live OS store is process-global (#2 fix).
     #[test]
+    #[serial_test::serial]
     fn a_stored_key_reads_back() {
         if !available() {
             return;

@@ -64,6 +64,10 @@ std::string X25519Ecdh(const std::string& our_private_key, const std::string& th
 
 std::string Sha256(const std::string& data);
 
+// HMAC-SHA256 (membership beacons). Same throw-on-OpenSSL-failure contract
+// as the keygen/derive helpers above (init/handshake-time use).
+std::string HmacSha256(const std::string& key, const std::string& data);
+
 // Derives `out_len` bytes from `secret` (+ optional salt/info) via HKDF-SHA256.
 std::string HkdfSha256(const std::string& secret, const std::string& salt, const std::string& info,
                         size_t out_len);

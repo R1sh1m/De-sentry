@@ -40,6 +40,8 @@ enum class MessageType : uint8_t {
   kMergeReceipt = 14,  // signed merge receipt from a peer (carried in kPong)
   // -- transit held-ack -------------------------------------------------------
   kTransitHeld = 15,  // holder confirms it has stored bytes for an offline owner
+  // -- handshake key confirmation ---------------------------------------------
+  kConfirm = 16,  // transcript signature proving identity binding (H-5 fix)
 };
 
 const char* MessageTypeName(MessageType type);
@@ -50,15 +52,38 @@ struct WireMessage {
 };
 
 // -- Handshake payload -------------------------------------------------
+// Key-confirmation payload: signature over the full handshake transcript
+// (H-5 fix). See secure_channel.h for the protocol.
+struct ConfirmPayload {
+  std::string transcript_signature;  // Ed25519 over TranscriptMessage
+  std::string Encode() const;
+  static ConfirmPayload Decode(const std::string& bytes);
+};
+
+// Domain-separated handshake transcript: client hello bytes first, then
+// server hello bytes (raw encoded HELLO payloads, fixed order both sides).
+std::string TranscriptMessage(const std::string& client_hello, const std::string& server_hello);
+
 struct HelloPayload {
   std::string node_id;
   std::string ed25519_pubkey;
   std::string x25519_ephemeral_pubkey;
   std::string signature;   // Ed25519 signature over x25519_ephemeral_pubkey
   uint16_t p2p_port = 0;   // the sender's own listen port, so the receiver can dial back
+  // Cluster-membership tag (trailing, tolerant): HMAC(cluster_secret,
+  // x25519_ephemeral_pubkey). Empty on open-mesh peers. See
+  // secure_channel.h VerifyHello for the enforcement rule.
+  std::string membership_tag;  // 32 raw bytes when present
   std::string Encode() const;
   static HelloPayload Decode(const std::string& bytes);
 };
+
+// Domain-separated membership messages (cluster secret never leaves the HMAC).
+// Tag over the ephemeral key proves current possession of the secret without
+// a challenge round; beacons bind the advertised identity the same way.
+std::string MembershipHelloMessage(const std::string& ephemeral_pubkey);
+std::string MembershipBeaconMessage(const std::string& node_id, const std::string& pubkey,
+                                    uint16_t p2p_port);
 
 // -- Gossip payloads -----------------------------------------------------
 struct DigestEntry {
@@ -125,6 +150,11 @@ struct TransitEntry {
   uint64_t doc_size_bytes = 0;
   uint32_t chunk_index = 0;
   uint32_t chunk_total = 1;
+  // Content integrity (C-3 fix): SHA-256 of encoded_doc + holder's signature
+  // over TransitAttestMessage(...). Trailing wire fields: old holders omit
+  // them (claim path rejects entries without them), new holders always send.
+  std::string content_hash;  // 32 raw bytes
+  std::string holder_sig;
 };
 // "Are you holding anything for me?" The requester is the authenticated
 // peer, so no owner field: a node can only ever ask for its own bytes.
@@ -166,7 +196,7 @@ struct TransitHeldPayload {
   std::string key_hash;         // 32 raw bytes (doc or chunk hash)
   std::string holder_node;      // node_id of the holder
   int64_t intent_lsn = -1;      // LSN of the TRANSIT_INTENT on holder's ledger
-  std::string signature;        // Ed25519 over (message_id || key_hash || intent_lsn)
+  std::string signature;        // Ed25519 over ("DSN-HELD-v1" || message_id || key_hash || intent_lsn)
   std::string Encode() const;
   static TransitHeldPayload Decode(const std::string& bytes);
 };
@@ -182,7 +212,7 @@ struct MergeReceipt {
   std::string key_hash;       // 32 raw bytes
   std::string applier_node;   // node_id of the peer that applied the merge
   int64_t applied_lsn = -1;   // LSN on the applier's ledger
-  std::string signature;      // Ed25519 over (message_id || key_hash || applied_lsn)
+  std::string signature;      // Ed25519 over ("DSN-RECEIPT-v1" || message_id || key_hash || applied_lsn)
   std::string Encode() const;
   static MergeReceipt Decode(const std::string& bytes);
 };
@@ -225,10 +255,20 @@ struct LedgerEntrySummary {
   uint64_t transit_size_bytes = 0;
   uint32_t transit_chunk_index = 0;
   uint32_t transit_chunk_total = 1;
+  // kAcl document bytes (the signed ACL envelope), carried for every peer
+  // regardless of read access: ACL metadata names no user bytes, and without
+  // it a peer could never learn a private collection's readers (H-1).
+  // Empty on all other record types. Trailing wire field: absent on old
+  // deltas, which simply carry no replicable ACLs.
+  std::string acl_json;
 };
 struct LedgerDeltaPayload {
   std::vector<LedgerEntrySummary> entries;
   bool hashes_only = false;  // true when the requester is not a reader
+  // Responder's signature over the delta tip (entries.back) under
+  // NodeEngine::LedgerTipMessage -- verified in CollectReplicaTips against
+  // the responder's handshake-proven key (C-6 fix). Empty on v1 deltas.
+  std::string tip_signature;
   // Wire versioning, same scheme as TransitResponsePayload: Encode prefixes
   // a magic ("DLD2"); Decode branches to the v1 parse (entries end at key)
   // when it is absent.

@@ -6,6 +6,7 @@
  */
 
 import { apiFor, ApiError } from "../api.js";
+import { sidecar } from "../bridge.js";
 import { store, type NodeView } from "../state.js";
 import { displayNodeName, engineLabel, json } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
@@ -110,6 +111,18 @@ export function createConsole(): ConsoleHandles {
       ),
     );
 
+    // Cluster-membership posture: closed mesh shows its fingerprint so two
+    // machines can confirm they will join the SAME mesh when pairing.
+    const meshBadge = el("span", {
+      class: "mono muted",
+      style: "font-size: var(--text-xs);",
+      title: "Cluster membership: closed meshes refuse outsiders",
+      text: "",
+    });
+    void sidecar.membershipStatus().then((status) => {
+      meshBadge.textContent = status.closed ? `Mesh closed ${status.fingerprint}` : "Mesh open";
+    });
+
     const header = el(
       "div",
       {
@@ -117,7 +130,12 @@ export function createConsole(): ConsoleHandles {
         style: "padding: 12px 16px; border-bottom: 1px solid var(--color-hairline); background: var(--color-surface); flex-shrink: 0;",
       },
       el("div", { class: "row", style: "gap: 12px; align-items: center;" }, backBtn, nodeSelector, enginesBadges),
-      el("span", { class: "mono muted", style: "font-size: var(--text-xs);" }, `Ledger #${node.tip?.entry_id ?? 0}`),
+      el(
+        "div",
+        { class: "row", style: "gap: 12px; align-items: center;" },
+        meshBadge,
+        el("span", { class: "mono muted", style: "font-size: var(--text-xs);" }, `Ledger #${node.tip?.entry_id ?? 0}`),
+      ),
     );
 
     // -- Tab switcher ---------------------------------------------------------

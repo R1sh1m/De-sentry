@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "desentry/common/status.h"
+#include "desentry/common/worker_pool.h"
 #include "desentry/net/identity.h"
 #include "desentry/net/wire_protocol.h"
 
@@ -29,10 +30,18 @@ using RequestHandler = std::function<WireMessage(const std::string& peer_node_id
 
 class TcpTransport {
  public:
+  // Called after a successful handshake (both directions) with the proven
+  // peer identity. Used to bind node_id -> pubkey in the peer table (C-2).
+  using HandshakeCallback =
+      std::function<void(const std::string& node_id, const std::string& pubkey, uint16_t p2p_port)>;
   TcpTransport(const NodeIdentity* identity, uint16_t p2p_port) : identity_(identity), p2p_port_(p2p_port) {}
   ~TcpTransport();
 
   Status StartListening(const std::string& bind_addr, RequestHandler handler);
+  void SetHandshakeCallback(HandshakeCallback cb) { handshake_cb_ = std::move(cb); }
+  // Cluster-membership secret (empty = open mesh). Must be set before
+  // StartListening; consulted on every handshake.
+  void SetClusterSecret(std::string secret) { cluster_secret_ = std::move(secret); }
   void Stop();
 
   // Blocking: dials out, handshakes as client, sends one request, waits for
@@ -49,6 +58,15 @@ class TcpTransport {
   const NodeIdentity* identity_;
   uint16_t p2p_port_;
   RequestHandler handler_;
+  HandshakeCallback handshake_cb_;
+  // Bounded inbound handling (C-4/H-11 fix): fixed pool instead of
+  // thread-per-connection; Stop() shuts the pool down so no detached thread
+  // outlives this object.
+  std::unique_ptr<WorkerPool> conn_pool_;
+  std::string cluster_secret_;
+  std::atomic<int> active_conns_{0};
+  static constexpr int kMaxInboundConns = 64;
+  static constexpr int kInboundTimeoutMs = 5000;
   std::atomic<bool> running_{false};
   dsn_socket_t listen_fd_ = kInvalidSocket;
   std::thread accept_thread_;

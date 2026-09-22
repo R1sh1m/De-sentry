@@ -185,6 +185,22 @@ void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
   // every peer look out of space to the supervisor.
   peers_->RecordLedgerHeight(peer.node_id, delta.entries.back().entry_id);
 
+  // Replicated ACLs (H-1): a kAcl entry carries its own owner
+  // attestation, verified against the origin's handshake-proven key; newer
+  // versions LWW-merge into the local catalog. Stale/forged versions are
+  // refused loudly but never break the round.
+  for (const LedgerEntrySummary& entry : delta.entries) {
+    if (static_cast<WalRecordType>(entry.operation) != WalRecordType::kAcl) continue;
+    if (entry.acl_json.empty() || entry.collection.empty()) continue;
+    Status acl_st =
+        engine_->ApplyRemoteAcl(entry.origin_node_id, entry.collection, entry.acl_json, true);
+    if (!acl_st.ok()) {
+      DSN_LOG_WARN("gossip", "refused replicated ACL for '" << entry.collection << "' from "
+                                                             << entry.origin_node_id << ": "
+                                                             << acl_st.message());
+    }
+  }
+
   // Transit intents naming this node are the trigger for a claim pass: the
   // whole point of the hash-only exchange is that a returning node discovers
   // bytes are waiting for it without anyone having tracked who was down.

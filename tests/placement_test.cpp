@@ -194,13 +194,13 @@ void TestPolicyFiltering() {
   const int64_t now = 1'700'000'000'000;
 
   PeerTable peers;
-  peers.Upsert(MakePeer("data-1", NodeLifecycleState::kRunning, false, now));
-  peers.Upsert(MakePeer("data-2", NodeLifecycleState::kRunning, false, now));
-  peers.Upsert(MakePeer("data-3", NodeLifecycleState::kRunning, false, now));
+  peers.Upsert(MakePeer("data-1", NodeLifecycleState::kRunning, false, now), PeerSource::kHandshake);
+  peers.Upsert(MakePeer("data-2", NodeLifecycleState::kRunning, false, now), PeerSource::kHandshake);
+  peers.Upsert(MakePeer("data-3", NodeLifecycleState::kRunning, false, now), PeerSource::kHandshake);
   // Excluded, each for a different reason:
-  peers.Upsert(MakePeer("supervisor-1", NodeLifecycleState::kRunning, true, now));
-  peers.Upsert(MakePeer("gone-1", NodeLifecycleState::kReclaimed, false, now));
-  peers.Upsert(MakePeer("stale-1", NodeLifecycleState::kRunning, false, now - 600'000));
+  peers.Upsert(MakePeer("supervisor-1", NodeLifecycleState::kRunning, true, now), PeerSource::kHandshake);
+  peers.Upsert(MakePeer("gone-1", NodeLifecycleState::kReclaimed, false, now), PeerSource::kHandshake);
+  peers.Upsert(MakePeer("stale-1", NodeLifecycleState::kRunning, false, now - 600'000), PeerSource::kHandshake);
 
   PlacementOptions options;
   options.replication_factor = 3;
@@ -249,7 +249,7 @@ void TestUnderReplicationIsReported() {
   std::cout << "  policy: too few nodes is reported, not hidden\n";
   const int64_t now = 1'700'000'000'000;
   PeerTable peers;
-  peers.Upsert(MakePeer("data-1", NodeLifecycleState::kRunning, false, now));
+  peers.Upsert(MakePeer("data-1", NodeLifecycleState::kRunning, false, now), PeerSource::kHandshake);
 
   PlacementOptions options;
   options.replication_factor = 3;
@@ -272,7 +272,7 @@ void TestGroupByPrimary() {
   const int64_t now = 1'700'000'000'000;
   PeerTable peers;
   for (const char* id : {"data-1", "data-2", "data-3"}) {
-    peers.Upsert(MakePeer(id, NodeLifecycleState::kRunning, false, now));
+    peers.Upsert(MakePeer(id, NodeLifecycleState::kRunning, false, now), PeerSource::kHandshake);
   }
 
   PlacementOptions options;

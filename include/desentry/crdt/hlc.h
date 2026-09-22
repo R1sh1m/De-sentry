@@ -35,7 +35,7 @@ struct HLCTimestamp {
     return std::to_string(physical_ms) + "." + std::to_string(logical) + "@" + node_id;
   }
 
-  // Wire/storage encoding: fixed 8+4 bytes big-endian + node_id, kept
+  // Wire/storage encoding: fixed 8+4 bytes little-endian + node_id, kept
   // separate from JSON so document_codec.h can pack it compactly.
   std::string Encode() const;
   static HLCTimestamp Decode(const std::string& bytes);
@@ -43,6 +43,11 @@ struct HLCTimestamp {
 
 class HybridLogicalClock {
  public:
+  // Max acceptable future skew for a remote timestamp (C-5 fix): anything
+  // further ahead of local wall clock is rejected, not clamped, so one
+  // malicious write cannot pin the clock and make honest values
+  // permanently unoverwritable.
+  static constexpr uint64_t kMaxFutureSkewMs = 300000;  // 5 minutes
   explicit HybridLogicalClock(std::string node_id) : node_id_(std::move(node_id)) {}
 
   // Produces a new local timestamp, guaranteed greater than every
@@ -51,13 +56,22 @@ class HybridLogicalClock {
 
   // Folds in a timestamp observed from a remote peer (e.g. attached to an
   // incoming replicated write) so that this node's subsequent timestamps
-  // are guaranteed causally after it.
-  void Observe(const HLCTimestamp& remote);
+  // are guaranteed causally after it. Returns false (and changes nothing)
+  // when the remote stamp is more than kMaxFutureSkewMs ahead of local wall
+  // clock or the logical counter is saturated -- callers must reject the
+  // write rather than merge it.
+  bool Observe(const HLCTimestamp& remote);
+
+  // Restores persisted state at boot so a restart never re-issues
+  // timestamps it already used (NTP step-back / snapshot-restore safety).
+  void Restore(uint64_t physical_ms, uint32_t logical);
+  uint64_t last_physical() const;
+  uint32_t last_logical() const;
 
  private:
   static uint64_t WallClockMs();
 
-  std::mutex mu_;
+  mutable std::mutex mu_;
   std::string node_id_;
   uint64_t last_physical_ = 0;
   uint32_t last_logical_ = 0;

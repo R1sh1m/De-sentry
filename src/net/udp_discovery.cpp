@@ -7,6 +7,9 @@
 #include "desentry/common/byte_buffer.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/net/identity.h"
+#include "desentry/net/wire_protocol.h"
+#include "desentry/security/crypto.h"
 
 namespace desentry {
 
@@ -69,6 +72,13 @@ void UdpDiscovery::ListenLoop() {
       std::string pubkey = r.Bytes();
       uint16_t p2p_port = r.U16();
       if (node_id == identity_->node_id()) continue;  // hearing our own broadcast
+      // C-2 fix: reject datagrams where node_id != SHA-256(pubkey). Without
+      // this, one spoofed packet rebinds a victim's id to the attacker's key
+      // (and the resolver in NetworkManager::Start would then verify "A's"
+      // signatures against the attacker's key).
+      if (pubkey.size() != 32 || node_id.size() != 32) continue;
+      if (NodeIdentity::DeriveNodeId(pubkey) != node_id) continue;
+      if (p2p_port == 0) continue;
 
       char ip[INET_ADDRSTRLEN];
       ::inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
@@ -84,8 +94,23 @@ void UdpDiscovery::ListenLoop() {
       // and the older peers just show up without a hostname.
       if (r.remaining() > 0) info.api_port = r.U16();
       if (r.remaining() > 0) info.hostname = r.Bytes();
+      // is_supervisor from an unsigned datagram is advisory only: Upsert with
+      // kDiscovery source never promotes it (C-2). Display only.
       if (r.remaining() > 0) info.is_supervisor = r.U8() != 0;
-      peer_table_->Upsert(info);
+      // Cluster membership (M-12 fix): a trailing HMAC tag authenticates the
+      // beacon. Beacons without a valid tag are ignored when we have a
+      // secret; beacons (and secrets) absent on both sides stay open.
+      if (!cluster_secret_.empty()) {
+        if (r.remaining() == 0) continue;
+        const std::string tag = r.Bytes();
+        const std::string expect = crypto::HmacSha256(
+            cluster_secret_, MembershipBeaconMessage(node_id, pubkey, p2p_port));
+        if (tag.size() != expect.size()) continue;
+        unsigned diff = 0;
+        for (size_t i = 0; i < tag.size(); ++i) diff |= static_cast<unsigned>(tag[i] ^ expect[i]);
+        if (diff != 0) continue;
+      }
+      peer_table_->Upsert(info, PeerSource::kDiscovery);
     } catch (const std::exception&) {
       continue;  // malformed datagram -- ignore, not fatal
     }
@@ -101,6 +126,11 @@ std::string UdpDiscovery::BuildAdvertisement() const {
   w.U16(advert_.api_port);
   w.Bytes(advert_.hostname);
   w.U8(advert_.is_supervisor ? 1 : 0);
+  if (!cluster_secret_.empty()) {
+    w.Bytes(crypto::HmacSha256(cluster_secret_,
+                                MembershipBeaconMessage(identity_->node_id(),
+                                                        identity_->public_key(), p2p_port_)));
+  }
   return w.TakeString();
 }
 

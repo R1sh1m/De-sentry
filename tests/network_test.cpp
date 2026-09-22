@@ -121,6 +121,13 @@ static void TestThreeNodeMeshConverges() {
   auto engA = NodeEngine::Open(oA).ValueOrDie();
   auto engB = NodeEngine::Open(oB).ValueOrDie();
   auto engC = NodeEngine::Open(oC).ValueOrDie();
+  // Collections replicate under their LOCAL ACLs (H-1): a collection no node
+  // ever created locally arrives with no ACL and is locked private. The mesh
+  // under test shares a public "users", so it is provisioned on every node
+  // up front -- the operator step PUT /_collection/users/acl would take.
+  assert(engA->storage().EnsureCollection("users").ok());
+  assert(engB->storage().EnsureCollection("users").ok());
+  assert(engC->storage().EnsureCollection("users").ok());
 
   NodeConfig cfgA, cfgB, cfgC;
   cfgA.p2p_port = 19911; cfgA.discovery_enabled = false; cfgA.gossip_interval_ms = 300;
