@@ -1511,3 +1511,111 @@ HANDOFFS (need a human):
 - Branch arch1-multi-db-isolation: uncommitted work from the concurrent
   session may still be present; this commit contains only the remediation
   pass below -- review `git status` before pushing.
+
+---
+
+## 16. Multi-node themed mesh + headed UI audit + live USB + spokes/drag (2026-09-22, this Windows box)
+
+All on commit `bb7adb8` (tree clean at start), MSVC-built `build/desentryd.exe`,
+debug app rebuilt from HEAD, tauri-driver 2.x + EdgeDriver 153 + vite :5273.
+
+### Baseline (Stage 0-1)
+`ctest` **12/12**; `airplane_mode` 18/18, `usb_node` 18/18, `transit_replay`
+22/22, all against `build/desentryd.exe`. Ports 7700-7703/7800-7803 verified
+free first. (Self-inflicted: first `run_cluster.ps1` call passed `-Engines
+kv,ts_rollup` unquoted; PowerShell coerced it to `"kv ts_rollup"` and all nodes
+refused to boot on `unknown default_engine`. Re-ran quoted. Script UX note, not
+a product bug.)
+
+### Themed 3-node mesh on C: (Stage 2)
+3 nodes + supervisor (`kv,ts_rollup`), `cluster_integration_test` ALL PASSED.
+Each node then got its own purpose-built dataset, all replicated mesh-wide:
+- node0 `test-screenshots` (kv): live desktop JPEG captured mid-test, chunked
+  into 3 KiB base64 parts + manifest (4 KiB page cap honoured, 8 parts).
+  Reassembled from node2 **byte-identical** (sha `1ec00c3d…`).
+- node1 `arduino-sensors` (ts_rollup): 60 greenhouse temp/humidity points.
+- node2 `aapl-prices` (ts_rollup): 30 AAPL OHLC bars, `close` via the numeric
+  fallback extractor.
+All three nodes report **identical per-collection checksums**, all ledgers
+verify -- while ledger tips differ (123/124/125). Tips are per-node chains by
+construction; checksums are the convergence truth.
+
+### Headed UI audit, real app + driver (Stage 3)
+3 more nodes created THROUGH the app backend (`ui-shots` 7706, `ui-arduino`
+7707, `ui-aapl` 7708; allocator correctly skipped the occupied 7700-7703),
+themed data ingested over the bearer-gated API, Tree/Mesh/Console screenshotted
+(`C:\Users\Rishi Misra\AppData\Local\Temp\opencode\headed\*.png`).
+- Sidebar grouping ✓ (device dirs, removable 32GIGS, "No node here yet" ->
+  live node with lock icon), Tree cards ✓ (ledger entry, storage, engine
+  labels `Key-Value`/`Time series`), console node selector + `Mesh closed
+  f5bc637c` membership badge ✓, explorer paging 60/60 no-skip ✓ (REST),
+  `/_changes` 124 entries ordered max==tip ✓, placement honesty note ✓.
+- **F1 (confirmed UI bug, pixels banked): `convergenceOf` grades by ledger-tip
+  equality, but tips differ by construction.** Isolated single-node `ui-arduino`
+  showed "Catching up #59 (405 behind)" against `ui-shots`' #464 -- a node it
+  can never converge with. Same root cause as the C: mesh (123 vs 125 while
+  checksums identical). Fix proposal: grade on brain-checksum agreement, tip
+  heuristic as fallback. NOT fixed in this pass (evidence first).
+- **F2 (display staleness): "465 docs · 0 B stored"** with data present; after
+  restart the same node showed real bytes (21.3 KiB). Quota-bytes display lags
+  behind doc counts. Tracked, not fixed.
+- **F3 (spec-correct isolation, observed live):** app-front closed mesh
+  (sidecar secret) vs open C: cluster never handshake (122 probes, 0 success,
+  `bootstrap#` placeholders stay `dead`) -- and Mesh draws NO fake edges for
+  them. Mixed-mode fail-closed works as designed (§15 A/B-vs-C by other means).
+- Mesh click-through needed exact-option matching (`Mesh2` label carries a
+  count); Tree→Mesh switch verified with screenshots.
+
+### Duplicate-supervisor incident (found by this run, cleaned)
+Two `desentryd --config .../nodes/supervisor/node.json` processes ran on ONE
+data dir (orphan from a dead session + current sidecar child, 7704 vs 7705),
+plus a spare msedgedriver. Cause: no single-instance guard in the app and no
+data-dir lock in desentryd; killing the app orphans sidecar children and the
+next launch stacks duplicates. Killed strays (final: 4 cluster + 4 app
+children, 1 driver, 1 window). **Recommendations (not implemented):**
+tauri single-instance plugin, exclusive data-dir lock file (fail fast), sidecar
+orphan-reaping at boot. The taskbar "two instances" was one running debug app
++ its ungrouped pinned icon -- plus the genuinely duplicated engines above.
+
+### Mesh connectedness: spokes + drag (user-asked, implemented + verifiedlive)
+`app/src/views/canvas.ts`, `styles.css`, `DESIGN.md` §5.2:
+- Supervisors ride on Mesh as purple hub cards (Tree stays data-only);
+  supervised nodes with no peer edge to the hub get a dashed purple
+  supervision spoke ("supervised by this device · no data-plane peer link").
+  Solid edges always mean real `/_peers` links. DOM: `1 spokes / 1 edges`;
+  screenshot banked.
+- Cards drag: press-drag moves the card, edges re-anchor live in-DOM,
+  arrangement persists in session-only `nodeOffsets` across re-renders; water
+  still pans, tap still selects. Driver pointer-action test: card +140/+80,
+  edge endpoint followed exactly. `typecheck/build/check:css/check:qr/
+  check:a11y` all green.
+
+### Live USB sealed+passphrase on D: (Stage 4, physical stick)
+`usb-field` node created through the app onto `D:\Node_Null-AHHHH\drill\`
+(`encrypt_at_rest`, `key_mode: passphrase`, `removable: true`):
+sealed boot (`at_rest_sealed=true`), PUT ok, ledger verifies. Logical drill:
+stop -> port closed; wrong passphrase refuses with no boot; correct relocks
+same identity with data + ledger intact; `change_passphrase` rotates (old
+refuses, new unlocks, data intact). Physical drill: child SIGKILLED, stick
+UNPLUGGED (D: confirmed gone, cluster healthy), RE-PLUGGED (same port):
+unlock with rotated passphrase -> same identity, sealed note intact, ledger
+verifies. `D:\Stuff` untouched throughout; only `drill\` was ever written.
+Mesh replication for the USB node was correctly refused (F3 closed-vs-open).
+
+### Soak-12 sealed (Stage 5)
+`soak_test.py --nodes 12 --writes 150 --chaos 3 --sealed --drain 30`:
+**ALL 20 CHECKS PASSED** (50-node run explicitly deferred by owner).
+
+### Release (Stage 6, in progress at commit time)
+Updater wiring verified: `createUpdaterArtifacts: true`, endpoint
+`R1sh1m/De-sentry/latest.json`, pubkey present in `tauri.conf.json`,
+`TAURI_SIGNING_PRIVATE_KEY` wired in `release.yml`, private key at
+`~\.tauri\de-sentry.key` (348 B, passwordless). Pubkey↔private pairing NOT
+independently verified (no minisign here; CI fails closed on mismatch).
+Handoff: owner stores the key as the CI secret, then `git tag v2.0.0` +
+push fires the draft release.
+
+### Still not run
+macOS anywhere; 50-node soak on this tree; invite-model pairing screen;
+headed wizard click-through by human hands; dashboard.html against the live
+mesh (CORS from file:// untested); keyboard nudge for dragged cards.

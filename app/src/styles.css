@@ -1409,9 +1409,19 @@ svg.mesh {
   stroke-width: 3 !important;
   opacity: 1 !important;
 }
+/* Supervision spokes: always dashed and neutral so they read as management
+   links, never as data-plane replication flows (those are solid). */
+.mesh__edge--supervised {
+  stroke: var(--color-status-supervisor);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
 .mesh__node {
-  cursor: pointer;
+  cursor: grab;
   outline: none;
+}
+.mesh__node:active {
+  cursor: grabbing;
 }
 .mesh__node:hover .mesh__node-card {
   filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.12));

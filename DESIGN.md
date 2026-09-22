@@ -550,6 +550,16 @@ Layout is deterministic (a fixed radial arrangement seeded by node id), so the
 graph does not rearrange itself between refreshes. A mesh that reshuffles every
 poll is unreadable, and nodes must stay where the user left them.
 
+Supervisors appear on Mesh only, as hub cards in `status-supervisor` purple:
+the control plane is never data, but it is the honest anchor for supervision
+spokes. A supervised node with no data-plane peer edge to the supervisor gets
+a dashed purple spoke labelled "supervised by this device · no data-plane peer
+link" — solid edges always mean real `/_peers` links, so a node never floats
+unconnected yet a spoke can never be mistaken for replication. Cards are
+draggable: press-drag on a card moves it (its edges re-anchor live), empty
+water still pans, tap still selects. Manual positions are session-only
+offsets; refresh polls never reset them.
+
 ### 5.3 Inspector
 Stacked `card`s, no nesting:
 

@@ -84,12 +84,40 @@ interface EdgeData {
   fitness: number;
   latencyMs: number;
   successRate: number;
+  /**
+   * "peer" is a real data-plane link from /_peers. "supervised" is a
+   * supervision spoke: every node in the store is managed by this device's
+   * sidecar, so a node with no peer edge to the supervisor still gets a
+   * visibly distinct spoke instead of floating unconnected. Spokes never
+   * claim replication flows anywhere.
+   */
+  kind: "peer" | "supervised";
 }
 
 /** Pan and zoom state, persistent across renders. */
 let panX = 0;
 let panY = 0;
 let zoomScale = 1.0;
+
+/**
+ * User-arranged node displacements in layout coordinates, keyed by node id.
+ * Applied on top of layout() output so a manual arrangement survives
+ * re-renders (refresh polls, resizes, view switches). Session-only: never
+ * persisted, never synced — positions are presentation, not mesh state.
+ */
+const nodeOffsets = new Map<string, { x: number; y: number }>();
+
+/** Fold user displacements into a fresh layout. */
+function withOffsets(placed: Placed[]): Placed[] {
+  for (const p of placed) {
+    const o = nodeOffsets.get(p.node.process.node_id);
+    if (o !== undefined) {
+      p.x += o.x;
+      p.y += o.y;
+    }
+  }
+  return placed;
+}
 
 /** Upper zoom bound (Slice 1 guardrail): past 2.2x SVG text raster blurs. */
 const ZOOM_MIN = 0.35;
@@ -135,7 +163,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
 
   const ordered = [...nodes].sort((a, b) => a.process.node_id.localeCompare(b.process.node_id));
   if (ordered.length === 1) {
-    return [{ node: ordered[0], status: convergenceOf(ordered[0], tip), x: cx, y: cy }];
+    return withOffsets([{ node: ordered[0], status: convergenceOf(ordered[0], tip), x: cx, y: cy }]);
   }
 
   if (meshPlacementMode === "hierarchical") {
@@ -178,7 +206,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
       });
     });
 
-    return placed;
+    return withOffsets(placed);
   }
 
   const rings: NodeView[][] = [];
@@ -204,7 +232,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
       });
     });
   });
-  return placed;
+  return withOffsets(placed);
 }
 
 function edgesOf(placed: Placed[]): EdgeData[] {
@@ -223,7 +251,30 @@ function edgesOf(placed: Placed[]): EdgeData[] {
       const fitness = Math.max(0.25, Math.min(1.0, peer.fitness?.score || 0.5));
       const latencyMs = peer.fitness?.latency_ms || 0;
       const successRate = peer.fitness?.success_rate ?? 1.0;
-      edges.push({ a: p, b: other, live, fitness, latencyMs, successRate });
+      edges.push({ a: p, b: other, live, fitness, latencyMs, successRate, kind: "peer" });
+    }
+  }
+
+  // Supervision spokes: no supervised node floats alone. A spoke is drawn
+  // from each non-supervisor node to a placed supervisor only when no peer
+  // edge already joins that pair (peer links win; spokes fill the gaps).
+  const supervisors = placed.filter((p) => p.node.process.supervisor);
+  if (supervisors.length > 0) {
+    for (const p of placed) {
+      if (p.node.process.supervisor) continue;
+      const hub = supervisors[0];
+      const key = [p.node.process.node_id, hub.node.process.node_id].sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        a: p,
+        b: hub,
+        live: p.status !== "offline",
+        fitness: 0.3,
+        latencyMs: 0,
+        successRate: 1,
+        kind: "supervised",
+      });
     }
   }
   return edges;
@@ -265,12 +316,58 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   root.appendChild(viewport);
 
   // Pan & Zoom interaction (mouse drag + wheel + multi-touch pinch + trackpad).
+  // Dragging that starts on a node card moves the node (edges follow);
+  // dragging that starts on empty water pans the viewport.
   let isDragging = false;
   let startX = 0;
   let startY = 0;
   let downX = 0;
   let downY = 0;
   let draggedFar = false;
+  // Node-drag state: downNodeId is the press candidate, dragNodeId the live
+  // drag (both null unless the gesture started on a card).
+  let downNodeId: string | null = null;
+  let dragNodeId: string | null = null;
+  let dragLastX = 0;
+  let dragLastY = 0;
+
+  /** Move one card and re-anchor its edges, all in the live DOM. */
+  const moveNodeDom = (nodeId: string, dx: number, dy: number): void => {
+    const card = viewport.querySelector(`.mesh__node[data-node-id="${nodeId}"]`);
+    if (card) {
+      const cur = card.getAttribute("transform") || "";
+      const m = /translate\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/.exec(cur);
+      if (m) {
+        card.setAttribute(
+          "transform",
+          `translate(${parseFloat(m[1]) + dx} ${parseFloat(m[2]) + dy})`,
+        );
+      }
+    }
+    const lines = edgeLayer.querySelectorAll("line[data-edge]");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const parts = (line.getAttribute("data-edge") || "").split("|");
+      if (parts.length !== 2 || (parts[0] !== nodeId && parts[1] !== nodeId)) continue;
+      const first = parts[0] === nodeId;
+      const attr = (name: string): number => parseFloat(line.getAttribute(name) || "0") || 0;
+      if (first) {
+        line.setAttribute("x1", String(attr("x1") + dx));
+        line.setAttribute("y1", String(attr("y1") + dy));
+      } else {
+        line.setAttribute("x2", String(attr("x2") + dx));
+        line.setAttribute("y2", String(attr("y2") + dy));
+      }
+    }
+    const o = nodeOffsets.get(nodeId) || { x: 0, y: 0 };
+    nodeOffsets.set(nodeId, { x: o.x + dx, y: o.y + dy });
+    positionPopover();
+  };
+
+  const nodeIdFromTarget = (target: EventTarget | null): string | null => {
+    const card = (target as Element | null)?.closest?.(".mesh__node");
+    return card?.getAttribute("data-node-id") || null;
+  };
 
   const popover = el("div", { class: "mesh__popover", hidden: true });
   wrapper.appendChild(popover);
@@ -350,8 +447,8 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   const viewW = (): number => width / zoomScale;
   const viewH = (): number => height / zoomScale;
 
-  // Starmap minimap: a static miniature of the same map — real peer edges
-  // first (accuracy), then status dots, then the viewport rect. In
+  // Starmap minimap: a static miniature of the same map — edges first
+  // (peer links plus supervision spokes, same geometry as the main view), then status dots, then the viewport rect. In
   // hierarchical mode the dots already sit on tree rows, so the miniature
   // reads as a tree map; in radial mode it reads as the mesh.
   const MM_W = 96;
@@ -478,6 +575,10 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     downX = e.clientX;
     downY = e.clientY;
     draggedFar = false;
+    dragNodeId = null;
+    downNodeId = startedOnNode ? nodeIdFromTarget(e.target) : null;
+    dragLastX = e.clientX;
+    dragLastY = e.clientY;
     if (activePointers.size === 2) {
       isDragging = false;
       pinchSnapshot();
@@ -514,6 +615,25 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       pinchPrevMidY = midY;
       return;
     }
+    if (activePointers.size === 1 && downNodeId !== null && dragNodeId === null && draggedFar) {
+      // Press started on a card and moved past tap slop: this is a node
+      // drag, not a pan. Take pointer capture so fast moves keep tracking.
+      dragNodeId = downNodeId;
+      try {
+        root.setPointerCapture(e.pointerId);
+      } catch {
+        // Older webviews: window-level move/up still fire.
+      }
+      root.style.cursor = "grabbing";
+    }
+    if (dragNodeId !== null && activePointers.size === 1) {
+      const dx = (e.clientX - dragLastX) / zoomScale;
+      const dy = (e.clientY - dragLastY) / zoomScale;
+      dragLastX = e.clientX;
+      dragLastY = e.clientY;
+      if (dx !== 0 || dy !== 0) moveNodeDom(dragNodeId, dx, dy);
+      return;
+    }
     if (!isDragging) return;
     panX = e.clientX - startX;
     panY = e.clientY - startY;
@@ -542,8 +662,10 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         startY = remaining.y - panY;
       }
     } else if (activePointers.size === 0) {
-      const wasTap = !draggedFar;
+      const wasTap = !draggedFar && dragNodeId === null;
       isDragging = false;
+      dragNodeId = null;
+      downNodeId = null;
       pinchPrevDist = 0;
       root.style.cursor = "grab";
       if (wasTap) {
@@ -650,21 +772,28 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   // Edge layer
   const edgeLayer = svg("g", { class: "mesh__edges" });
   for (const edge of edges) {
+    const supervised = edge.kind === "supervised";
+    // data-edge mirrors edgesOf()'s dedupe key so a dragged node can find
+    // and re-anchor its own lines without a re-render.
+    const edgeKey = [edge.a.node.process.node_id, edge.b.node.process.node_id].sort().join("|");
     const edgeLine = svg("line", {
-      class: "mesh__edge",
+      class: supervised ? "mesh__edge mesh__edge--supervised" : "mesh__edge",
+      "data-edge": edgeKey,
       x1: edge.a.x,
       y1: edge.a.y,
       x2: edge.b.x,
       y2: edge.b.y,
-      "stroke-dasharray": edge.live ? null : "4 4",
-      opacity: edge.live ? edge.fitness : 0.35,
+      "stroke-dasharray": edge.live && !supervised ? null : "4 4",
+      opacity: supervised ? 0.5 : edge.live ? edge.fitness : 0.35,
     });
 
     edgeLine.addEventListener("mouseenter", (e: MouseEvent) => {
       const rect = wrapper.getBoundingClientRect();
       tooltip.style.left = `${e.clientX - rect.left}px`;
       tooltip.style.top = `${e.clientY - rect.top}px`;
-      tooltip.textContent = `${edge.latencyMs.toFixed(1)}ms · ${percent(edge.successRate)} success · fitness ${edge.fitness.toFixed(2)}`;
+      tooltip.textContent = supervised
+        ? "supervised by this device · no data-plane peer link"
+        : `${edge.latencyMs.toFixed(1)}ms · ${percent(edge.successRate)} success · fitness ${edge.fitness.toFixed(2)}`;
       tooltip.hidden = false;
     });
 
@@ -1299,7 +1428,11 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
 
     if (mode === "mesh") {
       const side = Math.max(760, 260 + Math.ceil(Math.sqrt(nodes.length)) * 200);
-      const view = meshView(nodes, side, Math.round(side * 0.65), element);
+      // Supervisors ride along as hub-only entries: never data, never a
+      // replication hop, but the honest anchor for supervision spokes so no
+      // node floats unconnected. Tree intentionally stays data-only.
+      const hubs = [...store.state.nodes.values()].filter((n) => n.process.supervisor);
+      const view = meshView([...nodes, ...hubs], side, Math.round(side * 0.65), element);
       replace(body, view);
       (view as HTMLElement & { __positionPopover?: () => void }).__positionPopover?.();
     } else {
