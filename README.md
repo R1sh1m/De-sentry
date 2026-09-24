@@ -82,20 +82,6 @@ daemon (`gnome-keyring` or `kwalletmanager`) must be running at runtime or key
 custody will fail with a D-Bus error. Headless machines: run `dbus-run-session`
 or build the engine only.
 
-### macOS 14+
-
-```bash
-xcode-select --install                      # C/C++ toolchain
-brew install cmake openssl@3 node rust      # or rustup, or MacPorts
-
-# Homebrew's OpenSSL is keg-only, so CMake will not find it by itself:
-export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
-```
-
-Export `OPENSSL_ROOT_DIR` in your shell profile, or pass it per-configure with
-`-DOPENSSL_ROOT_DIR=...`. Without it you get
-`Could NOT find OpenSSL` even though `brew list` shows it installed.
-
 ### Windows 11
 
 Install, in this order:
