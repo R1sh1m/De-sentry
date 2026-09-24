@@ -1,10 +1,5 @@
 # De-Sentry
 
-[![CI](https://github.com/R1sh1m/De-sentry/actions/workflows/ci.yml/badge.svg)](https://github.com/R1sh1m/De-sentry/actions/workflows/ci.yml)
-[![Release](https://github.com/R1sh1m/De-sentry/actions/workflows/release.yml/badge.svg)](https://github.com/R1sh1m/De-sentry/releases)
-![C++17](https://img.shields.io/badge/C++-17-blue.svg)
-![OpenSSL-only](https://img.shields.io/badge/deps-OpenSSL--only-green.svg)
-
 A decentralized, fully peer-to-peer database engine. No client-server split:
 every node is simultaneously a storage engine, a REST API server for local
 applications, and a P2P peer that gossips writes to every other node. There
