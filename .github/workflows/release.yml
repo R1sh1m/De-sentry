@@ -61,6 +61,8 @@ jobs:
           - os: macos-latest
             args: "--target universal-apple-darwin"
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
@@ -105,7 +107,7 @@ jobs:
           npm run stage-sidecar
 
       - name: Build and release the app
-        uses: tauri-apps/tauri-action@v2
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Minisign key for updater artifacts (M-13). One-time setup: run
