@@ -71,10 +71,12 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
 
   const cancelBtn = el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Cancel" });
   const unlockBtn = el("button", { type: "button", class: "btn btn--primary btn--sm", text: "Unlock Node" });
+  let submitting = false;
 
   on(cancelBtn, "click", dismiss);
 
   const submit = async () => {
+    if (submitting) return;
     const secret = input.value.trim();
     if (!secret) {
       errorNote.textContent = "Please enter a key or password.";
@@ -83,20 +85,31 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
       return;
     }
 
+    submitting = true;
     unlockBtn.setAttribute("disabled", "true");
     unlockBtn.textContent = "Unlocking…";
     errorNote.style.display = "none";
 
     try {
-      await sidecar.unlockNode(node.node_id, secret, node.data_dir);
+      const unlocked = await sidecar.unlockNode(node.node_id, secret, node.data_dir);
       if (node.data_dir) store.dismissCandidate(node.data_dir);
       store.toast("success", "Node unlocked", node.node_name || node.node_id);
+      // Select the node before refreshing the surrounding views. A refresh
+      // failure must not turn a successful unlock into a return to the home
+      // canvas, and the sidecar response is the authoritative node identity.
+      store.select({ kind: "node", nodeId: unlocked.node_id });
       dismiss();
-      await refreshNodeList();
-      await refreshTopology();
-      await refreshNode(node.node_id);
-      store.select({ kind: "node", nodeId: node.node_id });
+      await Promise.all([
+        refreshNodeList().catch((error) => {
+          store.toast("warning", "Node unlocked", `Could not refresh the node list: ${describeError(error)}`);
+        }),
+        refreshTopology().catch((error) => {
+          store.toast("warning", "Node unlocked", `Could not refresh topology: ${describeError(error)}`);
+        }),
+      ]);
+      await refreshNode(unlocked.node_id);
     } catch (err) {
+      submitting = false;
       errorNote.textContent = describeError(err);
       errorNote.style.display = "block";
       unlockBtn.removeAttribute("disabled");

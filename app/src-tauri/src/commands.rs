@@ -992,19 +992,20 @@ pub fn unlock_node(
                 .unwrap_or_else(|| "node".to_owned())
         });
 
-        let allocation = state.allocate_ports().map_err(fail)?;
         let existing: serde_json::Value = std::fs::read_to_string(&config_path)
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_else(|| serde_json::json!({}));
 
+        // Verify the typed secret before changing the config or reserving
+        // ports. A typo must leave both the node directory and the port pool
+        // untouched.
+        let secret = resolve_unlock_secret(&target_dir, &password)?;
+        let allocation = state.allocate_ports().map_err(fail)?;
         if let Err(error) = rewrite_ports(&config_path, &allocation) {
             state.release_ports(allocation);
             return Err(error);
         }
-
-        // Verify the typed secret against the envelope before binding ports.
-        let secret = resolve_unlock_secret(&target_dir, &password)?;
 
         LaunchSpec {
             node_name,
