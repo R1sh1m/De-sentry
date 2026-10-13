@@ -40,17 +40,44 @@ WHITE_SOFT = (255, 255, 255, 190)
 CYAN_GLOW = (100, 210, 255, 255)
 
 
-def shield_polygon(s: float) -> list[tuple[float, float]]:
-    """Geometric coordinates of the Sentry Aegis shield."""
-    cx = s * 0.50
-    return [
-        (cx, s * 0.08),          # Top point
-        (s * 0.85, s * 0.225),   # Top-right corner
-        (s * 0.85, s * 0.55),    # Mid-right flank
-        (cx, s * 0.92),          # Bottom tip
-        (s * 0.15, s * 0.55),    # Mid-left flank
-        (s * 0.15, s * 0.225),   # Top-left corner
-    ]
+def cubic(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    steps: int = 24,
+) -> list[tuple[float, float]]:
+    """Samples a cubic Bézier segment for Pillow's raster drawing APIs."""
+    points = []
+    for step in range(steps + 1):
+        t = step / steps
+        inverse = 1 - t
+        points.append((
+            inverse**3 * p0[0]
+            + 3 * inverse**2 * t * p1[0]
+            + 3 * inverse * t**2 * p2[0]
+            + t**3 * p3[0],
+            inverse**3 * p0[1]
+            + 3 * inverse**2 * t * p1[1]
+            + 3 * inverse * t**2 * p2[1]
+            + t**3 * p3[1],
+        ))
+    return points
+
+
+def shield_path(s: float) -> list[tuple[float, float]]:
+    """Samples the curved shield path used by the homepage SVG."""
+    top = (s * 0.50, s * 0.08)
+    right_top = (s * 0.85, s * 0.225)
+    right_bottom = (s * 0.85, s * 0.55)
+    bottom = (s * 0.50, s * 0.92)
+    left_bottom = (s * 0.15, s * 0.55)
+    left_top = (s * 0.15, s * 0.225)
+    return (
+        [top, right_top]
+        + cubic(right_top, (s * 0.85, s * 0.55), (s * 0.70, s * 0.78), bottom)[1:]
+        + cubic(bottom, (s * 0.30, s * 0.78), (s * 0.15, s * 0.55), left_top)[1:]
+    )
 
 
 def render(size: int) -> Image.Image:
@@ -63,7 +90,7 @@ def render(size: int) -> Image.Image:
     # The app icon uses the same transparent Aegis mark as the homepage.
     # Platform launchers provide their own background treatment.
     # 1. Sentry Shield Body
-    shield_pts = shield_polygon(s)
+    shield_pts = shield_path(s)
     cx, cy = s * 0.50, s * 0.50
 
     # Shield fill
@@ -72,13 +99,16 @@ def render(size: int) -> Image.Image:
     sdraw.polygon(shield_pts, fill=SHIELD_BOTTOM)
 
     # Left facet highlight (light reflection)
-    left_facet = [
-        (cx, s * 0.13),
-        (s * 0.16, s * 0.25),
-        (s * 0.16, s * 0.56),
-        (cx, s * 0.88),
-        (cx, cy),
-    ]
+    left_facet = (
+        [(cx, s * 0.08), (s * 0.15, s * 0.225)]
+        + cubic(
+            (s * 0.15, s * 0.225),
+            (s * 0.15, s * 0.55),
+            (s * 0.30, s * 0.78),
+            (cx, s * 0.92),
+        )[1:]
+        + [(cx, cy)]
+    )
     sdraw.polygon(left_facet, fill=SHIELD_FACET)
 
     # Shield outline stroke
@@ -140,7 +170,7 @@ def render_tray(size: int = 64) -> Image.Image:
     draw = ImageDraw.Draw(image)
 
     # Shield outline
-    shield_pts = shield_polygon(s)
+    shield_pts = shield_path(s)
     stroke_w = max(2, int(s * 0.045))
     draw.line(shield_pts + [shield_pts[0]], fill=(255, 255, 255, 240), width=stroke_w, joint="curve")
 
