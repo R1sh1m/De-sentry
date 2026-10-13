@@ -30,9 +30,9 @@ except ImportError:  # pragma: no cover - a developer-tools script
 
 OUT = Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
 
-SHIELD_TOP = (0, 113, 227, 240)
-SHIELD_BOTTOM = (0, 64, 133, 245)
-SHIELD_STROKE = (41, 151, 255, 220)
+SHIELD_TOP = (0, 113, 227, 255)
+SHIELD_BOTTOM = (0, 64, 133, 255)
+SHIELD_STROKE = (41, 151, 255, 255)
 SHIELD_FACET = (41, 151, 255, 80)
 
 WHITE = (255, 255, 255, 255)
@@ -93,10 +93,22 @@ def render(size: int) -> Image.Image:
     shield_pts = shield_path(s)
     cx, cy = s * 0.50, s * 0.50
 
-    # Shield fill
+    # Shield fill: the same diagonal light-blue-to-sapphire gradient as the
+    # homepage SVG's sentry-grad-shield.
     shield_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    shield_gradient = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    gradient_pixels = shield_gradient.load()
+    for y in range(s):
+        for x in range(s):
+            t = (x + y) / max(1, 2 * (s - 1))
+            gradient_pixels[x, y] = tuple(
+                round(SHIELD_TOP[channel] + (SHIELD_BOTTOM[channel] - SHIELD_TOP[channel]) * t)
+                for channel in range(4)
+            )
+    shield_mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(shield_mask).polygon(shield_pts, fill=255)
+    shield_img.paste(shield_gradient, (0, 0), shield_mask)
     sdraw = ImageDraw.Draw(shield_img)
-    sdraw.polygon(shield_pts, fill=SHIELD_BOTTOM)
 
     # Left facet highlight (light reflection)
     left_facet = (
