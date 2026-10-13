@@ -41,9 +41,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, state: Arc<AppState>) -> tauri::Res
 
     let handler_state = Arc::clone(&state);
     TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().cloned().ok_or_else(|| {
-            tauri::Error::AssetNotFound("the tray icon is missing from the bundle".into())
-        })?)
+        .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
         .icon_as_template(true)
         .tooltip("De-Sentry")
         .menu(&menu)

@@ -34,13 +34,6 @@
         "enable": false,
         "scope": []
       }
-    },
-    "trayIcon": {
-      "id": "main",
-      "iconPath": "icons/tray.png",
-      "iconAsTemplate": true,
-      "tooltip": "De-Sentry",
-      "menuOnLeftClick": false
     }
   },
   "bundle": {

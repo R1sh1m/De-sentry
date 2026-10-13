@@ -19,7 +19,6 @@ Requires Pillow. Writes into app/src-tauri/icons/.
 
 from __future__ import annotations
 
-import math
 import struct
 import sys
 from pathlib import Path
@@ -31,14 +30,9 @@ except ImportError:  # pragma: no cover - a developer-tools script
 
 OUT = Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
 
-# Palette: Action Blue and Deep Sapphire from DESIGN.md
-BG_TOP = (10, 30, 60, 255)       # Midnight navy top
-BG_MID = (0, 85, 175, 255)       # Action Blue mid
-BG_BOTTOM = (0, 45, 115, 255)    # Deep Sapphire bottom
-
-SHIELD_TOP = (0, 125, 245, 240)
-SHIELD_BOTTOM = (0, 55, 130, 245)
-SHIELD_STROKE = (65, 185, 255, 220)
+SHIELD_TOP = (0, 113, 227, 240)
+SHIELD_BOTTOM = (0, 64, 133, 245)
+SHIELD_STROKE = (41, 151, 255, 220)
 SHIELD_FACET = (41, 151, 255, 80)
 
 WHITE = (255, 255, 255, 255)
@@ -50,12 +44,12 @@ def shield_polygon(s: float) -> list[tuple[float, float]]:
     """Geometric coordinates of the Sentry Aegis shield."""
     cx = s * 0.50
     return [
-        (cx, s * 0.13),          # Top point
-        (s * 0.84, s * 0.25),    # Top-right corner
-        (s * 0.84, s * 0.56),    # Mid-right flank
-        (cx, s * 0.88),          # Bottom tip
-        (s * 0.16, s * 0.56),    # Mid-left flank
-        (s * 0.16, s * 0.25),    # Top-left corner
+        (cx, s * 0.08),          # Top point
+        (s * 0.85, s * 0.225),   # Top-right corner
+        (s * 0.85, s * 0.55),    # Mid-right flank
+        (cx, s * 0.92),          # Bottom tip
+        (s * 0.15, s * 0.55),    # Mid-left flank
+        (s * 0.15, s * 0.225),   # Top-left corner
     ]
 
 
@@ -66,32 +60,9 @@ def render(size: int) -> Image.Image:
     image = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    # 1. Rounded-square ground with multi-stop vertical gradient
-    radius = int(s * 0.225)
-    gradient = Image.new("RGBA", (1, s))
-    for y in range(s):
-        t = y / max(1, s - 1)
-        if t < 0.5:
-            t2 = t * 2
-            col = tuple(round(BG_TOP[i] + (BG_MID[i] - BG_TOP[i]) * t2) for i in range(4))
-        else:
-            t2 = (t - 0.5) * 2
-            col = tuple(round(BG_MID[i] + (BG_BOTTOM[i] - BG_MID[i]) * t2) for i in range(4))
-        gradient.putpixel((0, y), col)
-
-    ground = gradient.resize((s, s))
-    mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, s - 1, s - 1], radius=radius, fill=255)
-    image.paste(ground, (0, 0), mask)
-
-    # Subtle inner rim hairline
-    rim_mask = Image.new("L", (s, s), 0)
-    rim_draw = ImageDraw.Draw(rim_mask)
-    rim_draw.rounded_rectangle([1, 1, s - 2, s - 2], radius=radius, outline=255, width=max(1, int(s * 0.012)))
-    rim_color = Image.new("RGBA", (s, s), (150, 210, 255, 45))
-    image.paste(rim_color, (0, 0), rim_mask)
-
-    # 2. Sentry Shield Body
+    # The app icon uses the same transparent Aegis mark as the homepage.
+    # Platform launchers provide their own background treatment.
+    # 1. Sentry Shield Body
     shield_pts = shield_polygon(s)
     cx, cy = s * 0.50, s * 0.50
 
@@ -117,12 +88,12 @@ def render(size: int) -> Image.Image:
     image = Image.alpha_composite(image, shield_img)
     draw = ImageDraw.Draw(image)
 
-    # 3. Constellation Nodes & Mesh Lines
+    # 2. Constellation Nodes & Mesh Lines
     # Equilateral-like constellation inside shield: Top, Bottom-Right, Bottom-Left
-    node_top = (cx, s * 0.31)
-    node_br = (s * 0.69, s * 0.61)
-    node_bl = (s * 0.31, s * 0.61)
-    center_core = (cx, s * 0.50)
+    node_top = (cx, s * 0.28)
+    node_br = (s * 0.70, s * 0.60)
+    node_bl = (s * 0.30, s * 0.60)
+    center_core = (cx, s * 0.49)
 
     mesh_stroke = max(1, int(s * 0.018))
     # Triangle interconnects
@@ -134,8 +105,8 @@ def render(size: int) -> Image.Image:
     draw.line([node_br, center_core], fill=WHITE_SOFT, width=mesh_stroke)
     draw.line([node_bl, center_core], fill=WHITE_SOFT, width=mesh_stroke)
 
-    # 4. Central Sentinel Core (Aura glow + Diamond spark)
-    aura_r = s * 0.10
+    # 3. Central Sentinel Core (Aura glow + Diamond spark)
+    aura_r = s * 0.12
     aura_box = [center_core[0] - aura_r, center_core[1] - aura_r, center_core[0] + aura_r, center_core[1] + aura_r]
     aura_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     adraw = ImageDraw.Draw(aura_img)
@@ -143,7 +114,7 @@ def render(size: int) -> Image.Image:
     image = Image.alpha_composite(image, aura_img)
     draw = ImageDraw.Draw(image)
 
-    spark_r = s * 0.05
+    spark_r = s * 0.07
     spark = [
         (center_core[0], center_core[1] - spark_r),
         (center_core[0] + spark_r * 0.85, center_core[1]),
@@ -152,8 +123,8 @@ def render(size: int) -> Image.Image:
     ]
     draw.polygon(spark, fill=WHITE)
 
-    # 5. Satellite Nodes
-    sat_r = s * 0.046
+    # 4. Satellite Nodes
+    sat_r = s * 0.045
     for pt in (node_top, node_br, node_bl):
         box = [pt[0] - sat_r, pt[1] - sat_r, pt[0] + sat_r, pt[1] + sat_r]
         draw.ellipse(box, fill=WHITE)
