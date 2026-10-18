@@ -103,6 +103,9 @@ void TryDualStack(dsn_socket_t s);
 // Returns false when unresolvable.
 bool ResolvePeerAddr(const std::string& host, uint16_t port, sockaddr_storage* out,
                      dsn_socklen_t* out_len);
+// Returns the numeric address of a connected peer, or an empty string when
+// the socket address cannot be read.
+std::string SocketPeerHost(dsn_socket_t s);
 
 // True if the last socket error was a benign interruption worth retrying
 // (EINTR / WSAEINTR) rather than a real failure.

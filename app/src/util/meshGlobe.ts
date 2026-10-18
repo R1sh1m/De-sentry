@@ -90,6 +90,7 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
   let destroyed = false;
   let raf = 0;
   let visible = true;
+  let lastFrameMs = 0;
 
   let mouseX = -1000;
   let mouseY = -1000;
@@ -180,6 +181,7 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
 
   const resize = (): void => {
     if (destroyed) return;
+    palette = readPalette();
     const w = Math.max(1, window.innerWidth);
     const h = Math.max(1, window.innerHeight);
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);
@@ -235,7 +237,6 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    palette = readPalette();
     const reduceMotion = reduceQuery?.matches === true;
 
     // Real nodes ease toward their constellation slots; a gentle breathing
@@ -421,7 +422,13 @@ export function createMeshGlobe(canvas: HTMLCanvasElement): GlobeHandle {
     if (destroyed || ctx === null) return;
     if (document.hidden || !visible) return;
 
-    draw(ms / 1000);
+    // This canvas is decorative. Cap it at 30fps so a high-refresh display
+    // does not spend twice the CPU/GPU time on background pixels, especially
+    // while the interactive mesh view is also active.
+    if (ms - lastFrameMs >= 1000 / 30) {
+      lastFrameMs = ms;
+      draw(ms / 1000);
+    }
 
     if (!destroyed && reduceQuery?.matches !== true) {
       raf = requestAnimationFrame(tick);

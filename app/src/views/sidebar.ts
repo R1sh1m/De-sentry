@@ -357,7 +357,6 @@ function statusLabel(status: Convergence): string {
   switch (status) {
     case "converged": return "In sync";
     case "lagging": return "Catching up";
-    case "diverged": return "Diverged";
     case "offline": return "Offline";
     case "supervisor": return "Supervisor";
   }
@@ -378,10 +377,10 @@ function dot(status: Convergence, nodeId?: string): HTMLElement {
   return node;
 }
 
-function nodeRow(node: NodeView, tip: ReturnType<typeof meshTip>): HTMLElement[] {
+function nodeRow(node: NodeView): HTMLElement[] {
   const selection = store.state.selection;
   const isNodeSelected = selection.kind === "node" && selection.nodeId === node.process.node_id;
-  const status = convergenceOf(node, tip);
+  const status = convergenceOf(node);
   const name = displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id);
   const collections = node.brain?.collections ?? [];
   const isExpanded = expandedNodes.has(node.process.node_id) || (filterQuery !== "" && collections.length > 0);
@@ -1223,7 +1222,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
         ),
       );
       for (const node of sorted) {
-        children.push(...nodeRow(node, tip));
+        children.push(...nodeRow(node));
       }
       for (const peer of filteredPeers) children.push(peerRow(peer, tip));
       if (sorted.length === 0 && filteredPeers.length === 0 && group.kind === "mount") {

@@ -33,7 +33,8 @@ class TcpTransport {
   // Called after a successful handshake (both directions) with the proven
   // peer identity. Used to bind node_id -> pubkey in the peer table (C-2).
   using HandshakeCallback =
-      std::function<void(const std::string& node_id, const std::string& pubkey, uint16_t p2p_port)>;
+      std::function<void(const std::string& node_id, const std::string& pubkey,
+                         const std::string& host, uint16_t p2p_port)>;
   TcpTransport(const NodeIdentity* identity, uint16_t p2p_port) : identity_(identity), p2p_port_(p2p_port) {}
   ~TcpTransport();
 

@@ -456,6 +456,19 @@ bool ResolvePeerAddr(const std::string& host, uint16_t port, sockaddr_storage* o
   return ok;
 }
 
+std::string SocketPeerHost(dsn_socket_t s) {
+  if (!SocketValid(s)) return {};
+  sockaddr_storage addr{};
+  dsn_socklen_t len = sizeof(addr);
+  if (::getpeername(s, reinterpret_cast<sockaddr*>(&addr), &len) != 0) return {};
+  char host[NI_MAXHOST]{};
+  if (::getnameinfo(reinterpret_cast<const sockaddr*>(&addr), len, host, sizeof(host), nullptr, 0,
+                    NI_NUMERICHOST) != 0) {
+    return {};
+  }
+  return host;
+}
+
 uint64_t FileSize(const std::string& path) {
 #if defined(_WIN32)
   WIN32_FILE_ATTRIBUTE_DATA data;

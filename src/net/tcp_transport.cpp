@@ -112,7 +112,7 @@ void TcpTransport::HandleConnection(dsn_socket_t client_fd) {
   // registered -- the replay poisons nothing.
   if (handshake_cb_) {
     handshake_cb_(hs.value().peer_node_id, hs.value().peer_ed25519_pubkey,
-                  hs.value().peer_p2p_port);
+                  SocketPeerHost(client_fd), hs.value().peer_p2p_port);
   }
 
   WireMessage response;
@@ -227,7 +227,7 @@ StatusOr<WireMessage> TcpTransport::SendRequest(const std::string& host, uint16_
   // server proves session-key possession with a valid encrypted response.
   if (resp_or.ok() && handshake_cb_) {
     handshake_cb_(hs.value().peer_node_id, hs.value().peer_ed25519_pubkey,
-                  hs.value().peer_p2p_port);
+                  host, hs.value().peer_p2p_port);
   }
   return resp_or;
 }

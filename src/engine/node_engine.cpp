@@ -407,7 +407,20 @@ std::vector<std::string> NodeEngine::ListCollections() {
 
 StatusOr<std::string> NodeEngine::GetRawEncoded(const std::string& collection,
                                                   const std::string& key) {
-  return storage_->GetRaw(collection, key);
+  auto raw_or = storage_->GetRaw(collection, key);
+  if (raw_or.ok() || raw_or.status().code() != StatusCode::kNotFound) return raw_or;
+
+  // Anti-entropy builds its digest from a full ordered scan. If the backend's
+  // point-lookup index has fallen behind that scan, Get can report NotFound
+  // for a document that the digest just advertised. A scan starting at `key`
+  // may use the same broken point-seek path, so restart from the beginning and
+  // match the exact key across the ordered leaf chain.
+  auto rows = storage_->Scan(collection, "", 0);
+  auto row = std::find_if(rows.begin(), rows.end(), [&key](const auto& entry) {
+    return entry.first == key;
+  });
+  if (row != rows.end()) return row->second;
+  return raw_or.status();
 }
 
 CollectionSummary NodeEngine::Summarize(const std::string& collection) {

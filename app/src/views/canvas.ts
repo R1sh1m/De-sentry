@@ -12,7 +12,7 @@
  * longer a right-hand inspector column.
  */
 
-import { convergenceOf, meshTip, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
+import { convergenceOf, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
 import { openChangePassphraseModal } from "./changePassphraseModal.js";
@@ -44,7 +44,6 @@ function rawNameOf(node: NodeView): string {
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
   lagging: "var(--color-status-lagging)",
-  diverged: "var(--color-status-offline)",
   offline: "var(--color-status-offline)",
   supervisor: "var(--color-status-supervisor)",
 };
@@ -52,7 +51,6 @@ const STATUS_VAR: Record<Convergence, string> = {
 const STATUS_TEXT: Record<Convergence, string> = {
   converged: "In sync",
   lagging: "Catching up",
-  diverged: "Diverged",
   offline: "Offline",
   supervisor: "Supervisor",
 };
@@ -153,9 +151,9 @@ function armPopoverOutsideClick(): void {
 
 
 let meshPlacementMode: "concentric" | "hierarchical" = "concentric";
+let meshResizeObserver: ResizeObserver | null = null;
 
 function layout(nodes: NodeView[], width: number, height: number): Placed[] {
-  const tip = meshTip();
   const cx = width / 2;
   const cy = height / 2;
   const maxRadius = Math.min(width, height) / 2 - 90;
@@ -163,7 +161,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
 
   const ordered = [...nodes].sort((a, b) => a.process.node_id.localeCompare(b.process.node_id));
   if (ordered.length === 1) {
-    return withOffsets([{ node: ordered[0], status: convergenceOf(ordered[0], tip), x: cx, y: cy }]);
+    return withOffsets([{ node: ordered[0], status: convergenceOf(ordered[0]), x: cx, y: cy }]);
   }
 
   if (meshPlacementMode === "hierarchical") {
@@ -199,7 +197,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
         const x = colStep * (colIdx + 1);
         placed.push({
           node,
-          status: convergenceOf(node, tip),
+          status: convergenceOf(node),
           x,
           y,
         });
@@ -226,7 +224,7 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
       const jitterRadius = 1 + (((seed >>> 8) & 0x3f) / 63 - 0.5) * 0.08;
       placed.push({
         node,
-        status: convergenceOf(node, tip),
+        status: convergenceOf(node),
         x: cx + Math.cos(angle) * radius * jitterRadius,
         y: cy + Math.sin(angle) * radius * jitterRadius,
       });
@@ -914,7 +912,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       return;
     }
     armPopoverOutsideClick();
-    const status = convergenceOf(node, meshTip());
+    const status = convergenceOf(node);
     const name = displayNameOf(node);
     const collections = node.brain?.collections ?? [];
     const defaultEngine = node.status?.default_engine
@@ -1133,9 +1131,11 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   (wrapper as HTMLElement & { __positionPopover?: () => void }).__positionPopover = schedulePositionPopover;
 
   try {
+    meshResizeObserver?.disconnect();
     const ro = new ResizeObserver(() => {
       positionPopover();
     });
+    meshResizeObserver = ro;
     ro.observe(wrapper);
   } catch {
     // ResizeObserver unavailable
@@ -1145,7 +1145,6 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
 }
 
 function treeView(nodes: NodeView[]): HTMLElement {
-  const tip = meshTip();
   const selectedId = store.state.selection.nodeId;
   const wrapper = el("div", { class: "tree-canvas-wrapper", style: "position: relative; height: 100%; overflow-y: auto; padding: var(--space-md);" });
 
@@ -1193,11 +1192,10 @@ function treeView(nodes: NodeView[]): HTMLElement {
     const nodesGrid = el("div", { class: "hierarchy-nodes-grid", style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin-left: 20px; border-left: 1px dashed rgba(255,255,255,0.12); padding-left: 14px;" });
 
     for (const node of groupData.nodes) {
-      const status = convergenceOf(node, tip);
+      const status = convergenceOf(node);
       const selected = selectedId === node.process.node_id;
       const rawTipId = node.tip?.entry_id ?? node.brain?.ledger_tip.entry_id ?? 0;
       const tipId = rawTipId < 1 ? 1 : rawTipId;
-      const behind = tip !== null ? tip.entry_id - tipId : 0;
 
       const collections = node.brain?.collections ?? [];
       const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
@@ -1238,7 +1236,7 @@ function treeView(nodes: NodeView[]): HTMLElement {
           el("dt", { text: "Location" }),
           el("dd", { class: "mono", style: "font-size: 11px; word-break: break-all;", text: truncate(node.process.data_dir, 38) }),
           el("dt", { text: "Ledger" }),
-          el("dd", { class: "mono", text: `#${tipId}${behind > 0 ? ` (${behind} behind)` : ""}` }),
+          el("dd", { class: "mono", text: `#${tipId}` }),
           el("dt", { text: "Storage" }),
           el("dd", { text: storageSummary }),
         ),
@@ -1418,6 +1416,8 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
     const candidates = store.state.discoveredCandidates;
 
     if (nodes.length === 0) {
+      meshResizeObserver?.disconnect();
+      meshResizeObserver = null;
       if (candidates.length > 0) {
         replace(body, discoveredCanvas(candidates, onNewNode));
       } else {
@@ -1436,6 +1436,8 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
       replace(body, view);
       (view as HTMLElement & { __positionPopover?: () => void }).__positionPopover?.();
     } else {
+      meshResizeObserver?.disconnect();
+      meshResizeObserver = null;
       replace(body, treeView(nodes));
     }
   }

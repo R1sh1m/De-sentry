@@ -2,8 +2,8 @@
  * Health alert banners.
  *
  * Rendered as a thin strip above the main canvas when one or more data nodes
- * have crossed a health threshold: offline for > 60 s, ledger diverged, or
- * lagging for > 5 minutes. Each banner is dismissable for the session.
+ * have crossed a health threshold: offline for > 60 s or content lagging for
+ * > 5 minutes. Each banner is dismissable for the session.
  *
  * The banners are intentionally restrained -- one line of text plus a close
  * button -- so they do not obscure the canvas on a small window.
@@ -14,7 +14,6 @@ import { el, icon, Icons, on, replace } from "../util/dom.js";
 
 const KIND_LABELS: Record<NodeAlert["kind"], string> = {
   offline: "is offline",
-  diverged: "has diverged from the mesh",
   lagging: "has been lagging for over 5 minutes",
 };
 

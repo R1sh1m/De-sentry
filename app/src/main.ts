@@ -10,7 +10,7 @@
 
 import { apiFor } from "./api.js";
 import { isTauri, sidecar } from "./bridge.js";
-import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
+import { boot, convergenceOf, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
@@ -608,11 +608,9 @@ function build(): void {
     const nodes = store.dataNodes();
     const reachable = nodes.filter((n) => n.reachable).length;
     const info = state.appInfo;
-    const tip = meshTip();
-
     const globePoints: GlobeNodePoint[] = nodes.map((n) => ({
       id: n.process.node_id,
-      status: convergenceOf(n, tip),
+      status: convergenceOf(n),
     }));
     // Authentic backdrop: same peer edges the mesh view draws, so the
     // background constellation forms/breaks with the actual hierarchy.

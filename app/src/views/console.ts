@@ -18,7 +18,7 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-type ConsoleTab = "documents" | "vector" | "timeseries" | "graph" | "api";
+type ConsoleTab = "documents" | "vector" | "timeseries" | "graph" | "api" | "logs";
 
 export interface ConsoleHandles {
   render(): void;
@@ -53,6 +53,8 @@ export function createConsole(): ConsoleHandles {
   let apiStatus = "";
   let apiDuration = 0;
   let apiResult = "";
+  let nodeLogLines: Awaited<ReturnType<typeof sidecar.nodeLogs>> = [];
+  let logsLoading = false;
 
   function render(): void {
     const node = store.selectedNode() ?? store.dataNodes()[0];
@@ -163,6 +165,7 @@ export function createConsole(): ConsoleHandles {
         title: graphNames.length > 0 ? "Collections bound to graph_adj" : "Needs a collection bound to graph_adj",
       },
       { id: "api", label: "Direct API", icon: Icons.inspector, title: "Raw method + path against this node" },
+      { id: "logs", label: "Node Logs", icon: Icons.terminal, title: "Captured output from this node's background process" },
     ];
 
     const tabButtons = tabs.map((t) => {
@@ -211,9 +214,52 @@ export function createConsole(): ConsoleHandles {
       case "api":
         content = renderApiTab(node);
         break;
+      case "logs":
+        content = renderLogsTab(node);
+        break;
     }
 
     replace(element, header, nav, content);
+  }
+
+  function renderLogsTab(node: NodeView): HTMLElement {
+    const refreshBtn = el("button", {
+      class: "btn btn--sm btn--ghost",
+      type: "button",
+      text: logsLoading ? "Refreshing…" : "Refresh logs",
+      disabled: logsLoading,
+    });
+    const output = el("pre", {
+      class: "mono",
+      style: "flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); font-size: var(--text-xs); line-height: 1.55; color: var(--color-ink);",
+      text: nodeLogLines.length
+        ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleTimeString()} [${entry.stream}] ${entry.line}`).join("\n")
+        : "No captured output yet. Refresh after the node has been running for a moment.",
+    });
+    on(refreshBtn, "click", async () => {
+      logsLoading = true;
+      refreshBtn.textContent = "Refreshing…";
+      refreshBtn.setAttribute("disabled", "true");
+      try {
+        nodeLogLines = await sidecar.nodeLogs(node.process.node_id, 400);
+        output.textContent = nodeLogLines.length
+          ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleTimeString()} [${entry.stream}] ${entry.line}`).join("\n")
+          : "No captured output yet. Refresh after the node has been running for a moment.";
+      } catch (error) {
+        output.textContent = `Could not read node logs: ${describeError(error)}`;
+      } finally {
+        logsLoading = false;
+        refreshBtn.textContent = "Refresh logs";
+        refreshBtn.removeAttribute("disabled");
+      }
+    });
+    return el("div", { class: "stack", style: "flex: 1; min-height: 0; padding: 16px; gap: 12px; overflow: hidden;" },
+      el("div", { class: "row row--between" },
+        el("div", { class: "muted", text: `Recent output captured from ${displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id)}.` }),
+        refreshBtn,
+      ),
+      output,
+    );
   }
 
   // -- 1. Documents Tab -------------------------------------------------------

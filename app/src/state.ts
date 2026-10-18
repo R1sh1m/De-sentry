@@ -48,8 +48,8 @@ import {
 
 // -- view models -------------------------------------------------------------
 
-/** How a node's ledger relates to the rest of the mesh, for the canvas colour. */
-export type Convergence = "converged" | "lagging" | "diverged" | "offline" | "supervisor";
+/** How a node's stored collection contents compare with reachable mesh peers. */
+export type Convergence = "converged" | "lagging" | "offline" | "supervisor";
 
 export interface NodeView {
   /** What the sidecar knows: process state, ports, paths. Always present. */
@@ -91,7 +91,7 @@ export interface Toast {
   ms: number;
 }
 
-export type NodeAlertKind = "offline" | "diverged" | "lagging";
+export type NodeAlertKind = "offline" | "lagging";
 
 export interface NodeAlert {
   id: string;
@@ -284,25 +284,37 @@ const connectingPaths = new Set<string>();
 // -- convergence -------------------------------------------------------------
 
 /**
- * Classifies a node against the mesh's furthest-ahead ledger.
- *
- * The distinction that matters is lagging vs diverged: a node behind on entry
- * count is catching up and needs no attention, while a node at the same height
- * with a different hash has a history that does not match and needs a human.
- * Colouring both amber would hide the second case inside the first.
+ * Classifies a node by comparing its collection checksums with other reachable
+ * nodes. Each node's WAL is a locally written audit chain, so equal ledger
+ * heights with different tip hashes do not, by themselves, mean the replicated
+ * data has diverged. A checksum mismatch means the node is still catching up;
+ * matching checksums mean the live collection contents agree.
  */
-export function convergenceOf(node: NodeView, meshTip: LedgerTip | null): Convergence {
+export function convergenceOf(node: NodeView): Convergence {
   if (node.process.supervisor) return "supervisor";
   if (!node.reachable || node.process.process !== "running") return "offline";
-  const tip = node.tip ?? (node.brain ? { ...node.brain.ledger_tip } : null);
-  if (tip === null || meshTip === null) return "lagging";
-  if (tip.entry_id === meshTip.entry_id) {
-    return tip.entry_hash === meshTip.entry_hash ? "converged" : "diverged";
+
+  if (node.brain === null) return "lagging";
+  const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
+  for (const peer of store.dataNodes()) {
+    if (peer.process.node_id === node.process.node_id || !peer.reachable || peer.brain === null) continue;
+    const peerCollections = new Map(peer.brain.collections.map((collection) => [collection.name, collection.checksum]));
+    let comparedCollection = false;
+    for (const [name, checksum] of nodeCollections) {
+      const peerChecksum = peerCollections.get(name);
+      // Nodes may legitimately host different collections. Only compare a
+      // collection when both nodes expose it; its own content checksum is the
+      // meaningful sync signal, not the total number of collections on a node.
+      if (peerChecksum === undefined) continue;
+      comparedCollection = true;
+      if (peerChecksum !== checksum) return "lagging";
+    }
+    if (!comparedCollection && nodeCollections.size > 0 && peerCollections.size > 0) return "lagging";
   }
-  return tip.entry_id > meshTip.entry_id ? "converged" : "lagging";
+  return "converged";
 }
 
-/** The furthest-ahead tip among reachable data nodes; the yardstick for the above. */
+/** The furthest-ahead ledger tip among reachable data nodes, used for display. */
 export function meshTip(): LedgerTip | null {
   let best: LedgerTip | null = null;
   for (const node of store.dataNodes()) {
@@ -608,15 +620,7 @@ function checkNodeHealth(nodeId: string, view: NodeView): void {
     clearAlert(nodeId, "offline");
   }
 
-  // -- diverged ----------------------------------------------------------------
-  const tip = meshTip();
-  const convergence = view.reachable ? convergenceOf(view, tip) : null;
-  if (convergence === "diverged") {
-    upsertAlert(nodeId, "diverged", name);
-  } else {
-    clearAlert(nodeId, "diverged");
-  }
-
+  const convergence = view.reachable ? convergenceOf(view) : null;
   // -- lagging ----------------------------------------------------------------
   if (convergence === "lagging") {
     if (!laggingSince.has(nodeId)) laggingSince.set(nodeId, now);

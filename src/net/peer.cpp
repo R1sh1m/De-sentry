@@ -140,6 +140,13 @@ void PeerTable::Upsert(const PeerInfo& info, PeerSource source) {
   // (C-2 fix): no key/host/port/supervisor changes, no fitness reset.
   if (existing.handshake_proven && source == PeerSource::kDiscovery) {
     existing.last_seen_ms = info.last_seen_ms;
+    // An inbound authenticated connection can create this entry before we've
+    // received the peer's UDP beacon. The handshake proves identity, but it
+    // intentionally doesn't provide a dialable address here. Let discovery
+    // fill only missing address fields; never let an unsigned beacon replace
+    // an address already learned from a trusted source.
+    if (existing.host.empty() && !info.host.empty()) existing.host = info.host;
+    if (existing.p2p_port == 0 && info.p2p_port != 0) existing.p2p_port = info.p2p_port;
     if (existing.api_port == 0 && info.api_port != 0) existing.api_port = info.api_port;
     if (existing.hostname.empty() && !info.hostname.empty()) existing.hostname = info.hostname;
     return;

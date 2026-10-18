@@ -1,11 +1,14 @@
 #include "desentry/net/gossip.h"
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <unordered_map>
 
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/net/admission.h"
+#include "desentry/ledger/transit_store.h"
 
 namespace desentry {
 
@@ -45,7 +48,10 @@ std::vector<PeerInfo> GossipEngine::SelectPeers(std::mt19937* rng) {
   // Supervisors are control-plane only and hold no replicated data; gossiping
   // with one would be a wasted round every time.
   ranked.erase(std::remove_if(ranked.begin(), ranked.end(),
-                               [](const PeerInfo& p) { return p.is_supervisor || p.p2p_port == 0; }),
+                               [this](const PeerInfo& p) {
+                                 return p.is_supervisor || p.p2p_port == 0 ||
+                                        p.node_id == engine_->identity().node_id();
+                               }),
                ranked.end());
   if (ranked.empty()) return {};
 
@@ -87,16 +93,33 @@ void GossipEngine::Loop() {
 }
 
 void GossipEngine::RunRoundWith(const PeerInfo& peer) {
-  ExchangeDocuments(peer);
-  ExchangeLedger(peer);
+  // A joining node can have an empty local catalog. Learn the collection names
+  // it is allowed to read from the peer's ledger before building document
+  // digests, otherwise it has nothing to ask the peer for on first contact.
+  std::vector<std::string> discovered_collections;
+  ExchangeLedger(peer, &discovered_collections);
+  ExchangeDocuments(peer, discovered_collections);
 }
 
-void GossipEngine::ExchangeDocuments(const PeerInfo& peer) {
+void GossipEngine::ExchangeDocuments(const PeerInfo& peer,
+                                     const std::vector<std::string>& discovered_collections) {
   const Requestor who = Requestor::Peer(peer.node_id);
   // Only offer digests for collections this peer may read. Sending a digest
   // for a private collection would leak its key set even though the bytes
   // would later be withheld -- the filter has to start at the digest.
+  std::set<std::string> collections;
   for (const std::string& collection : engine_->ReadableCollections(who)) {
+    collections.insert(collection);
+  }
+  for (const std::string& collection : discovered_collections) {
+    // Re-check locally after applying any ACL records from the ledger delta.
+    // This keeps a peer-provided collection name from bypassing the ACL filter.
+    if (!collection.empty() && collection != kTransitCollection && engine_->CanRead(collection, who)) {
+      collections.insert(collection);
+    }
+  }
+
+  for (const std::string& collection : collections) {
     DigestPayload digest;
     digest.collection = collection;
     for (const DigestEntryOut& e : engine_->LocalDigest(collection)) {
@@ -108,8 +131,8 @@ void GossipEngine::ExchangeDocuments(const PeerInfo& peer) {
                                             WireMessage{MessageType::kDigest, digest.Encode()});
     peers_->RecordProbe(peer.node_id, static_cast<double>(MonotonicMs() - started), resp_or.ok());
     if (!resp_or.ok()) {
-      DSN_LOG_DEBUG("gossip", "round with " << peer.node_id << " (" << collection
-                                             << ") failed: " << resp_or.status().ToString());
+      DSN_LOG_WARN("gossip", "document exchange with " << peer.node_id << "/" << collection
+                                                         << " failed: " << resp_or.status().ToString());
       return;  // the peer is unreachable; the remaining collections would fail too
     }
     if (resp_or.value().type != MessageType::kDeltaResponse) continue;
@@ -134,6 +157,8 @@ void GossipEngine::ExchangeDocuments(const PeerInfo& peer) {
                                          << "/" << collection);
     }
 
+    size_t fulfillment_count = 0;
+    std::map<int, size_t> lookup_failures;
     if (!delta.wanted_keys.empty()) {
       OpBroadcastPayload fulfill;
       fulfill.collection = collection;
@@ -145,16 +170,41 @@ void GossipEngine::ExchangeDocuments(const PeerInfo& peer) {
       for (const std::string& key : delta.wanted_keys) {
         auto raw_or = engine_->GetRawEncoded(collection, key);
         if (raw_or.ok()) fulfill.docs.push_back(DocEntry{key, raw_or.value()});
+        else ++lookup_failures[static_cast<int>(raw_or.status().code())];
       }
+      fulfillment_count = fulfill.docs.size();
       if (!fulfill.docs.empty()) {
-        transport_->SendRequest(peer.host, peer.p2p_port,
-                                 WireMessage{MessageType::kOpBroadcast, fulfill.Encode()});
+        auto fulfill_or = transport_->SendRequest(peer.host, peer.p2p_port,
+                                                   WireMessage{MessageType::kOpBroadcast, fulfill.Encode()});
+        if (!fulfill_or.ok()) {
+          DSN_LOG_WARN("gossip", "document fulfillment to " << peer.node_id << "/" << collection
+                                                               << " failed for " << fulfill.docs.size()
+                                                               << " document(s): "
+                                                               << fulfill_or.status().ToString());
+        }
       }
+    }
+    if (!lookup_failures.empty()) {
+      std::string codes;
+      for (const auto& [code, count] : lookup_failures) {
+        if (!codes.empty()) codes += ", ";
+        codes += std::to_string(code) + ":" + std::to_string(count);
+      }
+      DSN_LOG_WARN("gossip", "could not read " << (delta.wanted_keys.size() - fulfillment_count)
+                                                  << " requested document(s) for " << peer.node_id << "/"
+                                                  << collection << " (status code:count " << codes << ")");
+    }
+    if (!delta.pushed.empty() || !delta.wanted_keys.empty()) {
+      DSN_LOG_INFO("gossip", "exchange with " << peer.node_id << "/" << collection
+                                                << ": received " << delta.pushed.size()
+                                                << " document(s), peer requested " << delta.wanted_keys.size()
+                                                << " key(s), sent " << fulfillment_count << " document(s)");
     }
   }
 }
 
-void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
+void GossipEngine::ExchangeLedger(const PeerInfo& peer,
+                                  std::vector<std::string>* discovered_collections) {
   // The hash-only half of a round. This runs regardless of what collections
   // the two peers share, because the ledger's entry-hash set is the thing
   // every node converges on -- it is a grow-only set, so union is merge, and
@@ -179,6 +229,8 @@ void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
   }
   if (delta.entries.empty()) return;
 
+  const Requestor who = Requestor::Peer(peer.node_id);
+
   // Record what the peer's ledger height is, which feeds the freshness term
   // of its fitness score and the supervisor's checkpoint quorum. Height only:
   // a ledger delta carries no quota figure, and reporting 0 here would make
@@ -190,6 +242,10 @@ void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
   // versions LWW-merge into the local catalog. Stale/forged versions are
   // refused loudly but never break the round.
   for (const LedgerEntrySummary& entry : delta.entries) {
+    if (discovered_collections != nullptr && !entry.collection.empty() &&
+        entry.collection != kTransitCollection && engine_->CanRead(entry.collection, who)) {
+      discovered_collections->push_back(entry.collection);
+    }
     if (static_cast<WalRecordType>(entry.operation) != WalRecordType::kAcl) continue;
     if (entry.acl_json.empty() || entry.collection.empty()) continue;
     Status acl_st =
@@ -199,6 +255,13 @@ void GossipEngine::ExchangeLedger(const PeerInfo& peer) {
                                                              << entry.origin_node_id << ": "
                                                              << acl_st.message());
     }
+  }
+
+  if (discovered_collections != nullptr) {
+    std::sort(discovered_collections->begin(), discovered_collections->end());
+    discovered_collections->erase(
+        std::unique(discovered_collections->begin(), discovered_collections->end()),
+        discovered_collections->end());
   }
 
   // Transit intents naming this node are the trigger for a claim pass: the

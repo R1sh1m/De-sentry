@@ -128,6 +128,13 @@ static void TestThreeNodeMeshConverges() {
   assert(engA->storage().EnsureCollection("users").ok());
   assert(engB->storage().EnsureCollection("users").ok());
   assert(engC->storage().EnsureCollection("users").ok());
+  // Equal local WAL heights do not imply equal histories: each node's ledger
+  // is its own audit chain. These two writes exercise collection discovery
+  // when A and B start at the same height with different tips.
+  assert(engA->PutDocument("alpha", "a1", JsonValue::Parse(R"({"from":"A"})"),
+                            engA->SelfRequestor()).ok());
+  assert(engB->PutDocument("beta", "b1", JsonValue::Parse(R"({"from":"B"})"),
+                            engB->SelfRequestor()).ok());
 
   NodeConfig cfgA, cfgB, cfgC;
   cfgA.p2p_port = 19911; cfgA.discovery_enabled = false; cfgA.gossip_interval_ms = 300;
@@ -140,6 +147,15 @@ static void TestThreeNodeMeshConverges() {
   NetworkManager netA(engA.get(), cfgA), netB(engB.get(), cfgB), netC(engC.get(), cfgC);
   assert(netA.Start().ok() && netB.Start().ok() && netC.Start().ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  assert(PollFor(
+      [&] {
+        return engA->GetDocument("beta", "b1", engA->SelfRequestor()).ok() &&
+               engB->GetDocument("alpha", "a1", engB->SelfRequestor()).ok() &&
+               engC->GetDocument("alpha", "a1", engC->SelfRequestor()).ok() &&
+               engC->GetDocument("beta", "b1", engC->SelfRequestor()).ok();
+      },
+      15000));
 
   assert(engA->PutDocument("users", "u1", JsonValue::Parse(R"({"name":"Asha","role":"admin"})"), engA->SelfRequestor()).ok());
   assert(PollFor(

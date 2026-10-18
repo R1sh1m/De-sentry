@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <random>
 #include <thread>
+#include <vector>
 
 #include "desentry/engine/node_engine.h"
 #include "desentry/net/peer.h"
@@ -64,8 +65,10 @@ class GossipEngine {
 
   // The two halves of a round, separately callable so a test can exercise
   // ledger convergence without document convergence and vice versa.
-  void ExchangeDocuments(const PeerInfo& peer);
-  void ExchangeLedger(const PeerInfo& peer);
+  void ExchangeDocuments(const PeerInfo& peer,
+                         const std::vector<std::string>& discovered_collections = {});
+  void ExchangeLedger(const PeerInfo& peer,
+                     std::vector<std::string>* discovered_collections = nullptr);
 
   uint64_t rounds_completed() const { return rounds_.load(); }
 

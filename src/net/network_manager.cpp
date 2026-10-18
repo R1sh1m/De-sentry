@@ -156,10 +156,10 @@ Status NetworkManager::Start() {
   transport_ = std::make_unique<TcpTransport>(&engine_->identity(), config_.p2p_port);
   transport_->SetClusterSecret(cluster_secret_);
   transport_->SetHandshakeCallback([this](const std::string& node_id, const std::string& pubkey,
-                                          uint16_t p2p_port) {
+                                          const std::string& host, uint16_t p2p_port) {
     // Both dial directions land here; the HELLO already proved
     // node_id == SHA-256(pubkey), so this binding is trustworthy.
-    peer_table_.MarkHandshakeProven(node_id, pubkey, "", p2p_port);
+    peer_table_.MarkHandshakeProven(node_id, pubkey, host, p2p_port);
   });
   Status listen_st = transport_->StartListening(
       config_.p2p_bind_addr, [this](const std::string& peer_id, const WireMessage& req) {
@@ -184,6 +184,14 @@ Status NetworkManager::Start() {
     uint16_t port = 0;
     if (!ParseHostPort(spec, &host, &port)) {
       DSN_LOG_WARN("network", "ignoring malformed bootstrap peer spec: " << spec);
+      continue;
+    }
+    // A loopback bootstrap on our own P2P port is this node, not a peer.
+    // Dialing it creates a self-entry in the peer table and wastes gossip
+    // rounds (the UI then misleadingly reports it as a discovered peer).
+    if (port == config_.p2p_port &&
+        (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]")) {
+      DSN_LOG_WARN("network", "ignoring bootstrap peer " << spec << " because it points to this node");
       continue;
     }
     // node_id is unknown until we handshake with this address, so it is keyed
@@ -311,6 +319,11 @@ WireMessage NetworkManager::HandleDigest(const std::string& peer_node_id,
                                           const DigestPayload& digest) {
   DeltaResponsePayload response;
   response.collection = digest.collection;
+  // Catch-up can involve thousands of documents. Keep each response well
+  // below TcpTransport's frame cap; the next anti-entropy round requests the
+  // remaining differences after this batch has been merged.
+  constexpr size_t kMaxDeltaBytes = 1024 * 1024;
+  size_t delta_bytes = digest.collection.size() + 32;
 
   const Requestor who = Requestor::Peer(peer_node_id);
   if (!engine_->CanRead(digest.collection, who)) {
@@ -352,12 +365,24 @@ WireMessage NetworkManager::HandleDigest(const std::string& peer_node_id,
     auto it = remote.find(key);
     if (it == remote.end() || differs(mine, it->second)) {
       auto raw_or = engine_->GetRawEncoded(digest.collection, key);
-      if (raw_or.ok()) response.pushed.push_back(DocEntry{key, raw_or.value()});
+      if (raw_or.ok()) {
+        const size_t entry_bytes = key.size() + raw_or.value().size() + 8;
+        if ((!response.pushed.empty() || !response.wanted_keys.empty()) &&
+            delta_bytes + entry_bytes > kMaxDeltaBytes) break;
+        delta_bytes += entry_bytes;
+        response.pushed.push_back(DocEntry{key, raw_or.value()});
+      }
     }
   }
   for (const auto& [key, theirs] : remote) {
     auto it = local.find(key);
-    if (it == local.end() || differs(theirs, it->second)) response.wanted_keys.push_back(key);
+    if (it == local.end() || differs(theirs, it->second)) {
+      const size_t entry_bytes = key.size() + 4;
+      if ((!response.pushed.empty() || !response.wanted_keys.empty()) &&
+          delta_bytes + entry_bytes > kMaxDeltaBytes) break;
+      delta_bytes += entry_bytes;
+      response.wanted_keys.push_back(key);
+    }
   }
   return WireMessage{MessageType::kDeltaResponse, response.Encode()};
 }
@@ -493,12 +518,24 @@ WireMessage NetworkManager::HandleLedgerDigest(const std::string& peer_node_id,
   const Requestor who = Requestor::Peer(peer_node_id);
 
   const lsn_t local_tip = engine_->LedgerTip().entry_id;
-  if (digest.tip_entry_id >= local_tip) {
-    // The peer is at or ahead of us; nothing to send.
+  const bool same_height_different_chain =
+      digest.tip_entry_id == local_tip && digest.tip_entry_hash != engine_->LedgerTip().entry_hash;
+  if (digest.tip_entry_id > local_tip) {
+    // The peer is ahead of us; it will learn our collection names when it
+    // sends its own ledger digest back to us.
+    return WireMessage{MessageType::kLedgerDelta, response.Encode()};
+  }
+  if (digest.tip_entry_id == local_tip && !same_height_different_chain) {
+    // Equal tips identify the same local audit position. Document
+    // anti-entropy handles the data itself.
     return WireMessage{MessageType::kLedgerDelta, response.Encode()};
   }
 
-  auto entries_or = engine_->LedgerEntries(digest.tip_entry_id + 1, local_tip);
+  // WALs are local audit chains, not a shared replication cursor. Equal
+  // heights with different hashes still need bounded metadata exchange:
+  // without it, an empty catalog cannot discover a peer-only collection.
+  const lsn_t from = same_height_different_chain ? 0 : digest.tip_entry_id + 1;
+  auto entries_or = engine_->LedgerEntries(from, local_tip);
   if (!entries_or.ok()) return WireMessage{MessageType::kError, entries_or.status().message()};
 
   constexpr size_t kMaxDeltaEntries = 1024;
