@@ -1934,6 +1934,17 @@ svg.mesh {
 .wizard__body::-webkit-scrollbar {
   display: none; /* remove ugly webkit scrollbar */
 }
+.pairing-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+}
+.pairing-field .input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
 .wizard__eyebrow {
   font: var(--text-fine);
   font-weight: 600;

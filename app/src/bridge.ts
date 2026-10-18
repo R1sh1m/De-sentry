@@ -142,6 +142,8 @@ export interface CreateNodeRequest {
   discovery_enabled?: boolean;
   removable: boolean;
   bootstrap_peers: string[];
+  /** Optional shared mesh code copied from the device being joined. */
+  mesh_secret?: string;
   description: string;
   preallocate?: boolean;
   /** "generated" (recovery key) or "passphrase" (custom passphrase). */
@@ -179,6 +181,8 @@ export interface AppInfo {
   platform: string;
   /** API port of the app's own supervisor node, or null while it is starting. */
   supervisor_api_port: number | null;
+  /** Startup failure, if the desktop window opened without its supervisor. */
+  supervisor_start_error?: string | null;
   autostart_enabled: boolean;
   background_mode: boolean;
   /** True when the machine is on battery; the app throttles gossip then. */
@@ -263,6 +267,11 @@ export const sidecar = {
       closed: false,
       fingerprint: "",
     }));
+  },
+
+  /** Current mesh code for deliberate out-of-band sharing. */
+  meshSecret(): Promise<string> {
+    return invoke<string>("mesh_secret");
   },
 
   /** Every `desentryd` this app owns, supervisor included. */

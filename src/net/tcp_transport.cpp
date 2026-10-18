@@ -39,8 +39,10 @@ Status TcpTransport::StartListening(const std::string& bind_addr, RequestHandler
   if (addr.ss_family == AF_INET6) TryDualStack(fd);
 
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), addr_len) != 0) {
+    const std::string bind_error = SocketErrorString();
     CloseSocket(fd);
-    return Status::NetworkError("bind() failed: " + SocketErrorString());
+    return Status::NetworkError("bind() failed on " + bind_addr + ":" +
+                                std::to_string(p2p_port_) + ": " + bind_error);
   }
   if (::listen(fd, 64) != 0) {
     CloseSocket(fd);

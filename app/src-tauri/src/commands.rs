@@ -19,7 +19,7 @@ use crate::ai::{self, NodeSpec};
 use crate::appstate::{self, AppState, DiscoveredCandidate, SidecarEvent};
 use crate::configgen::{self, NodeConfigSpec, QuotaSplit};
 use crate::keychain;
-use crate::nodes::{LaunchSpec, LogLine, SupervisedNode};
+use crate::nodes::{LaunchSpec, LogLine, ProcessState, SupervisedNode};
 use crate::passphrase;
 use crate::ports::PortAllocation;
 use crate::recovery;
@@ -37,6 +37,7 @@ pub struct AppInfo {
     pub version: String,
     pub platform: String,
     pub supervisor_api_port: Option<u16>,
+    pub supervisor_start_error: Option<String>,
     pub autostart_enabled: bool,
     pub background_mode: bool,
     pub on_battery: bool,
@@ -58,6 +59,11 @@ pub fn app_info(app: AppHandle, state: State<'_, std::sync::Arc<AppState>>) -> R
         version: app.package_info().version.to_string(),
         platform: std::env::consts::OS.to_string(),
         supervisor_api_port,
+        supervisor_start_error: state
+            .supervisor_start_error
+            .lock()
+            .ok()
+            .and_then(|error| error.clone()),
         autostart_enabled: crate::autostart_enabled(&app),
         background_mode: state.background_mode.load(std::sync::atomic::Ordering::SeqCst),
         on_battery: state.on_battery.load(std::sync::atomic::Ordering::SeqCst),
@@ -97,6 +103,13 @@ pub fn membership_status() -> Reply<MembershipStatus> {
     let digest: [u8; 32] = hasher.finalize().into();
     let fingerprint: String = digest[..4].iter().map(|b| format!("{:02x}", b)).collect();
     Ok(MembershipStatus { closed: true, fingerprint })
+}
+
+/// Returns the current mesh code for deliberate out-of-band sharing.
+#[tauri::command]
+pub fn mesh_secret() -> Reply<String> {
+    std::env::var("DESENTRY_CLUSTER_SECRET")
+        .map_err(|_| "the mesh code is not available on this device".to_owned())
 }
 
 #[tauri::command]
@@ -325,6 +338,9 @@ pub struct CreateNodeRequest {
     pub removable: bool,
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
+    /// Shared membership code copied from the mesh being joined.
+    #[serde(default)]
+    pub mesh_secret: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -376,6 +392,38 @@ pub fn create_node(
                 keychain_ref: String::new(),
                 key_mode: "generated".to_owned(),
             });
+    }
+
+    let requested_mesh_secret = request.mesh_secret.as_deref().unwrap_or("").trim();
+    if !requested_mesh_secret.is_empty() {
+        if requested_mesh_secret.len() != 64
+            || !requested_mesh_secret.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("the mesh code must be the 64-character code shown on the device you are joining".into());
+        }
+        let current = std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default();
+        if current != requested_mesh_secret {
+            keychain::store(keychain::MESH_SECRET_REF, requested_mesh_secret)
+                .map_err(|error| format!("could not save the mesh code in the OS keychain: {error}"))?;
+            std::env::set_var("DESENTRY_CLUSTER_SECRET", requested_mesh_secret);
+
+            // Membership is app-wide. Move already-running data nodes onto
+            // the selected mesh before starting the newly joined node.
+            let running: Vec<String> = state
+                .views()
+                .into_iter()
+                .filter(|node| !node.supervisor && node.process == ProcessState::Running)
+                .map(|node| node.node_id)
+                .collect();
+            for node_id in running {
+                state.restart_node(&node_id).map_err(|error| {
+                    format!("mesh code was saved, but an existing node could not restart: {error}")
+                })?;
+            }
+        }
+    }
+    if !request.bootstrap_peers.is_empty() && requested_mesh_secret.is_empty() {
+        return Err("enter the mesh code from the device you are joining as well as its peer address".into());
     }
 
     let allocation = state.allocate_ports().map_err(fail)?;

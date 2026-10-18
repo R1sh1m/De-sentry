@@ -18,6 +18,8 @@ use keyring::Entry;
 
 /// Keychain service name. One namespace for the whole app.
 const SERVICE: &str = "dev.desentry.app";
+/// Stable per-user mesh membership secret, separate from node at-rest keys.
+pub const MESH_SECRET_REF: &str = "mesh.default";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {

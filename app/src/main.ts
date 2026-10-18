@@ -11,7 +11,6 @@
 import { apiFor } from "./api.js";
 import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, meshTip, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
-import { shortNode } from "./util/format.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
@@ -127,12 +126,7 @@ function openShortcutsCheatsheet(): void {
  * pairing tells a peer where to dial and whom to expect; the secure-channel
  * handshake is what actually authenticates.
  */
-function openPairingSheet(): void {
-  const port = store.state.supervisorPort;
-  if (port === null) {
-    store.toast("warning", "The supervisor is not running", "Pairing details come from it.");
-    return;
-  }
+function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void): void {
 
   const body = el("div", { class: "wizard" });
   const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true", tabindex: "-1" }, body);
@@ -168,44 +162,94 @@ function openPairingSheet(): void {
   const content = el("div", { class: "wizard__body" }, skeleton);
   replace(body, titleBar, content);
 
-  void apiFor(port)
-    .pairing()
-    .then((pairing) => {
-      const payload = JSON.stringify(pairing);
-
-      replace(
-        content,
-        el("h2", { class: "wizard__title", text: "Add another device" }),
-        el("p", {
-          class: "wizard__lead",
-          text: "Scan this from De-Sentry on the other machine. It carries addresses and a public key — no secret is in the code, so a photograph of it grants nothing on its own.",
-        }),
-        el("div", { class: "qr qr--constellation" }, qrSvg(payload, { scale: 4, title: "Pairing code" })),
-        el(
-          "dl",
-          { class: "kv" },
-          el("dt", { text: "This mesh" }),
-          el("dd", { class: "mono", text: shortNode(pairing.node_id, 16) }),
-          el("dt", { text: "Discovery port" }),
-          el("dd", { class: "mono", text: String(pairing.discovery_port) }),
-          el("dt", { text: "Bootstrap peers" }),
-          el("dd", {
-            class: "mono",
-            text:
-              pairing.bootstrap_peers.length > 0
-                ? pairing.bootstrap_peers.join("\n")
-                : "none yet — the other device will find this one by broadcast",
-          }),
-        ),
-      );
-      replace(body, titleBar, content);
-    })
-    .catch((error) => {
-      replace(
-        content,
-        el("p", { class: "error-note", text: `Could not build a pairing code: ${describeError(error)}` }),
-      );
+  const peerInput = el("textarea", {
+    class: "input",
+    rows: "2",
+    placeholder: "192.168.1.20:7801",
+    "aria-label": "Peer address or addresses",
+  }) as HTMLTextAreaElement;
+  const secretInput = el("input", {
+    class: "input",
+    type: "password",
+    autocomplete: "off",
+    placeholder: "Paste the mesh code from the other device",
+    "aria-label": "Mesh code",
+  }) as HTMLInputElement;
+  const shareSection = el(
+    "section",
+    { class: "stack" },
+    el("h3", { class: "card__title", text: "Share this device" }),
+    el("div", { class: "muted", text: "Loading this device’s QR details…" }),
+  );
+  const joinButton = el("button", { class: "btn btn--primary", type: "button", text: "Continue to create node" });
+  on(joinButton, "click", () => {
+    const peers = peerInput.value.split(/[\n,;]+/).map((peer) => peer.trim()).filter(Boolean);
+    const valid = peers.every((peer) => {
+      const match = /^(?:\[[0-9a-fA-F:]+\]|[^\s,:]+):(\d{1,5})$/.exec(peer);
+      return match !== null && Number(match[1]) >= 1 && Number(match[1]) <= 65535;
     });
+    if (peers.length === 0 || !valid) {
+      store.toast("warning", "Enter a peer address", "Use the other computer’s LAN IP and P2P port, for example 192.168.1.20:7801.");
+      return;
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(secretInput.value.trim())) {
+      store.toast("warning", "Enter the mesh code", "Paste the 64-character code shown on a device in the mesh you want to join.");
+      return;
+    }
+    dismiss();
+    onJoin(peers, secretInput.value.trim());
+  });
+
+  replace(
+    content,
+    el("h2", { class: "wizard__title", text: "Add Device" }),
+    el("p", { class: "wizard__lead", text: "Join an existing mesh by entering a peer’s LAN IP and P2P port, then its mesh code. The next screen will create a local node configured to connect to it." }),
+    el("div", { class: "pairing-field" },
+      el("label", { class: "field-label", text: "Peer address or addresses" }),
+      peerInput,
+    ),
+    el("div", { class: "pairing-field" },
+      el("label", { class: "field-label", text: "Mesh code" }),
+      secretInput,
+    ),
+    el("p", { class: "muted", text: "The mesh code is saved in this computer’s OS keychain. Changing it moves this app’s data nodes to that mesh." }),
+    joinButton,
+    el("hr"),
+    shareSection,
+  );
+
+  void (async () => {
+    try {
+      // Refresh the sidecar registry at the point the user asks to pair. This
+      // also restores any managed local nodes into the sidebar if boot raced
+      // the supervisor coming online.
+      await refreshNodeList();
+      const nodes = await sidecar.listNodes();
+      const supervisor = nodes.find((node) => node.supervisor && node.process === "running");
+      const port = supervisor?.api_port ?? store.state.supervisorPort;
+      if (port === null || port === undefined) {
+        throw new Error("The local supervisor has not started. You can still join another device using the form above.");
+      }
+      const [pairing, meshSecret] = await Promise.all([apiFor(port).pairing(), sidecar.meshSecret()]);
+      const localNodes = nodes.filter((node) => !node.supervisor && node.process === "running");
+      const shareDetails = el(
+        "div",
+        { class: "stack" },
+        el("p", { class: "muted", text: "The QR contains public peer details only." }),
+        el("div", { class: "qr qr--constellation" }, qrSvg(JSON.stringify(pairing), { scale: 4, title: "Pairing code" })),
+        el("dl", { class: "kv" },
+          el("dt", { text: "Node P2P ports" }),
+          el("dd", { class: "mono", text: localNodes.length > 0 ? localNodes.map((node) => `${node.node_name}: ${node.p2p_port}`).join("\n") : "no running data nodes" }),
+          el("dt", { text: "Mesh code" }),
+          el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: meshSecret }),
+        ),
+        el("p", { class: "muted", text: "Share the mesh code only with people you want to allow into this mesh." }),
+      );
+      replace(shareSection, el("h3", { class: "card__title", text: "Share this device" }), shareDetails);
+    } catch (error) {
+      replace(shareSection, el("h3", { class: "card__title", text: "Share this device" }), el("p", { class: "error-note", text: `${describeError(error)} Joining another device is still available above.` }));
+    }
+  })();
 }
 
 // -- about sheet -------------------------------------------------------------
@@ -293,14 +337,10 @@ function build(): void {
   if (root === null) throw new Error("#app is missing from index.html");
 
   const wizard = createWizard();
+  const showAddDevice = () => openPairingSheet((peers, meshSecret) => wizard.open({ bootstrapPeers: peers, meshSecret }));
 
-  // onAddAsPeer: called when the user clicks "Add as peer" on a discovered
-  // LAN node. Pre-opens the wizard so they can create a local node that
-  // bootstraps from the remote peer's node_id. The wizard will surface the
-  // peer in its bootstrap-peers field when supported.
-  const onAddAsPeer = (peerNodeId: string) => {
-    wizard.open({ bootstrapPeer: peerNodeId });
-  };
+  // Peer discovery rows route through the same Add Device flow.
+  const onAddAsPeer = (_peerNodeId: string) => showAddDevice();
 
   lockDarkTheme();
 
@@ -355,10 +395,10 @@ function build(): void {
     },
     icon(Icons.qr, 15),
   );
-  on(pairButton, "click", openPairingSheet);
+  on(pairButton, "click", showAddDevice);
 
   const openCommandPalette = () =>
-    openPalette({ onNewNode: () => wizard.open(), onPair: openPairingSheet });
+    openPalette({ onNewNode: () => wizard.open(), onPair: showAddDevice });
   const paletteButton = el(
     "button",
     {

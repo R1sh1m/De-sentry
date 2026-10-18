@@ -80,6 +80,8 @@ pub struct AppState {
     pending_keys: Mutex<HashMap<String, String>>,
     /// Node id of the app's own supervisor.
     pub supervisor_id: Mutex<Option<String>>,
+    /// Startup failure retained for the UI when the window opens without a supervisor.
+    pub supervisor_start_error: Mutex<Option<String>>,
     pub background_mode: AtomicBool,
     pub on_battery: AtomicBool,
     /// Set when the app is shutting down, so the watchdog stops restarting.
@@ -96,6 +98,7 @@ impl AppState {
             reserved: Mutex::new(HashSet::new()),
             pending_keys: Mutex::new(HashMap::new()),
             supervisor_id: Mutex::new(None),
+            supervisor_start_error: Mutex::new(None),
             background_mode: AtomicBool::new(false),
             on_battery: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),

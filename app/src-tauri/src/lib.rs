@@ -171,42 +171,60 @@ pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
 /// Starts the app's own supervisor, creating its data directory on first run.
 fn start_supervisor(state: &AppState) -> Result<(), String> {
     let data_dir = state.data_root.join(SUPERVISOR_DIR);
-    let allocation = state.allocate_ports().map_err(|error| error.to_string())?;
+    // Port probing and the engine's bind are separate operations, so another
+    // local process can take a port in between. Keep failed allocations
+    // reserved while retrying to ensure each attempt gets a different pair.
+    let mut failed_allocations = Vec::new();
+    let mut last_error = String::new();
+    for attempt in 0..5 {
+        let allocation = match state.allocate_ports() {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                for failed in failed_allocations.drain(..) {
+                    state.release_ports(failed);
+                }
+                return Err(error.to_string());
+            }
+        };
 
-    // The config is rewritten on every launch rather than reused. Ports change
-    // between runs, and a supervisor is pure control plane -- there is nothing
-    // in its config worth preserving across restarts except the data directory
-    // itself.
-    let config = NodeConfigSpec {
-        data_dir: data_dir.clone(),
-        node_name: "supervisor".to_owned(),
-        ports: allocation,
-        supervisor: true,
-        discovery_enabled: false,
-        quota_mb: SUPERVISOR_QUOTA_MB,
-        quota_split: QuotaSplit::default(),
-        engines: vec!["kv".to_owned()],
-        default_engine: "kv".to_owned(),
-        replication_factor: 3,
-        retention_days: 0,
-        encrypt_at_rest: false,
-        keychain_ref: String::new(),
-        bootstrap_peers: Vec::new(),
-        advertise_hostname: String::new(),
-        key_mode: "generated".to_owned(),
-        kdf_salt_hex: String::new(),
-        kdf_iters: 0,
-        dek_wrapped_hex: String::new(),
-        dek_tag_hex: String::new(),
-    };
-    let config_path = config
-        .write()
-        .map_err(|error| format!("could not write the supervisor's config: {error}"))?;
-
-    state
-        .start_node(LaunchSpec {
+        // The config is rewritten on every launch rather than reused. Ports
+        // change between runs; the supervisor has no durable config to keep.
+        let config = NodeConfigSpec {
+            data_dir: data_dir.clone(),
             node_name: "supervisor".to_owned(),
-            data_dir,
+            ports: allocation,
+            supervisor: true,
+            discovery_enabled: false,
+            quota_mb: SUPERVISOR_QUOTA_MB,
+            quota_split: QuotaSplit::default(),
+            engines: vec!["kv".to_owned()],
+            default_engine: "kv".to_owned(),
+            replication_factor: 3,
+            retention_days: 0,
+            encrypt_at_rest: false,
+            keychain_ref: String::new(),
+            bootstrap_peers: Vec::new(),
+            advertise_hostname: String::new(),
+            key_mode: "generated".to_owned(),
+            kdf_salt_hex: String::new(),
+            kdf_iters: 0,
+            dek_wrapped_hex: String::new(),
+            dek_tag_hex: String::new(),
+        };
+        let config_path = match config.write() {
+            Ok(path) => path,
+            Err(error) => {
+                state.release_ports(allocation);
+                for failed in failed_allocations.drain(..) {
+                    state.release_ports(failed);
+                }
+                return Err(format!("could not write the supervisor's config: {error}"));
+            }
+        };
+
+        match state.start_node(LaunchSpec {
+            node_name: "supervisor".to_owned(),
+            data_dir: data_dir.clone(),
             config_path,
             api_port: allocation.api_port,
             p2p_port: allocation.p2p_port,
@@ -215,9 +233,34 @@ fn start_supervisor(state: &AppState) -> Result<(), String> {
             removable: false,
             encrypted: false,
             unlock_secret: None,
-        })
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        }) {
+            Ok(_) => {
+                for failed in failed_allocations.drain(..) {
+                    state.release_ports(failed);
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                let retryable = last_error.to_ascii_lowercase().contains("address already in use")
+                    || last_error.contains("bind() failed");
+                if !retryable || attempt == 4 {
+                    state.release_ports(allocation);
+                    for failed in failed_allocations.drain(..) {
+                        state.release_ports(failed);
+                    }
+                    return Err(last_error);
+                }
+                failed_allocations.push(allocation);
+                log::warn!("supervisor port pair was claimed during startup; retrying with another pair");
+            }
+        }
+    }
+
+    for failed in failed_allocations {
+        state.release_ports(failed);
+    }
+    Err(last_error)
 }
 
 /// Restarts every data node found under the data root.
@@ -334,6 +377,7 @@ pub fn run() {
             commands::pick_directory,
             commands::api_token,
             commands::membership_status,
+            commands::mesh_secret,
             commands::pick_save_file,
             commands::reveal_node_files,
             commands::set_autostart,
@@ -373,13 +417,21 @@ pub fn run() {
             // RNG, shared by every desentryd child via inheritance (passed
             // explicitly in spawn_child). Nodes without it stay open; with
             // it, outsiders fail the handshake and their beacons are
-            // ignored. Never written to disk, never sent to the webview --
-            // only the fingerprint leaves, so two meshes can be compared
-            // when pairing ("both show a3f9c2...").
+            // ignored. Stored in the OS keychain; the pairing sheet can show
+            // it for an explicitly authorized manual join. It is never
+            // included in the QR payload.
+            if std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default().is_empty() {
+                if let Ok(secret) = keychain::load(keychain::MESH_SECRET_REF) {
+                    std::env::set_var("DESENTRY_CLUSTER_SECRET", secret);
+                }
+            }
             if std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default().is_empty() {
                 let mut raw = [0u8; 32];
                 if getrandom::getrandom(&mut raw).is_ok() {
                     let hex: String = raw.iter().map(|b| format!("{:02x}", b)).collect();
+                    if let Err(error) = keychain::store(keychain::MESH_SECRET_REF, &hex) {
+                        log::warn!("could not persist this device's mesh code: {error}");
+                    }
                     std::env::set_var("DESENTRY_CLUSTER_SECRET", hex);
                 } else {
                     log::warn!("OS RNG unavailable: cluster stays OPEN (no membership secret)");
@@ -396,6 +448,9 @@ pub fn run() {
             // registry.
             if let Err(error) = start_supervisor(&state) {
                 log::error!("the supervisor did not start: {error}");
+                if let Ok(mut startup_error) = state.supervisor_start_error.lock() {
+                    *startup_error = Some(error);
+                }
             }
 
             let problems = restore_nodes(&handle, &state);

@@ -86,6 +86,9 @@ interface Draft {
   dataDir: string;
   removable: boolean;
   adopt: boolean;
+  /** Manual peer addresses and shared code for joining an existing mesh. */
+  bootstrapPeerText: string;
+  meshSecret: string;
   // 2 -- shape
   nodeName: string;
   standalone: boolean;
@@ -144,6 +147,8 @@ function newDraft(): Draft {
     dataDir: "",
     removable: false,
     adopt: false,
+    bootstrapPeerText: "",
+    meshSecret: "",
     nodeName: "",
     standalone: true,
     quotaMb: 2048,
@@ -250,7 +255,7 @@ function quotaSplitBars(split: QuotaSplit, quotaMb: number): HTMLElement {
 // -- the wizard --------------------------------------------------------------
 
 export interface WizardHandles {
-  open(config?: { bootstrapPeer?: string }): void;
+  open(config?: { bootstrapPeers?: string[]; meshSecret?: string }): void;
   close(): void;
   element: HTMLElement;
   isOpen(): boolean;
@@ -378,17 +383,22 @@ export function createWizard(): WizardHandles {
   // -- step 1: placement -----------------------------------------------------
 
   async function scan(): Promise<void> {
-    const port = store.state.supervisorPort;
-    if (port === null) {
-      // Placement-step failure belongs on the placement step: the old code
-      // wrote it into sizingError, which step 3 renders, so step 1 showed
-      // nothing while step 3 showed a stale, unrelated error.
-      store.toast("error", "Could not scan for storage", "The supervisor is not running, so hardware cannot be scanned.");
-      return;
-    }
     draft.scanning = true;
     render();
     try {
+      // The initial boot and the wizard can race the supervisor's first
+      // start event. Refresh the sidecar registry before trusting the cached
+      // port so this does not report a false "supervisor is not running".
+      await refreshNodeList();
+      const port = store.state.supervisorPort;
+      if (port === null) {
+        const startupError = store.state.appInfo?.supervisor_start_error;
+        throw new Error(
+          startupError
+            ? `Supervisor startup failed: ${startupError}`
+            : "The local supervisor has not registered a running API. You can still choose a folder manually; try Rescan in a moment.",
+        );
+      }
       const api = apiFor(port);
       const [scanned, mounts] = await Promise.all([api.scan(), api.mounts()]);
       draft.candidates = scanned.candidates;
@@ -1467,7 +1477,11 @@ export function createWizard(): WizardHandles {
       supervisor: false,
       discovery_enabled: !draft.standalone,
       removable: draft.removable,
-      bootstrap_peers: [],
+      bootstrap_peers: draft.bootstrapPeerText
+        .split(/[\n,;]+/)
+        .map((peer) => peer.trim())
+        .filter(Boolean),
+      mesh_secret: draft.meshSecret.trim() || undefined,
       description: draft.description,
       preallocate: draft.preallocate,
       key_mode: draft.encrypt ? draft.keyMode : "generated",
@@ -1802,6 +1816,25 @@ export function createWizard(): WizardHandles {
       if (draft.step === 4) void createNode();
       else if (draft.step === 5) close();
       else {
+        if (draft.step === 1 && !draft.adopt) {
+          const addresses = draft.bootstrapPeerText
+            .split(/[\n,;]+/)
+            .map((peer) => peer.trim())
+            .filter(Boolean);
+          const validAddress = (peer: string): boolean => {
+            const match = /^(?:\[[0-9a-fA-F:]+\]|[^\s,:]+):(\d{1,5})$/.exec(peer);
+            return match !== null && Number(match[1]) >= 1 && Number(match[1]) <= 65535;
+          };
+          const invalid = addresses.find((peer) => !validAddress(peer));
+          if (invalid) {
+            store.toast("warning", "Peer address needs host:port", `Invalid address: ${invalid}`);
+            return;
+          }
+          if ((addresses.length > 0) !== (draft.meshSecret.trim() !== "")) {
+            store.toast("warning", "Peer address and mesh code go together", "Enter both to join manually, or leave both blank for automatic discovery.");
+            return;
+          }
+        }
         if (draft.step === 2) {
           const nameInput = content.querySelector<HTMLInputElement>('input[type="text"]');
           const quotaInput = content.querySelector<HTMLInputElement>('input[type="number"]');
@@ -1870,10 +1903,10 @@ export function createWizard(): WizardHandles {
   return {
     element,
     isOpen: () => open,
-    open(_config?: { bootstrapPeer?: string }) {
-      // _config is reserved for future use (e.g. pre-seeding a bootstrap peer).
-      // The wizard currently opens fresh every time.
+    open(config?: { bootstrapPeers?: string[]; meshSecret?: string }) {
       draft = newDraft();
+      draft.bootstrapPeerText = config?.bootstrapPeers?.join("\n") ?? "";
+      draft.meshSecret = config?.meshSecret ?? "";
       draft.engines = store.state.engines;
       open = true;
       element.hidden = false;
