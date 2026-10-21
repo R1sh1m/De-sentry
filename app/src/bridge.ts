@@ -128,6 +128,10 @@ export interface SizingDecision {
 }
 
 export interface CreateNodeRequest {
+  /** Optional per-node password (architecture-v3 section 6). Omit or null for none. */
+  password?: string | null;
+  /** Keep the password in this machine's keychain so the node auto-starts here. */
+  remember_password?: boolean;
   node_name: string;
   data_dir: string;
   /** Empty for a fresh node; set when adopting an existing data directory. */
@@ -220,6 +224,182 @@ export interface DiscoveredCandidate {
   has_manifest: boolean;
   free_bytes: number;
   used_bytes: number;
+}
+
+// -- architecture-v3 contracts ------------------------------------------------
+// Mirrors src-tauri/src/{advisor,assistant,applog,password,pairing}.rs. Field
+// names are the Rust serde names (snake_case); change both sides together.
+
+export interface FacetValue {
+  id: string;
+  label: string;
+  probability: number;
+}
+
+export interface FacetState {
+  id: string;
+  label: string;
+  values: FacetValue[];
+  certainty: number;
+  evidence: string[];
+  answered: boolean;
+}
+
+export interface EngineRecommendation {
+  engine: string;
+  label: string;
+  role: "primary" | "secondary" | "not-needed";
+  utility: number;
+  reasons: string[];
+  available: boolean;
+}
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+  hint: string;
+}
+
+export interface AdvisorQuestion {
+  id: string;
+  facet: string;
+  prompt: string;
+  why: string;
+  options: QuestionOption[];
+  expected_gain: number;
+}
+
+export interface AdvisorAnswer {
+  question_id: string;
+  facet: string;
+  option_id: string;
+}
+
+/** A sizing session. `ready` means proceed without asking the user anything more. */
+export interface AdvisorState {
+  session_id: string;
+  description: string;
+  method: "onnx" | "keyword";
+  fallback_reason: string;
+  facets: FacetState[];
+  engines: EngineRecommendation[];
+  confidence: number;
+  target_confidence: number;
+  next_question: AdvisorQuestion | null;
+  answered: AdvisorAnswer[];
+  questions_remaining: number;
+  ready: boolean;
+  summary: string;
+  suggested_name: string;
+  spec: NodeSpec;
+}
+
+/** Option id that skips an advisor question. */
+export const ADVISOR_SKIP = "skip";
+
+export type AssistantCardKind = "nodes" | "logs" | "advisor" | "doc" | "health";
+
+export interface AssistantCard {
+  kind: AssistantCardKind;
+  title: string;
+  data: unknown;
+}
+
+export type AssistantActionKind =
+  | "start_node"
+  | "stop_node"
+  | "restart_node"
+  | "lock_node"
+  | "unlock_node"
+  | "create_node"
+  | "delete_node"
+  | "join_mesh"
+  | "open_view"
+  | "answer_advisor";
+
+export interface PendingAction {
+  id: string;
+  kind: AssistantActionKind;
+  label: string;
+  description: string;
+  destructive: boolean;
+  /** Harmless: perform immediately without asking. */
+  auto: boolean;
+  params: Record<string, unknown>;
+}
+
+export interface AssistantReply {
+  conversation_id: string;
+  text: string;
+  cards: AssistantCard[];
+  actions: PendingAction[];
+  suggestions: string[];
+  intent: string;
+  confidence: number;
+  backend: "builtin" | "local-llm";
+}
+
+export interface AssistantStatus {
+  backend: "builtin" | "local-llm";
+  model_ready: boolean;
+  llm_endpoint: string | null;
+  llm_model: string | null;
+}
+
+export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+
+export interface AppLogEntry {
+  seq: number;
+  ts_ms: number;
+  level: LogLevel;
+  /** "app" | "supervisor" | "node:<node_id>" */
+  source: string;
+  source_label: string;
+  target: string;
+  message: string;
+}
+
+export interface LogQuery {
+  sources?: string[];
+  min_level?: LogLevel | null;
+  contains?: string | null;
+  since_seq?: number | null;
+  limit?: number | null;
+}
+
+export interface LogSource {
+  id: string;
+  label: string;
+  kind: "app" | "supervisor" | "node";
+  running: boolean;
+}
+
+export interface NodeSecurity {
+  node_id: string;
+  protected: boolean;
+  remembered: boolean;
+  locked: boolean;
+  has_recovery_key: boolean;
+  /** Always false until the engine enforces encryption at rest. Never label a node "encrypted". */
+  encrypted_at_rest: boolean;
+}
+
+export interface PairingInfo {
+  /** The full DSN1-... code; also the QR content. */
+  code: string;
+  node_id: string;
+  node_name: string;
+  addresses: string[];
+  discovery_port: number;
+  created_ms: number;
+}
+
+export interface JoinResult {
+  mesh_node_id: string;
+  mesh_node_name: string;
+  peers_added: string[];
+  nodes_updated: string[];
+  warnings: string[];
 }
 
 // -- invoke ------------------------------------------------------------------
@@ -423,6 +603,89 @@ export const sidecar = {
    */
   triggerDiscoveryScan(): Promise<void> {
     return invoke<void>("trigger_discovery_scan");
+  },
+
+  // -- advisor (architecture-v3 section 3) -------------------------------------
+
+  advisorStart(description: string, quotaMb: number): Promise<AdvisorState> {
+    return invoke<AdvisorState>("advisor_start", { description, quotaMb });
+  },
+
+  /** `optionId` may be ADVISOR_SKIP. */
+  advisorAnswer(sessionId: string, questionId: string, optionId: string): Promise<AdvisorState> {
+    return invoke<AdvisorState>("advisor_answer", { sessionId, questionId, optionId });
+  },
+
+  /** The description changed; earlier answers are kept. */
+  advisorRefine(sessionId: string, description: string): Promise<AdvisorState> {
+    return invoke<AdvisorState>("advisor_refine", { sessionId, description });
+  },
+
+  /** Manual engine override; [] returns to the recommendation. */
+  advisorSetEngines(sessionId: string, engines: string[]): Promise<AdvisorState> {
+    return invoke<AdvisorState>("advisor_set_engines", { sessionId, engines });
+  },
+
+  // -- assistant (architecture-v3 section 4) -----------------------------------
+
+  assistantSend(conversationId: string | null, text: string): Promise<AssistantReply> {
+    return invoke<AssistantReply>("assistant_send", { conversationId, text });
+  },
+
+  assistantConfirm(conversationId: string, actionId: string, approve: boolean): Promise<AssistantReply> {
+    return invoke<AssistantReply>("assistant_confirm", { conversationId, actionId, approve });
+  },
+
+  assistantStatus(): Promise<AssistantStatus> {
+    return invoke<AssistantStatus>("assistant_status");
+  },
+
+  assistantReset(conversationId: string): Promise<void> {
+    return invoke<void>("assistant_reset", { conversationId });
+  },
+
+  // -- logs (architecture-v3 section 5) ----------------------------------------
+
+  appLogs(query: LogQuery = {}): Promise<AppLogEntry[]> {
+    return invoke<AppLogEntry[]>("app_logs", { query });
+  },
+
+  logSources(): Promise<LogSource[]> {
+    return invoke<LogSource[]>("log_sources");
+  },
+
+  /** Writes matching records to a file the user chose; returns the count. */
+  exportLogs(path: string, query: LogQuery = {}): Promise<number> {
+    return invoke<number>("export_logs", { path, query });
+  },
+
+  // -- passwords (architecture-v3 section 6) -----------------------------------
+
+  nodeSecurity(nodeId: string): Promise<NodeSecurity> {
+    return invoke<NodeSecurity>("node_security", { nodeId });
+  },
+
+  /**
+   * Set (currentSecret null), change (both), or remove (newPassword null) a
+   * node's password. `currentSecret` may be the password or the recovery key.
+   */
+  setNodePassword(
+    nodeId: string,
+    currentSecret: string | null,
+    newPassword: string | null,
+    remember: boolean,
+  ): Promise<NodeSecurity> {
+    return invoke<NodeSecurity>("set_node_password", { nodeId, currentSecret, newPassword, remember });
+  },
+
+  // -- pairing (architecture-v3 section 7) -------------------------------------
+
+  pairingCode(): Promise<PairingInfo> {
+    return invoke<PairingInfo>("pairing_code");
+  },
+
+  joinMesh(code: string): Promise<JoinResult> {
+    return invoke<JoinResult>("join_mesh", { code });
   },
 };
 

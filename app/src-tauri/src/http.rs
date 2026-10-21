@@ -6,8 +6,9 @@
 //! -- so it is forty lines here rather than a dependency and its transitive
 //! tree.
 //!
-//! The web view does its own HTTP with `fetch`; this exists only for readiness
-//! probes on the Rust side.
+//! The web view does its own HTTP with `fetch`; this exists for readiness
+//! probes, the engine's `POST /_peers` when joining a mesh, and a local LLM
+//! server the assistant may use.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -25,8 +26,21 @@ pub enum HttpError {
     Status(u16, u16),
 }
 
-/// `GET path` against a node's loopback API. Returns the response body.
+/// `GET path` against a loopback API. Returns the response body.
 pub fn get(port: u16, path: &str, timeout: Duration) -> Result<String, HttpError> {
+    request(port, "GET", path, None, timeout)
+}
+
+/// `POST path` with a JSON body against a loopback API. Returns the response
+/// body. Used for the engine's `POST /_peers` and for a local LLM server.
+pub fn post_json(port: u16, path: &str, body: &serde_json::Value, timeout: Duration) -> Result<String, HttpError> {
+    let payload = body.to_string();
+    request(port, "POST", path, Some(&payload), timeout)
+}
+
+/// One request to 127.0.0.1. Loopback only, by construction: there is no host
+/// parameter, so nothing built on this can reach another machine.
+pub fn request(port: u16, method: &str, path: &str, body: Option<&str>, timeout: Duration) -> Result<String, HttpError> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream =
         TcpStream::connect_timeout(&address, timeout).map_err(|error| HttpError::Connect(port, error))?;
@@ -44,9 +58,17 @@ pub fn get(port: u16, path: &str, timeout: Duration) -> Result<String, HttpError
         .filter(|token| !token.is_empty())
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: de-sentry-app\r\n{auth}Connection: close\r\nAccept: application/json\r\n\r\n"
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: de-sentry-app\r\n{auth}Connection: close\r\nAccept: application/json\r\n"
     );
+    if let Some(body) = body {
+        request.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+    } else {
+        request.push_str("\r\n");
+    }
     stream
         .write_all(request.as_bytes())
         .map_err(|error| HttpError::Io(port, error))?;
@@ -72,7 +94,32 @@ pub fn get(port: u16, path: &str, timeout: Duration) -> Result<String, HttpError
     if !(200..300).contains(&status) {
         return Err(HttpError::Status(port, status));
     }
+    let chunked = head
+        .lines()
+        .any(|line| line.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    if chunked {
+        return dechunk(body).ok_or(HttpError::Malformed(port));
+    }
     Ok(body.to_owned())
+}
+
+/// Decodes a `Transfer-Encoding: chunked` body. Servers other than the engine
+/// (a local LLM server, for one) are free to use it even with
+/// `Connection: close`.
+fn dechunk(mut body: &str) -> Option<String> {
+    let mut out = String::new();
+    loop {
+        let (size_line, rest) = body.split_once("\r\n")?;
+        let size = usize::from_str_radix(size_line.split(';').next()?.trim(), 16).ok()?;
+        if size == 0 {
+            return Some(out);
+        }
+        if rest.len() < size {
+            return None;
+        }
+        out.push_str(rest.get(..size)?);
+        body = rest.get(size..)?.strip_prefix("\r\n")?;
+    }
 }
 
 /// `GET /_status`, parsed. Used as the readiness probe and to learn a node's id.

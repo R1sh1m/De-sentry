@@ -19,15 +19,20 @@
 //! request -- which is what lets the airplane-mode acceptance test cover the
 //! app as well as the engine.
 
+pub mod advisor;
 pub mod ai;
+pub mod applog;
 pub mod appstate;
+pub mod assistant;
 pub mod commands;
 pub mod configgen;
 pub mod http;
 pub mod keychain;
 pub mod nodes;
 pub mod notify;
+pub mod pairing;
 pub mod passphrase;
+pub mod password;
 pub mod ports;
 pub mod power;
 pub mod recovery;

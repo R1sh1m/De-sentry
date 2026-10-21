@@ -875,7 +875,7 @@ pub fn available_engines(state: State<'_, std::sync::Arc<AppState>>) -> Reply<Ve
 /// The binary is the authority, not a list compiled into the app: a build with
 /// SQLite vendored in and one without are the same app with different engines,
 /// and only the binary knows which it is.
-fn engine_names(state: &AppState) -> Vec<String> {
+pub(crate) fn engine_names(state: &AppState) -> Vec<String> {
     let port = state
         .supervisor_id
         .lock()
@@ -997,6 +997,11 @@ pub fn unlock_node(
     password: String,
     data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
+    // TODO(platform): accept a password OR a recovery key, verified against the
+    // node's security.json (architecture-v3 section 6). Today this still rejects anything
+    // that is not a recovery key -- the reported bug.
+    recovery::decode(&password).map_err(fail)?;
+
     // Resolve the data directory first (no lock held across file IO): for a
     // supervised node it comes from the registry, otherwise from the caller
     // or the discovery scan. The secret is verified against the envelope
