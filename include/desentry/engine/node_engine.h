@@ -24,9 +24,11 @@
 //     GET /_changes long-polls wake immediately.
 
 #include <functional>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -100,6 +102,10 @@ class NodeEngine {
     // every built-in backend, transit/outbox logs and the cross-engine
     // index. Never written to disk; arrives from the sidecar on stdin.
     std::string dek;
+    // Automatic ts_rollup retention sweep interval. Zero disables the
+    // scheduler; the default is deliberately infrequent because retention
+    // drops whole immutable chunks rather than individual rows.
+    uint32_t retention_interval_ms = 60 * 60 * 1000;
   };
 
   static StatusOr<std::unique_ptr<NodeEngine>> Open(const Options& options);
@@ -283,10 +289,23 @@ class NodeEngine {
   HybridLogicalClock& clock() { return *clock_; }
 
   // Runs the catalog's retention_days for `collection` now (explicit,
-  // operator-driven -- there is no background scheduler). Only ts_rollup
+  // operator-driven). Only ts_rollup
   // honors retention; other engines report InvalidArgument. Returns chunks
   // dropped.
   StatusOr<size_t> RunRetention(const std::string& collection);
+
+  struct RetentionSweepReport {
+    uint64_t last_run_ms = 0;
+    size_t collections_considered = 0;
+    size_t chunks_dropped = 0;
+    std::string last_error;
+  };
+
+  // Runs retention for every configured ts_rollup collection. Collections
+  // without a retention policy are skipped; one failing collection does not
+  // prevent the remaining policies from running.
+  RetentionSweepReport RunRetentionSweep();
+  RetentionSweepReport RetentionStatus() const;
 
   // Sets a collection's ACL locally AND appends a signed kAcl ledger record
   // so the ACL replicates (H-1 fix). Peers apply it via ApplyRemoteAcl.
@@ -322,6 +341,12 @@ class NodeEngine {
   std::function<void(const std::string&, const std::string&, const std::string&)> on_local_write_;
   std::function<std::string(const std::string&)> resolve_public_key_;
   std::function<bool()> reachability_provider_;
+  void RetentionLoop();
+  mutable std::mutex retention_mu_;
+  std::condition_variable retention_cv_;
+  std::thread retention_thread_;
+  bool retention_stop_ = false;
+  RetentionSweepReport retention_report_;
   uint64_t hlc_saved_physical_ = 0;
   uint64_t hlc_save_counter_ = 0;
   // Digest cache (H-4 fix): (collection, key) -> last-computed digest entry.

@@ -73,6 +73,10 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
 
   engine->receipt_tracker_ = std::make_unique<ReceiptTracker>();
 
+  if (options.retention_interval_ms > 0) {
+    engine->retention_thread_ = std::thread(&NodeEngine::RetentionLoop, engine.get());
+  }
+
   // The DEK has been derived into per-file subkeys everywhere it is needed;
   // drop the raw key from the retained options so memory holds subkeys only.
   // (The sealed flag above preserves what /_status reports.)
@@ -86,6 +90,12 @@ StatusOr<std::unique_ptr<NodeEngine>> NodeEngine::Open(const Options& options) {
 }
 
 NodeEngine::~NodeEngine() {
+  {
+    std::lock_guard<std::mutex> lock(retention_mu_);
+    retention_stop_ = true;
+  }
+  retention_cv_.notify_all();
+  if (retention_thread_.joinable()) retention_thread_.join();
   // Wake any in-flight long poll before the ledger goes away underneath it.
   if (changes_) changes_->Stop();
   if (storage_) storage_->SetTipObserver(nullptr);
@@ -795,7 +805,7 @@ Status NodeEngine::ApplyRemoteAcl(const std::string& origin_node_id, const std::
 }
 
 // ---------------------------------------------------------------------------
-// Retention (explicit, operator-driven)
+// Retention
 // ---------------------------------------------------------------------------
 
 StatusOr<size_t> NodeEngine::RunRetention(const std::string& collection) {
@@ -821,6 +831,51 @@ StatusOr<size_t> NodeEngine::RunRetention(const std::string& collection) {
                                            << " chunk(s) older than " << meta.retention_days
                                            << " day(s)");
   return dropped_or.value();
+}
+
+NodeEngine::RetentionSweepReport NodeEngine::RunRetentionSweep() {
+  RetentionSweepReport report;
+  report.last_run_ms = static_cast<uint64_t>(NowMs());
+  for (const std::string& collection : storage_->ListCollections()) {
+    CollectionMeta meta;
+    if (!storage_->catalog().GetCopy(collection, &meta) || meta.retention_days == 0 ||
+        storage_->router().EngineNameFor(collection) != "ts_rollup") {
+      continue;
+    }
+    ++report.collections_considered;
+    auto dropped_or = RunRetention(collection);
+    if (!dropped_or.ok()) {
+      report.last_error = collection + ": " + dropped_or.status().message();
+      DSN_LOG_WARN("retention", "automatic sweep failed for '" << collection
+                                                               << "': " << dropped_or.status().message());
+      continue;
+    }
+    report.chunks_dropped += dropped_or.value();
+  }
+  {
+    std::lock_guard<std::mutex> lock(retention_mu_);
+    retention_report_ = report;
+  }
+  return report;
+}
+
+NodeEngine::RetentionSweepReport NodeEngine::RetentionStatus() const {
+  std::lock_guard<std::mutex> lock(retention_mu_);
+  return retention_report_;
+}
+
+void NodeEngine::RetentionLoop() {
+  std::unique_lock<std::mutex> lock(retention_mu_);
+  while (!retention_stop_) {
+    const uint32_t interval_ms = options_.retention_interval_ms;
+    if (retention_cv_.wait_for(lock, std::chrono::milliseconds(interval_ms),
+                               [this] { return retention_stop_; })) {
+      break;
+    }
+    lock.unlock();
+    RunRetentionSweep();
+    lock.lock();
+  }
 }
 
 // ---------------------------------------------------------------------------

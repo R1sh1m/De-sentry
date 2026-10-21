@@ -1,6 +1,6 @@
 # De-Sentry — Issue Inventory
 
-Updated: 2026-09-15
+Updated: 2026-10-18
 
 This is a working issue inventory, not a release claim. **Observed** means a
 local test or build reproduced it. **Code-confirmed** means the behavior is
@@ -11,20 +11,25 @@ validation. **Gap** means required behavior has not been exercised.
 ## Executive assessment
 
 The core engine, storage backends, CRDT layer, ledger v2, networking, supervisor,
-and desktop app now possess an authoritative passing baseline: all 11 C++ test
-binaries build and pass cleanly (`acl_test`, `crdt_test`, `crypto_test`,
+and desktop app now possess an authoritative passing baseline: all 12 C++ test
+binaries build and pass cleanly (`acl_test`, `at_rest_test`, `crdt_test`, `crypto_test`,
 `ledger_v2_test`, `liveness_test`, `network_test`, `placement_test`, `quota_test`,
 `router_test`, `storage_test`, `transit_test`), 34/34 Rust unit tests pass, the
 frontend builds cleanly, and a release MSI package (36.8 MiB) has been produced.
 
-The highest-priority correctness blockers have been addressed and verified:
+The historical correctness blockers have been addressed and verified:
 
-1. **Test baseline established**: 11/11 C++ test binaries green with active assertions (`-UNDEBUG`).
+1. **Test baseline established**: 12/12 C++ test binaries green with active assertions (`-UNDEBUG`).
 2. **Quota contract fixed**: ceiling-MiB remainder distribution ensures shares sum exactly, and `kOutOfSpace` is consistently returned on capacity exhaustion.
 3. **Storage-test hang bounded**: 256-level descent bound in `FindLeaf` and root-page validation in `ResetForReplay` prevent loops on zero-filled or uninitialized pages.
 4. **WAL and materialized state aligned**: size validation occurs pre-append, replay runs inside overdraft MergeScope, and CRC32 is enforced on read.
 5. **`buffer_pool_pages` wired**: setting is forwarded through router to `KvBPlusBackend` and validated.
 6. **Sidecar and desktop security hardened**: sidecar naming aligned, rollback clean on partial creation failure, and `reveal_node_files` allowlisted server-side.
+
+The current priority is no longer broad remediation. It is release confidence,
+cross-platform proof, and a small set of deliberately unfinished product
+capabilities. The active queue below supersedes the historical task table and
+the old recommended execution order at the end of this file.
 
 ## Claude Code execution contract
 
@@ -373,13 +378,41 @@ Pending / future platform verification:
 - Optional vendored backends (SQLite, sqlite-vec, DuckDB, LMDB) remain opt-in and unexercised in default shipping builds.
 - Installer update/upgrade behavior has not been tested.
 
+## Active next-work queue (2026-10-18)
+
+These are the issues to work on next. They are ordered by release risk first,
+then by product value. Do not mark an item fixed from a code inspection alone;
+record the exact command and environment that proves it.
+
+| ID | Priority | Work | Current evidence | Definition of done |
+|---|---|---|---|---|
+| `transit-replay-timeout` | P0 | Diagnose the held-replica wait in `transit_replay_test.py` and make the test/protocol deterministic without weakening the durability guarantee. | **Resolved 2026-10-18**: two current runs passed all 22 checks; the stale-observation gate is now deterministic and holder selection was not defective. | Reproduce twice, identify whether the fault is timing, holder selection, or test setup, add a focused regression, then pass the full replay test and airplane-mode test. |
+| `cross-platform-release` | P0 | Prove the engine and app on Linux, macOS, and MSVC, including the platform-specific filesystem sync paths. | Windows validation is current; macOS remains unavailable on this machine and Linux/MSVC evidence is historical or container-only. | Fresh builds, CTest, relevant integration smoke, and honest platform notes for each supported target. |
+| `installer-e2e` | P0 | Exercise packaged install, sidecar startup, node creation, upgrade, and rollback behavior. | A Windows MSI has existed historically, but packaged upgrade and a complete installer-to-node flow are not the current acceptance baseline. | Build the installer from the current tree, install it, create/restart/delete a node through the app, test upgrade/uninstall, and record artifacts without secrets. |
+| `invite-pairing-ui` | P1 | Add the second-device membership flow for the already-implemented cluster secret and fingerprint. | Backend membership secret and fingerprint are verified; manual secret entry works, but QR/invite UX is still absent. | A user can create an invite on device A, transfer it safely, join on device B, see fingerprint confirmation, and recover from rejection without exposing the secret in logs. |
+| `retention-scheduler` | P1 | Make retention policy execution automatic and observable instead of requiring a manual endpoint. | **Fixed 2026-10-18**: each engine runs a bounded periodic sweep; `_status.retention` reports the last run, collections considered, chunks dropped, and the last error. Changed `node_engine.h/.cpp`, `routes.cpp`, retention comments, and `tests/retention_test.cpp`. `ctest` is 13/13 green. | Scheduler respects collection policy, quota/ledger safety, restart behavior, and has focused tests plus a visible last-run/error state. |
+| `secondary-indexes` | P1 | Implement or explicitly remove the advertised secondary-index capability. | Index names persist in metadata and API responses but are not built or queried. | Either ship one bounded indexed-query path with tests and quota accounting, or remove the option and update all user-facing docs. |
+| `ledger-digest-cache` | P2 | Replace remaining full-scan digest work with incremental/repairable summaries where profiling justifies it. | The digest cache exists, but parts of the verification path still scan ledger/storage state. | Benchmark a representative mesh, define the invariant, add corruption/rebuild coverage, and keep full-scan fallback explicit. |
+| `storage-reclamation` | P2 | Add vacuum/space reclamation and page-integrity protection for long-lived collections. | Deleted space is not reclaimed; raw structural pages lack page-level checksums. | Design the on-disk compatibility story first, then add crash-safe vacuum/checksum tests before implementation. |
+| `cross-engine-index` | P2 | Decide whether the SQLite-backed cross-engine index is still needed. | The append-log implementation is the only shipped implementation; the SQLite variant is future work. | Make an explicit performance/maintenance decision and update architecture, issue inventory, and configuration docs consistently. |
+| `vendored-backends` | P2 | Validate opt-in SQLite, sqlite-vec, DuckDB, and LMDB builds from checked-in sources. | They remain intentionally off by default and are not part of the current shipping build. | Add sources and licenses only if approved, then run router/API/restart tests for each enabled backend; otherwise document them as unsupported optional adapters. |
+
+### Recently reproduced validation
+
+`python tests/integration/transit_replay_test.py` was run twice on 2026-10-18
+against the current Windows build and passed all 22 checks both times. The
+survivors' stale-observation gate completed before the outage write, a holder
+and ledger intent were observed, and node-c replayed and claimed the document.
+`airplane_mode_test.py` also passed all 18 checks. The replay timeout is no
+longer an open reliability issue.
+
 ## Priority 3 — Workstream A-D (Transit Hardening & Durability Receipts)
 
 Implemented enhancements:
 - **MergeReceipts**: Original eager broadcasts (TTL=1) return signed Ed25519 `MergeReceipt` over `(message_id || key_hash || applied_lsn)`.
 - **Transit message_id tracking**: `message_id` wired through `HoldForOfflineOwners` and transit hold envelopes.
 - **Durability barrier**: `PUT ?durability=N&timeout_ms=M` checks replica acknowledgment counts before responding.
-- **New test suites**: Added `tests/liveness_test.cpp` and `tests/transit_test.cpp` to the C++ test matrix (bringing total to 11 suites).
+- **New test suites**: Added `tests/liveness_test.cpp` and `tests/transit_test.cpp` to the C++ test matrix (bringing total to 12 suites).
 
 ## macOS bring-up and release procedure
 
@@ -580,15 +613,11 @@ These are known design limits, not automatically bugs:
 - Ledger chains are per-node, not shared: two nodes can hold the same entry
   height with different hashes (own HLC/origin/signature) by construction.
   The checkpoint quorum gate counts that as `conflicting` and refuses to
-  prune -- which is the safe outcome, but it means `transit_replay_test.py`'s
-  "no replica reported a conflicting tip" expectation fails deterministically
-  on this box (21/22 pass; conflicting=1 at entry 1-2, varying run to run).
-  Verified NOT a regression: pristine HEAD rebuilt from stash fails
-  identically. Fix direction is union-sync of hash sets (future work), not
-  forcing shared tips; until then the test expectation contradicts the
-  documented design and must be relaxed to accept a refused-with-reason
-  checkpoint (already an asserted-safe outcome) rather than demanding zero
-  conflicts.
+  prune, which is the safe outcome. The current replay test has a separate
+  reliability gap: on 2026-10-18 it timed out waiting for a holder after the
+  outage write. Do not “fix” this by forcing shared tips; investigate holder
+  selection, timing, and test setup while preserving the refused-with-reason
+  checkpoint behavior.
 - Optional vendored backends are never downloaded automatically and are off by
   default.
 - At-rest encryption is ENFORCED (since 2026-09-20): `encrypt_at_rest: true`
@@ -617,34 +646,15 @@ Remaining contradiction (same class): RESOLVED 2026-09-13 in the test.
 refused-with-reason checkpoint (the gate's refusal over per-node tip dissent
 is the designed-safe outcome); it no longer demands zero conflicts.
 
-## Current local worktree
-
-Before this execution pass, the branch was aligned with `origin/main` and the
-following local changes were pending:
-
-```text
-app/src-tauri/src/ai.rs
-include/desentry/storage/wal.h
-src/storage/wal.cpp
-```
-
-The ONNX change serializes access to the inference session but the ONNX path
-has not been built or run. The WAL changes affect durable recovery, pruning,
-verification, and LSN behavior. Committing these files does not mean those
-paths are fully verified; the task queue and acceptance commands above remain
-authoritative.
-
 ## Recommended execution order
 
-1. Reproduce the C++ failures independently from a clean build and diagnose
-   the storage-test hang.
-2. Fix quota accounting and add deterministic small-quota tests.
-3. Resolve WAL/materialized-state failure semantics and finish WAL regression
-   coverage.
-4. Wire and test `buffer_pool_pages`.
-5. Fix node-creation rollback and constrain `reveal_path`.
-6. Align sidecar staging, Tauri bundling, and runtime resolution; build and
-   launch an installer.
-7. Expand Docker/CTest coverage and add CI.
-8. Reconcile the project statement with the actual partition/failure
-   guarantees.
+1. `transit-replay-timeout`
+2. `cross-platform-release`
+3. `installer-e2e`
+4. `invite-pairing-ui`
+5. `retention-scheduler`
+6. `secondary-indexes`
+7. `ledger-digest-cache`
+8. `storage-reclamation`
+9. `cross-engine-index`
+10. `vendored-backends`

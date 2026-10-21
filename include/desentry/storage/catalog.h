@@ -81,9 +81,8 @@ struct CollectionMeta {
   uint64_t acl_updated_ms = 0;
 
   // Time-series retention in days; 0 == keep everything. Honoured by the
-  // ts_rollup backend's ApplyRetention/Prune when called -- there is no
-  // background scheduler; retention runs only when invoked (manual or
-  // supervisor-driven). Tracked future work, not a silent guarantee.
+  // ts_rollup backend's ApplyRetention/Prune when called by the engine's
+  // periodic sweep or an explicit operator request.
   uint32_t retention_days = 0;
 
   // Placement hints (net/placement.h). `shard_key` names the document field

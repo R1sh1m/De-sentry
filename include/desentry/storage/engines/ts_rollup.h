@@ -106,9 +106,8 @@ class TsRollupBackend : public BaseBackend {
   // Drops whole chunks whose newest point is older than `cutoff_ms`.
   // Returns the number of chunks removed.
   StatusOr<size_t> Prune(const std::string& collection, int64_t cutoff_ms);
-  // Convenience wrapper honouring CollectionMeta::retention_days. Manual
-  // only: no background scheduler calls this -- retention runs when invoked
-  // (tests, tooling, or a future supervisor sweep), never on the write path.
+  // Convenience wrapper honouring CollectionMeta::retention_days. The node
+  // engine calls this from its periodic sweep and the explicit API endpoint.
   StatusOr<size_t> ApplyRetention(const std::string& collection, uint32_t retention_days);
 
   Status SealOpenChunk(const std::string& collection);

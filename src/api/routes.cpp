@@ -411,8 +411,8 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
 
   // Explicit retention run: POST /db/:collection/_retention/run applies the
   // collection's configured retention_days now and reports chunks dropped.
-  // There is no background scheduler by design; the app's explorer offers
-  // this as a button next to the retention setting.
+  // The engine also runs the same operation periodically; this endpoint is
+  // useful when an operator wants the policy applied immediately.
   server->Post("/db/:collection/_retention/run", [engine, self](const HttpRequest& req) -> HttpResponse {
     const std::string& collection = req.params.at("collection");
     if (!engine->CanWrite(collection, self())) return StatusError(Status::AuthError("not allowed"));
@@ -499,6 +499,16 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("default_engine", JsonValue(network->config().default_engine));
     obj.emplace_back("api_port", JsonValue(static_cast<int64_t>(network->config().api_port)));
     obj.emplace_back("p2p_port", JsonValue(static_cast<int64_t>(network->config().p2p_port)));
+
+    const NodeEngine::RetentionSweepReport retention = engine->RetentionStatus();
+    JsonValue::Object retention_obj;
+    retention_obj.emplace_back("last_run_ms", JsonValue(static_cast<int64_t>(retention.last_run_ms)));
+    retention_obj.emplace_back("collections_considered",
+                               JsonValue(static_cast<int64_t>(retention.collections_considered)));
+    retention_obj.emplace_back("chunks_dropped",
+                               JsonValue(static_cast<int64_t>(retention.chunks_dropped)));
+    retention_obj.emplace_back("last_error", JsonValue(retention.last_error));
+    obj.emplace_back("retention", JsonValue(std::move(retention_obj)));
 
     JsonValue::Object quota_obj;
     quota_obj.emplace_back("limit_bytes", JsonValue(static_cast<int64_t>(quota.limit_bytes)));

@@ -1,25 +1,46 @@
 ---
 title: De-Sentry — build status
 version: 2.0
-updated: 2026-09-07
+updated: 2026-10-18
 ---
 
 # De-Sentry v2: build status
 
 What exists, what was verified, **what was not verified**, and what is
-knowingly unfinished. The design rationale lives in `docs/architecture.md`
+knowingly unfinished. The current issue queue is in [`ISSUES.md`](ISSUES.md);
+the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
-> **Read this first — what has actually been run.** Both halves now build and
-> run on Windows 11. The engine: MSYS2 UCRT64 GCC 16.2 + CMake 4.4.2 + Ninja +
-> OpenSSL 3.6.4, `ctest` **9/9 green**, four Python integration suites passing
-> against real `desentryd` processes. The desktop app: Rust 1.98.1 MSVC,
-> `cargo check` clean, and the app **runs** — window up, supervisor sidecar
-> spawned, hardware scan returning real volumes. Not yet done: **no installer
-> has been produced** (`tauri build` has never run), the ONNX sizing path has
-> never been compiled, and nothing has been built on Linux, macOS, or with
-> MSVC for the C++ side. [§3](#3-verification) is the exact list.
+> **Read this first — what has actually been run.** The current Windows
+> snapshot builds and passes all 12 C++ tests, the frontend build and invariant
+> checks, and all 18 airplane-mode checks. The same snapshot starts the
+> multi-node transit test and passes startup, initial replication, and the
+> outage write, but the test currently times out waiting for a held replica;
+> it is therefore not reported as green. Linux/macOS/MSVC cross-build proof,
+> packaged installer E2E, and the invite/pairing UI remain open. [§3](#3-verification)
+> and [`ISSUES.md`](ISSUES.md) are the authoritative detail.
+
+## Current next steps
+
+The older remediation queue in this file is historical. The active work list is
+maintained in `ISSUES.md` and currently begins with:
+
+1. Diagnose and stabilize the held-replica wait in
+   `tests/integration/transit_replay_test.py`. On 2026-10-18 the test passed
+   cluster startup, initial replication, and the outage write, then timed out
+   waiting for a holder; this must not be reported as a green replay run.
+2. Re-run release validation from the current tree on Linux, macOS, and MSVC,
+   including platform-specific filesystem sync and installer paths.
+3. Exercise the packaged Windows installer end to end, including node
+   creation, restart, deletion, upgrade, and rollback.
+4. Implement the invite/pairing UI over the verified membership-secret backend.
+5. Decide and execute the retention scheduler and secondary-index work, or
+   remove their advertised-but-unimplemented surfaces.
+
+The current Windows snapshot did pass all 12 C++ tests, the frontend build,
+QR/CSS/accessibility checks, and all 18 airplane-mode checks. Those results do
+not close the replay timeout or cross-platform/release gaps above.
 
 ---
 

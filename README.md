@@ -22,9 +22,11 @@ with no internet, which is an acceptance test
 
 > **Course project** — validated at 3 nodes running locally in a full mesh.
 > See [Project Statement](Project_Statement/project_statement.md) for the
-> original brief and scope. Read [`STATUS.md`](STATUS.md) before trusting any
-> claim here: the engine and desktop development shell have been compiled
-> locally, but installer and cross-platform verification remain incomplete.
+> original brief and scope. Read [`STATUS.md`](STATUS.md) and
+> [`ISSUES.md`](ISSUES.md) before trusting release claims: the current
+> Windows snapshot passes the C++ and airplane-mode baselines, while transit
+> replay reliability, cross-platform release proof, and packaged E2E remain
+> active work.
 
 ---
 
@@ -81,6 +83,20 @@ On Linux the app stores node keys in the **Secret Service**, so a keyring
 daemon (`gnome-keyring` or `kwalletmanager`) must be running at runtime or key
 custody will fail with a D-Bus error. Headless machines: run `dbus-run-session`
 or build the engine only.
+
+### macOS 14+
+
+```bash
+xcode-select --install                      # C/C++ toolchain
+brew install cmake openssl@3 node rust      # or rustup, or MacPorts
+
+# Homebrew's OpenSSL is keg-only, so CMake will not find it by itself:
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+```
+
+Export `OPENSSL_ROOT_DIR` in your shell profile, or pass it per-configure with
+`-DOPENSSL_ROOT_DIR=...`. Without it you get
+`Could NOT find OpenSSL` even though `brew list` shows it installed.
 
 ### Windows 11
 
@@ -204,7 +220,7 @@ npm run tauri:dev   -- -- --no-default-features
 ```
 
 The app then sizes collections with the deterministic keyword fallback and
-says so in the UI rather than presenting a fallback as a model result.
+reflects it in the UI rather than presenting a fallback as a model result.
 
 ### macOS: exact build and run steps
 

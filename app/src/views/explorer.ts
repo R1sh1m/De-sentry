@@ -471,9 +471,9 @@ export function createExplorer(): ExplorerHandles {
       current.rows.length > 0
         ? `${truncate(current.rows[0].key, 18)} → ${truncate(current.rows[current.rows.length - 1].key, 18)}`
         : "empty page";
-    // Explicit retention run (no background scheduler by design): applies the
-    // collection's configured retention_days now. Only meaningful on
-    // ts_rollup collections; anything else explains itself via the API error.
+    // Explicit retention run: applies the collection's configured
+    // retention_days immediately. The engine also performs periodic sweeps;
+    // this button is useful when an operator wants no waiting period.
     const retain = el("button", {
       class: "btn btn--sm btn--ghost",
       type: "button",
