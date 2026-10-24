@@ -393,9 +393,8 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       const hostRect = wrapper.getBoundingClientRect();
       if (nodeRect.width === 0 && nodeRect.height === 0) {
         popover.hidden = true;
-        // Schedule retry once mounted and laid out in the DOM
+        // Schedule retry once mounted and laid out in the DOM -- single rAF, no setTimeout loop.
         requestAnimationFrame(positionPopover);
-        window.setTimeout(positionPopover, 20);
         return;
       }
       // Scale proportionally with zoom level (matches zoomScale down to ZOOM_MIN 0.35x, up to 1.25x max)

@@ -499,6 +499,11 @@ const subscriptions = new Map<string, Subscription>();
 const RETRY_MIN_MS = 1000;
 const RETRY_MAX_MS = 15_000;
 
+/** Debounce map for subscription refreshes -- prevents UI thrashing when a node
+ * is making many writes in rapid succession. Keyed by nodeId. */
+const refreshDebounces = new Map<string, number>();
+const REFRESH_DEBOUNCE_MS = 100;
+
 async function runSubscription(subscription: Subscription): Promise<void> {
   let retryMs = RETRY_MIN_MS;
 
@@ -531,8 +536,17 @@ async function runSubscription(subscription: Subscription): Promise<void> {
       if (batch.count > 0) {
         // Only the tip moved -- refresh the node's own snapshot, and the
         // topology if a lifecycle-shaped entry landed.
-        await refreshNode(subscription.nodeId, { quota: false });
-        if (batch.changes.some((c) => c.operation === "CHECKPOINT")) await refreshTopology();
+        // Debounce rapid refreshes when the node is making many writes.
+        const existingTimer = refreshDebounces.get(subscription.nodeId);
+        if (existingTimer !== undefined) {
+          window.clearTimeout(existingTimer);
+        }
+        const timer = window.setTimeout(async () => {
+          refreshDebounces.delete(subscription.nodeId);
+          await refreshNode(subscription.nodeId, { quota: false });
+          if (batch.changes.some((c) => c.operation === "CHECKPOINT")) await refreshTopology();
+        }, REFRESH_DEBOUNCE_MS);
+        refreshDebounces.set(subscription.nodeId, timer);
       } else {
         // A poll that timed out with no changes still proves the node is alive.
         if (!view.reachable) await refreshNode(subscription.nodeId);

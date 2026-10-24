@@ -3,6 +3,9 @@
 #  Stack: C++17 / Python (stdlib HTTP client) / Static HTML dashboard
 # ==============================================================================
 
+# Demo artifacts (scripts, docs, guides)
+DEMO/
+
 # ── C++ Build Artifacts ────────────────────────────────────────────────────────
 build/
 build-*/
