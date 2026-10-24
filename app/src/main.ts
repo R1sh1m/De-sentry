@@ -234,16 +234,20 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
       const localNodes = nodes.filter((node) => !node.supervisor && node.process === "running");
       const shareDetails = el(
         "div",
-        { class: "stack" },
-        el("p", { class: "muted", text: "The QR contains public peer details only." }),
-        el("div", { class: "qr qr--constellation" }, qrSvg(JSON.stringify(pairing), { scale: 4, title: "Pairing code" })),
-        el("dl", { class: "kv" },
-          el("dt", { text: "Node P2P ports" }),
-          el("dd", { class: "mono", text: localNodes.length > 0 ? localNodes.map((node) => `${node.node_name}: ${node.p2p_port}`).join("\n") : "no running data nodes" }),
-          el("dt", { text: "Mesh code" }),
-          el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: meshSecret }),
+        { class: "pairing-share" },
+        el("div", { class: "pairing-share__qr" },
+          el("div", { class: "qr qr--constellation" }, qrSvg(JSON.stringify(pairing), { scale: 4, title: "Pairing code" })),
         ),
-        el("p", { class: "muted", text: "Share the mesh code only with people you want to allow into this mesh." }),
+        el("div", { class: "pairing-share__meta" },
+          el("dl", { class: "kv" },
+            el("dt", { text: "Node P2P ports" }),
+            el("dd", { class: "mono", text: localNodes.length > 0 ? localNodes.map((node) => `${node.node_name}: ${node.p2p_port}`).join("\n") : "no running data nodes" }),
+            el("dt", { text: "Mesh code" }),
+            el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: meshSecret }),
+          ),
+        ),
+        el("p", { class: "muted pairing-share__note", text: "The QR contains public peer details only." }),
+        el("p", { class: "muted pairing-share__note", text: "Share the mesh code only with people you want to allow into this mesh." }),
       );
       replace(shareSection, el("h3", { class: "card__title", text: "Share this device" }), shareDetails);
     } catch (error) {

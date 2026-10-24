@@ -18,8 +18,23 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > transit-replay suite, the 18-check USB-node suite, and a 16-check 8-node
 > chaos soak. `cargo check` is clean. Linux/macOS/MSVC cross-build proof,
 > packaged installer E2E, and the invite/pairing UI remain open.
+
+> **2026-10-24 — pairing QR layout (UI only, no backend change).** The pairing
+> sheet's QR card stretched full width and left a blank right half. It now
+> renders as a two-column share block — QR left, Node P2P ports / Mesh code
+> right, bottom-aligned, centered as a unit — with the two muted footnotes
+> centred beneath. Verified: `cd app && npm run build` clean (tsc + Vite).
+> The QR encoder, pairing data contract and `check:qr` are untouched.
 > [§3](#3-verification) and [`ISSUES.md`](ISSUES.md) are the authoritative
 > detail.
+>
+> **2026-10-24 — primary button gradient coverage.** The brand gradient on
+> `.btn--primary` used a 135° diagonal direction, which on pill-shaped buttons
+> made the left and right ends appear cut off (the gradient's diagonal stops
+> didn't reach the extreme ends cleanly). Changed to a horizontal 90° gradient
+> so each end shows a solid color (blue left, violet right) with cyan in the
+> middle. Verified: `cd app && npm run build` clean, `check:css`/`check:qr`/
+> `check:a11y` all pass.
 
 ## Current next steps
 

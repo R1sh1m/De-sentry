@@ -1161,7 +1161,14 @@ svg.mesh {
   outline-offset: 2px;
 }
 .btn--primary {
-  background: var(--gradient-brand);
+  background: linear-gradient(
+    90deg,
+    var(--color-primary) 0%,
+    var(--color-primary) 8%,
+    var(--accent-cyan) 50%,
+    var(--accent-violet) 92%,
+    var(--accent-violet) 100%
+  );
   color: #ffffff;
   border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15), var(--glow-brand-strong);
@@ -3079,6 +3086,42 @@ select.ledger__filter-control option {
   border-radius: var(--radius-sm);
   background: #ffffff;
   padding: var(--space-sm);
+}
+/* Pairing share: QR on the left, metadata on the right, bottom-aligned. */
+.pairing-share {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.pairing-share__qr {
+  flex: 0 0 auto;
+}
+.pairing-share__qr .qr {
+  margin: 0;
+}
+.pairing-share__meta {
+  flex: 1 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.pairing-share__meta .kv {
+  gap: var(--space-xxs) var(--space-sm);
+}
+.pairing-share__meta .kv dt {
+  color: var(--color-ink-muted-48);
+}
+.pairing-share__meta .kv dd {
+  color: var(--color-ink);
+  word-break: break-all;
+}
+.pairing-share__note {
+  text-align: center;
+  width: 100%;
+  margin: var(--space-sm) 0 0;
 }
 /* Pairing constellation: the QR resolves like stars appearing. */
 .qr--constellation svg {
