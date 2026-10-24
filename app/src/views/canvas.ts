@@ -331,8 +331,9 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
 
   /** Move one card and re-anchor its edges, all in the live DOM. */
   const moveNodeDom = (nodeId: string, dx: number, dy: number): void => {
-    const card = viewport.querySelector(`.mesh__node[data-node-id="${nodeId}"]`);
-    if (card) {
+    try {
+      const card = viewport.querySelector(`.mesh__node[data-node-id="${nodeId}"]`);
+      if (!card) return;
       const cur = card.getAttribute("transform") || "";
       const m = /translate\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/.exec(cur);
       if (m) {
@@ -341,25 +342,36 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
           `translate(${parseFloat(m[1]) + dx} ${parseFloat(m[2]) + dy})`,
         );
       }
-    }
-    const lines = edgeLayer.querySelectorAll("line[data-edge]");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const parts = (line.getAttribute("data-edge") || "").split("|");
-      if (parts.length !== 2 || (parts[0] !== nodeId && parts[1] !== nodeId)) continue;
-      const first = parts[0] === nodeId;
-      const attr = (name: string): number => parseFloat(line.getAttribute(name) || "0") || 0;
-      if (first) {
-        line.setAttribute("x1", String(attr("x1") + dx));
-        line.setAttribute("y1", String(attr("y1") + dy));
-      } else {
-        line.setAttribute("x2", String(attr("x2") + dx));
-        line.setAttribute("y2", String(attr("y2") + dy));
+      if (!edgeLayer) return;
+      const lines = edgeLayer.querySelectorAll("line[data-edge]");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.isConnected) continue;
+        const parts = (line.getAttribute("data-edge") || "").split("|");
+        if (parts.length !== 2 || (parts[0] !== nodeId && parts[1] !== nodeId)) continue;
+        const first = parts[0] === nodeId;
+        const attr = (name: string): number => {
+          const v = parseFloat(line.getAttribute(name) || "0");
+          return Number.isFinite(v) ? v : 0;
+        };
+        if (first) {
+          line.setAttribute("x1", String(attr("x1") + dx));
+          line.setAttribute("y1", String(attr("y1") + dy));
+        } else {
+          line.setAttribute("x2", String(attr("x2") + dx));
+          line.setAttribute("y2", String(attr("y2") + dy));
+        }
       }
+      const o = nodeOffsets.get(nodeId) || { x: 0, y: 0 };
+      nodeOffsets.set(nodeId, { x: o.x + dx, y: o.y + dy });
+      try {
+        positionPopover();
+      } catch {
+        // Popover geometry failing must never break a drag.
+      }
+    } catch {
+      // DOM mutation failed mid-drag; the next render fixes positions.
     }
-    const o = nodeOffsets.get(nodeId) || { x: 0, y: 0 };
-    nodeOffsets.set(nodeId, { x: o.x + dx, y: o.y + dy });
-    positionPopover();
   };
 
   const nodeIdFromTarget = (target: EventTarget | null): string | null => {
@@ -639,48 +651,65 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
   });
 
   const endPointer = (e: PointerEvent): void => {
-    const ended = activePointers.get(e.pointerId);
-    activePointers.delete(e.pointerId);
     try {
-      if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-    if (activePointers.size === 1) {
-      // Pinch ended with one finger left: resume panning from it, unless
-      // that finger started on a node card (then it owns tap/click).
-      const remaining = [...activePointers.values()][0];
-      pinchPrevDist = 0;
-      if (remaining.onNode) {
-        isDragging = false;
-        root.style.cursor = "grab";
-      } else {
-        isDragging = true;
-        startX = remaining.x - panX;
-        startY = remaining.y - panY;
+      const ended = activePointers.get(e.pointerId);
+      activePointers.delete(e.pointerId);
+      try {
+        if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
       }
-    } else if (activePointers.size === 0) {
-      const wasTap = !draggedFar && dragNodeId === null;
+      if (activePointers.size === 1) {
+        // Pinch ended with one finger left: resume panning from it, unless
+        // that finger started on a node card (then it owns tap/click).
+        const remaining = [...activePointers.values()][0];
+        pinchPrevDist = 0;
+        if (remaining.onNode) {
+          isDragging = false;
+          root.style.cursor = "grab";
+        } else {
+          isDragging = true;
+          startX = remaining.x - panX;
+          startY = remaining.y - panY;
+        }
+      } else if (activePointers.size === 0) {
+        const wasTap = !draggedFar && dragNodeId === null;
+        isDragging = false;
+        dragNodeId = null;
+        downNodeId = null;
+        pinchPrevDist = 0;
+        root.style.cursor = "grab";
+        if (wasTap) {
+          const targetNode = onNode(e.target) ? (e.target as Element | null)?.closest?.(".mesh__node") : null;
+          if (targetNode) {
+            // Tap landed on a node: ensure it is selected
+            const nodeId = targetNode.getAttribute("data-node-id");
+            if (nodeId) {
+              store.select({ kind: "node", nodeId });
+              return;
+            }
+          } else if (ended?.onNode) {
+            // Fall back to elementFromPoint when the pointer ended on a node
+            // but the card is no longer under it.
+            const el = document.elementFromPoint(e.clientX, e.clientY);
+            const nodeEl = el?.closest?.(".mesh__node");
+            const nodeId = nodeEl?.getAttribute("data-node-id");
+            if (nodeId) {
+              store.select({ kind: "node", nodeId });
+              return;
+            }
+          } else if (store.state.selection.kind === "node") {
+            // Tap on empty water: deselect
+            store.select({ kind: "none" });
+          }
+        }
+      }
+    } catch {
+      // A pointer-end failure must never break interaction.
       isDragging = false;
       dragNodeId = null;
       downNodeId = null;
-      pinchPrevDist = 0;
       root.style.cursor = "grab";
-      if (wasTap) {
-        if (ended?.onNode || onNode(e.target)) {
-          // Tap landed on a node: ensure it is selected
-          const nodeEl = (e.target as Element | null)?.closest?.(".mesh__node")
-            || document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".mesh__node");
-          const nodeId = nodeEl?.getAttribute("data-node-id");
-          if (nodeId) {
-            store.select({ kind: "node", nodeId });
-            return;
-          }
-        } else if (store.state.selection.kind === "node") {
-          // Tap on empty water: deselect
-          store.select({ kind: "none" });
-        }
-      }
     }
   };
   root.addEventListener("pointerup", endPointer);

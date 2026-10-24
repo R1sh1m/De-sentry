@@ -1,5 +1,10 @@
 # De-Sentry: Annotated Research Bibliography
 
+> **Canonical bibliography:** [`docs/LITERATURE.md`](../../docs/LITERATURE.md) is
+> the maintained, implementation-linked reference list. This file preserves the
+> deeper per-paper annotations from the research phase, including works that
+> informed earlier iterations of the design.
+
 This document catalogs all academic papers and technical references underpinning the De-Sentry architecture. Each entry includes a brief annotation explaining its relevance to the project's design decisions.
 
 ---

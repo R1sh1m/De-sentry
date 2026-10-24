@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="assets/banner-slim.svg" width="100%" alt="De-Sentry">
+</p>
+
 # De-Sentry — Architecture
 
 **A true peer-to-peer, decentralized DBMS engine. No client-server model: every node is both a full database server and a client of every other node.**
 
-Status: MVP design + reference implementation. Course project scaffold that is built the way a startup would build v0.1 of a real product.
+Status: MVP design + reference implementation. Built the way a startup would build v0.1 of a real product.
 
 > **Related doc**: [`docs/comparison.md`](comparison.md) compares this design against a second, independently-developed De-Sentry design produced in parallel (ownership-partitioned nodes + a routing coordinator), and records which of its ideas were adopted here (a hash-chained audit ledger, a brain-file status endpoint, a Python client) versus deliberately not adopted, and why.
 
@@ -41,7 +45,7 @@ Status: MVP design + reference implementation. Course project scaffold that is b
 - It has a formally proven convergence property (state-based CRDTs form a join-semilattice; merge is commutative, associative, idempotent) — this is what "bulletproof" means for a distributed data structure, not a marketing word.
 - Consensus (Raft/BFT) is strictly a superset of complexity we can layer in later per-collection (§9.3) once the core engine is proven.
 
-**Decision: build the storage engine from scratch in C/C++.** The team explicitly wants the InnoDB/Postgres-heap engineering experience: a disk manager, a buffer pool with a real eviction policy, a write-ahead log with crash recovery, and a B+Tree index, all hand-built. This is the "novel/academic" core of the project; the P2P and CRDT layers are the "product" layer on top of it.
+**Decision: build the storage engine from scratch in C/C++.** The storage layer is the engineering core of the project: a disk manager, a buffer pool with a real eviction policy, a write-ahead log with crash recovery, and a B+Tree index, all hand-built. That is the hard, differentiating work; the P2P and CRDT layers are the product layer on top of it.
 
 ---
 

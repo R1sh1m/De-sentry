@@ -86,6 +86,21 @@ input::-ms-clear {
 }
 
 /* ---------------------------------------------------------------------------
+ * Brand accents
+ *
+ * The chrome carries the brand: a gradient wordmark, one hairline under the
+ * header, a gradient primary action and a soft halo on the brand badge. These
+ * are wash and chrome only -- semantic colour stays with the status block in
+ * tokens.css, and no accent ever encodes state.
+ * ------------------------------------------------------------------------ */
+
+/* Slow drift behind the boot mark while the sidecar starts. */
+@keyframes boot-drift {
+  0%, 100% { background-position: 45% 48%; }
+  50%      { background-position: 55% 52%; }
+}
+
+/* ---------------------------------------------------------------------------
  * Boot state
  * ------------------------------------------------------------------------ */
 .boot {
@@ -95,6 +110,14 @@ input::-ms-clear {
   gap: var(--space-md);
   height: 100%;
   text-align: center;
+  background: var(--gradient-boot-wash);
+  background-repeat: no-repeat;
+  background-size: 180% 180%;
+  background-position: 50% 50%;
+  animation: boot-drift 18s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot { animation: none; }
 }
 .boot__mark {
   position: relative;
@@ -174,6 +197,7 @@ input::-ms-clear {
  * ------------------------------------------------------------------------ */
 .header {
   grid-area: header;
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -188,6 +212,18 @@ input::-ms-clear {
   transform: translateZ(0);
   /* Tauri's decorationless window: this strip is what the user drags. */
   -webkit-app-region: drag;
+}
+/* A single gradient hairline under the chrome: brand presence without noise. */
+.header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--gradient-header-rule);
+  pointer-events: none;
+  opacity: 0.75;
 }
 .header--macos-overlay {
   /* Native traffic lights occupy the leading edge of the overlay titlebar. */
@@ -288,11 +324,17 @@ input::-ms-clear {
   padding: 1px 5px;
   border-radius: var(--radius-pill);
   line-height: 1.2;
+  box-shadow: var(--glow-badge-soft);
 }
 .header__title {
   font: var(--text-body-strong);
   letter-spacing: var(--tracking-body);
   margin: 0;
+  background: var(--gradient-wordmark);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--color-ink);
 }
 .header__sub {
   font: var(--text-caption);
@@ -1012,6 +1054,10 @@ svg.mesh {
   border-radius: var(--radius-md);
   padding: var(--space-md);
   box-shadow: var(--elev-hairline);
+  transition: box-shadow var(--motion-quick);
+}
+.card:hover {
+  box-shadow: var(--glow-brand-soft), var(--elev-hairline);
 }
 .card--elevated {
   padding: var(--space-lg);
@@ -1115,23 +1161,21 @@ svg.mesh {
   outline-offset: 2px;
 }
 .btn--primary {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-primary) 74%, #ffffff 4%),
-    color-mix(in srgb, var(--color-primary) 82%, #000000 18%)
-  );
+  background: var(--gradient-brand);
   color: #ffffff;
   border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15), var(--glow-brand-strong);
+  transition: filter var(--motion-quick), box-shadow var(--motion-quick), transform var(--motion-quick);
 }
 .btn--primary:hover {
-  filter: brightness(1.07);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  filter: brightness(1.1);
+  box-shadow: var(--glow-action-hover), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
 }
 .btn--primary:active {
-  transform: scale(0.975) translateY(0.5px);
-  filter: brightness(0.82) saturate(0.92);
-  box-shadow: 0 0 2px rgba(0, 0, 0, 0.4), inset 0 1px 3px rgba(0, 0, 0, 0.35);
+  transform: scale(0.98) translateY(0.5px);
+  filter: brightness(0.9) saturate(1.1);
+  box-shadow: var(--glow-action-active), inset 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 /* Uniform system: default (.btn) / primary / secondary / outline / ghost /
  * destructive (.btn--danger). The old text-style .btn--danger duplicate is

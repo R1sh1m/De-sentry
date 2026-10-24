@@ -635,7 +635,7 @@ These are known design limits, not automatically bugs:
 
 ## Requirements/documentation contradictions
 
-`Project_Statement/project_statement.md` items 1/3/4 contradicted the
+`docs/project_statement.md` items 1/3/4 contradicted the
 implementation (coordinator soft-SPOF, "no partition handling", "no
 discovery"). RESOLVED 2026-09-13: rewritten to match the implementation (no
 coordinator anywhere; temporary loss + anti-entropy supported; discovery +

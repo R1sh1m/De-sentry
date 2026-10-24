@@ -7,7 +7,7 @@ The De-Sentry inter-node API is a **TCP/HTTP-hybrid** protocol:
 - **Control plane**: HTTP/1.1 REST for management, brain file exchange, and ledger operations (human-readable, easy to debug).
 - **Data plane**: length-prefixed binary frames over persistent TCP for high-frequency ledger notifications and heartbeats.
 
-All inter-node communication is over **loopback** (`127.0.0.1`) for the course demo. Ports are configurable per node.
+All inter-node communication is over **loopback** (`127.0.0.1`) for the local demo. Ports are configurable per node.
 
 ---
 

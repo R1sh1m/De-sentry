@@ -279,6 +279,10 @@ components:
     padding: "10px {spacing.md}"
 ---
 
+<p align="center">
+  <img src="docs/assets/banner-slim.svg" width="100%" alt="De-Sentry">
+</p>
+
 # De-Sentry Control Room — design system
 
 The engine is a peer-to-peer database. The app is the **only** way a person

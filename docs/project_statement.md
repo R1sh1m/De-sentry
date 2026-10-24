@@ -1,46 +1,62 @@
 # De-Sentry: Project Statement
 
-## Course Project Brief
+## Project Brief
 
 ### Problem Statement
 
-When multiple autonomous AI agents simultaneously read and write to a shared central database, they can cause **network congestion** and **data-locking issues**. We propose a decentralized database architecture that eliminates this central point of failure by giving each agent its own independent, sandboxed database node.
-
-These nodes form a small, cooperating network (a **"consortium"**) that maintains data integrity without funneling every operation through one instance.
+Autonomous AI agents that share one central database contend for the same
+connections, locks, and I/O. De-Sentry removes the central instance: each agent
+gets its own independent, sandboxed database node, and those nodes form a
+cooperating peer-to-peer mesh that preserves integrity without funneling every
+operation through one machine.
 
 ---
 
 ### Abstract
 
-When multiple autonomous AI agents simultaneously read and write to a shared central database, they can cause network congestion and data locking issues. We plan to use a decentralized database architecture that eliminates this central point of failure. Instead of forcing agents to hammer a single database instance, our architecture would provide each agent with its own independent, sandboxed database node. Together, this network of nodes shall form a truly decentralized consortium that grows as newer nodes are created.
+When multiple autonomous AI agents read and write a shared central database at
+the same time, they create network congestion and lock contention. De-Sentry
+removes the central instance entirely: every agent gets its own independent,
+sandboxed database node, and those nodes form a cooperating peer-to-peer mesh
+that preserves integrity without funneling operations through one place.
 
-To maintain data integrity without slowing down the network, the system shall combines three core innovations:
+The design combines three ideas:
 
-1. Data mutations are tracked using cryptographically secure, Git-style "diff" change ledgers, providing a complete audit trail akin to a blockchain.
-2. Since each node would contain entirely unique files, cross-node conflicts are non-existent. Multi-node coordination can be handled via an isolated, temporary memory-locking mechanism (Mutex).
-3. Rather than broadcasting massive data payloads across the entire network, nodes maintain a localized "brain file" that can be snapshot of the node and sync only their latest changes with neighbors. These files can later be used by other agents to access things as needed without having to execute a lot of search queries.
-
-We shall also cache these brain files in each node, so that each node has a context of not just itself but also about other nodes as well.
+1. Every mutation is recorded in a cryptographically chained, Git-style change
+   ledger, producing a tamper-evident audit trail.
+2. Conflict handling is local and deterministic: field-level CRDTs over hybrid
+   logical clocks converge without locks, leaders, or a coordinator.
+3. Nodes maintain a compact "brain" snapshot of their state, exchange it with
+   peers, and cache what they receive, so agents can inspect the mesh without
+   querying every node.
 
 ---
 
 ### System Design
 
-To maintain integrity without sacrificing performance, the system combines three core ideas:
+The system rests on three mechanisms:
 
-1. **Change ledger** — every mutation to a node's data is recorded as a hash-chained, append-only "diff" entry, giving a tamper-evident audit trail of how the data reached its current state (similar in spirit to a Git commit history).
+1. **Change ledger** — every mutation is recorded as a hash-chained,
+   append-only entry with an Ed25519 signature, giving a tamper-evident audit
+   trail of how the data reached its current state (similar in spirit to a Git
+   commit history).
+2. **Conflict handling** — every replicated document is a state-based CRDT:
+   scalars are last-writer-wins registers ordered by hybrid logical clocks,
+   arrays are OR-Sets, and objects merge recursively. Concurrent writes
+   converge without locks, leaders, or a coordinator.
+3. **Brain files** — each node maintains a compact, periodically refreshed
+   summary of its state (ledger tip, per-collection checksums, peer liveness).
+   Nodes exchange and cache these summaries so an agent can inspect the mesh
+   without running expensive queries against every other node.
 
-2. **Conflict handling** — since each node owns its own primary data, conflicts are minimized by design; where coordination is still needed (e.g., updating shared "brain file" summaries), a lightweight, simplified coordination rule is used instead of full distributed consensus.
-
-3. **Brain files** — each node maintains a compact, periodically-refreshed summary snapshot of its own state ("brain file"). Nodes exchange and cache each other's brain files so that any agent can get a quick picture of the whole network without running expensive queries against every other node directly.
-
-For this course project, the system is scoped to **3 nodes** (one per team member), connected in a **full mesh**, running locally for demonstration purposes.
+A mesh is not fixed at three nodes: the data plane is flat, LAN discovery is
+automatic, and static bootstrap peers let nodes join across L3 boundaries.
 
 ---
 
 ### Assumptions and Limitations
 
-Being explicit about what this project does not solve, and why those choices are reasonable for the scope of a course project:
+Being explicit about what this project does not solve, and why those choices are reasonable for the current scope:
 
 1. **No mutual exclusion, and no coordinator.** Ordering comes from hybrid logical clocks plus CRDT merges, so concurrent writes converge without any lock, leader, or coordinator node -- including for brain-file updates, which converge through gossip like all other state. There is no "soft dependency on one node" anywhere on the data path (see docs/comparison.md §2). A production version needing linearizable transactions would add opt-in per-collection consensus; that is explicitly out of scope, not half-implemented.
 
@@ -48,6 +64,6 @@ Being explicit about what this project does not solve, and why those choices are
 
 3. **Temporary loss is handled; partitions are not guaranteed.** A dropped connection or offline node IS implemented: writes for an unreachable owner are held in the transit store, gossip anti-entropy converges state when it returns, and it claims what was held for it on startup. What is NOT guaranteed: bounded convergence time, survival of arbitrary/extended partitions, or Byzantine behavior -- those need explicit work (see limitation 5) and are not claimed.
 
-4. **Validated past 3 nodes, but no unbounded-scalability claim.** The mesh is validated at 3 nodes for demos and up to 50 nodes in soak tests, with UDP-broadcast discovery plus static bootstrap peers for nodes joining later (including across L3 boundaries where broadcast does not reach). We do not claim linear scaling to very large meshes, no DHT-based routing past the LAN, and brain-file caching cost still grows with node count.
+4. **Validated past 3 nodes, but no unbounded-scalability claim.** The mesh is validated at 3 nodes for local demos and up to 50 nodes in soak tests, with UDP-broadcast discovery plus static bootstrap peers for nodes joining later (including across L3 boundaries where broadcast does not reach). We do not claim linear scaling to very large meshes, and there is no DHT-based routing past the LAN; brain-file caching cost also grows with node count.
 
 5. **No adversarial trust model.** Nodes are assumed to be honest/trusted (a "consortium" of known participants), not defended against malicious or Byzantine nodes. Hashing detects accidental corruption/tampering after the fact, not malicious participation in real time.

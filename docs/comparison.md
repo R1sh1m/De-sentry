@@ -1,10 +1,14 @@
+<p align="center">
+  <img src="assets/banner-slim.svg" width="100%" alt="De-Sentry">
+</p>
+
 # Design Comparison: This Implementation vs. the Consortium/Routing Design
 
 This document compares the P2P database engine actually built in this repo
 against a second, independently-developed De-Sentry design (docs:
 `architecture.md`/`README.md`/routing/ledger specs, prototype scripts under
-`scripts/dsync.*`) produced in parallel by a teammate for the same course
-project. Both start from the same problem statement (`Project_Statement/project_statement.md`:
+`scripts/dsync.*`) produced in parallel by a teammate for the same original
+problem statement. Both start from the same problem statement (`docs/project_statement.md`:
 give each AI agent its own sandboxed database node so agents stop hammering
 one shared instance) but land on different architectures. This doc records
 what each design actually guarantees, which ideas from the second design
@@ -58,12 +62,12 @@ already solves, not roadmap items:
 | "No distributed mutual exclusion... last-write-wins by timestamp is used instead. Clock drift is acknowledged." (their `architecture.md` Sec 9.1) | Every write is CRDT-merged with Hybrid Logical Clocks, not physical-clock LWW. HLC gives causal ordering across nodes even under clock skew (`crdt/hlc.h`; `NodeEngine::MergeRemote` calls `clock_->Observe()` on every remote timestamp specifically to preserve this). Field-level delete-vs-concurrent-update races and OR-Set concurrent-add-vs-remove races are both formally tested (`tests/crdt_test.cpp`), not just asserted in prose. |
 | "This reintroduces a soft dependency on one node [the ROOT/coordinator]... ROOT failure [needs] a Raft-based leader election." (their `original_design/routing_and_specialization.md` Sec 3, "Acknowledged limitation") | There is no coordinator node in this implementation, for any write path — shared-state or otherwise. Every node is symmetric. Nothing to elect, nothing that becomes unavailable if one node goes down. |
 | "Who writes Routing Ledger during coordinator downtime? Ledger writes pause (acknowledged limitation)." (their `original_design/routing_and_specialization.md` Sec 13, Open Questions) | Not applicable — there's no routing decision requiring a single writer to serialize. |
-| "No network partition or node-failure handling... behavior during a dropped connection or offline node is not implemented." (`Project_Statement/project_statement.md` Sec on Assumptions/Limitations) | Handled by design, not left open: eager broadcast tolerates individual send failures per-peer (one peer being down doesn't block delivery to the others), and gossip anti-entropy is the correctness backstop that catches up any peer that was offline when a write happened, once it reconnects — proven in `tests/network_test.cpp`'s three-node convergence test, not just asserted. |
+| "No network partition or node-failure handling... behavior during a dropped connection or offline node is not implemented." (`docs/project_statement.md` Sec on Assumptions/Limitations) | Handled by design, not left open: eager broadcast tolerates individual send failures per-peer (one peer being down doesn't block delivery to the others), and gossip anti-entropy is the correctness backstop that catches up any peer that was offline when a write happened, once it reconnects — proven in `tests/network_test.cpp`'s three-node convergence test, not just asserted. |
 
 The reason this isn't "our design is just better" one-upmanship: the
 consortium design's ownership model exists specifically to make the CRDT
 problem *disappear* ("since each node would contain entirely unique files,
-cross-node conflicts are non-existent" — `Project_Statement/project_statement.md`). That's a
+cross-node conflicts are non-existent" — `docs/project_statement.md`). That's a
 reasonable simplification if building real conflict resolution is out of
 budget. This project already had a working, tested CRDT layer before this
 comparison was done, so the trade-off that motivated ownership partitioning
@@ -147,7 +151,7 @@ top of that, without duplicating a second sync mechanism alongside gossip.
 
 ### 3.3 Python client for the AI-agent audience
 
-Both `Project_Statement/project_statement.md` and the consortium `README.md` frame the
+Both `docs/project_statement.md` and the consortium `README.md` frame the
 primary consumer as AI agent code, and the consortium design's answer is a
 native `pybind11` binding (`original_design/node_design.md` Sec 7, `original_design/api_spec.md`
 Sec 5's Electron/N-API bridge) requiring a compiled extension per platform.

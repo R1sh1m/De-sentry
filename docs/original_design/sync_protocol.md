@@ -104,7 +104,7 @@ For the coordinator-managed shared-state namespace, conflict resolution uses **l
 winner = argmax{ timestamp_us } over conflicting entries
 ```
 
-> ⚠️ **Known limitation**: physical clocks drift. In production, Lamport timestamps or vector clocks would be used instead. A write with a slightly earlier physical clock but causally later in the system could incorrectly lose. Acknowledged as out-of-scope for course demonstration.
+> ⚠️ **Known limitation**: physical clocks drift. In production, Lamport timestamps or vector clocks would be used instead. A write with a slightly earlier physical clock but causally later in the system could incorrectly lose. Acknowledged as out-of-scope for this implementation.
 
 ---
 
@@ -172,6 +172,6 @@ winner = argmax{ timestamp_us } over conflicting entries
 
 ## 7. Security Notes
 
-- All messages are transmitted in plaintext over loopback (`127.0.0.1`) for the course demonstration.
+- All messages are transmitted in plaintext over loopback (`127.0.0.1`) for the local demonstration.
 - A production system would require **TLS mutual authentication** between nodes and **signed brain files** (e.g., Ed25519 signatures) to prevent a rogue node from injecting a false brain file for a peer.
 - Brain file hashes are **not** currently signed — integrity against accidental corruption is provided by SHA-256 in the ledger; brain file content integrity relies on TCP delivery correctness.

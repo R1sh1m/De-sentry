@@ -1,6 +1,6 @@
 import type { DataDirCandidate } from "../api.js";
 import { sidecar } from "../bridge.js";
-import { refreshNodeList, refreshTopology, store, type NodeView } from "../state.js";
+import { refreshNodeList, refreshTopology, store, markDeleted, type NodeView } from "../state.js";
 import { bytes, count, displayNodeName, engineLabel } from "./format.js";
 import { openDeleteNodeModal } from "../views/deleteNodeModal.js";
 
@@ -38,6 +38,7 @@ export function promptDeleteSupervisedNode(node: NodeView): void {
     onConfirm: async (deleteData: boolean) => {
       try {
         await sidecar.deleteNode(node.process.node_id, deleteData);
+        markDeleted(node.process.node_id);
         store.toast(
           "success",
           deleteData ? "Node deleted" : "Node forgotten",

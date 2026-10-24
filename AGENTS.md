@@ -27,9 +27,9 @@ acceptance test for this and it is not decoration.
 Consequences you will run into:
 
 - No test framework. Tests are plain executables that `assert()`.
-- No JS framework beyond the Tauri webview. `app/package.json` has exactly one
-  runtime dependency (`@tauri-apps/api`); everything else — QR encoding,
-  layout, rendering — is written out in `app/src/`.
+- No JS framework beyond the Tauri webview. `app/package.json` has exactly two
+  runtime dependencies (`@tauri-apps/api` and the updater plugin); everything
+  else — QR encoding, layout, rendering — is written out in `app/src/`.
 - Vendored storage backends are **opt-in at configure time and never
   downloaded**. If you turn one on without placing its sources under
   `third_party/`, CMake fails loudly instead of fetching.

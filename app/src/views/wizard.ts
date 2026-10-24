@@ -1477,10 +1477,12 @@ export function createWizard(): WizardHandles {
       supervisor: false,
       discovery_enabled: !draft.standalone,
       removable: draft.removable,
-      bootstrap_peers: draft.bootstrapPeerText
-        .split(/[\n,;]+/)
-        .map((peer) => peer.trim())
-        .filter(Boolean),
+      bootstrap_peers: draft.standalone
+        ? []
+        : draft.bootstrapPeerText
+            .split(/[\n,;]+/)
+            .map((peer) => peer.trim())
+            .filter(Boolean),
       mesh_secret: draft.meshSecret.trim() || undefined,
       description: draft.description,
       preallocate: draft.preallocate,

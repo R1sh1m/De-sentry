@@ -46,7 +46,7 @@ Level 0  ──  ROOT (Coordinator)
 
 ### Level 0 — ROOT (Coordinator)
 
-- **Exactly one node** holds the ROOT role at any time (statically assigned in config for course scope).
+- **Exactly one node** holds the ROOT role at any time (statically assigned in config for the current scope).
 - Maintains and writes to the **Routing Ledger**.
 - Holds its own type specialization in addition to coordinator duties.
 - All nodes hold a read-only replica of the Routing Ledger (received via brain file sync).

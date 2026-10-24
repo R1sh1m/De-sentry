@@ -142,6 +142,47 @@
   --backdrop-shock: rgba(41, 151, 255, 0.35);
   --backdrop-storm: rgba(255, 69, 58, 0.10);
 
+  /* -- accent ramp -------------------------------------------------------- *
+   * The brand runs blue -> cyan -> violet. These are accents, not semantic
+   * colours: status meaning still belongs exclusively to the status block
+   * above. Every gradient below is a wash or a chrome flourish, never text
+   * on a surface that also carries status. */
+  --accent-cyan: #00f0ff;
+  --accent-violet: #bd00ff;
+
+  --gradient-brand: linear-gradient(
+    135deg,
+    var(--color-primary) 0%,
+    var(--accent-cyan) 52%,
+    var(--accent-violet) 100%
+  );
+  --gradient-wordmark: linear-gradient(120deg, #f5f5f7 0%, #9fd0ff 58%, #dca6ff 100%);
+
+  /* Chrome hairline under the header: brand presence without a second rule. */
+  --gradient-header-rule: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(41, 151, 255, 0.55) 22%,
+    rgba(0, 240, 255, 0.45) 55%,
+    rgba(189, 0, 255, 0.35) 82%,
+    transparent 100%
+  );
+
+  /* Ambient wash behind the boot mark while the sidecar starts. */
+  --gradient-boot-wash: radial-gradient(
+    50% 50% at 50% 45%,
+    rgba(41, 151, 255, 0.22) 0%,
+    rgba(189, 0, 255, 0.10) 45%,
+    rgba(8, 8, 10, 0) 100%
+  );
+
+  /* Glow tokens. box-shadow takes the whole list; filter takes the function. */
+  --glow-brand-strong: 0 0 20px rgba(41, 151, 255, 0.50), 0 0 40px rgba(41, 151, 255, 0.25);
+  --glow-brand-soft: 0 4px 20px rgba(41, 151, 255, 0.15);
+  --glow-action-hover: 0 4px 16px rgba(0, 240, 255, 0.35), 0 0 24px rgba(41, 151, 255, 0.30);
+  --glow-action-active: 0 0 8px rgba(0, 240, 255, 0.45);
+  --glow-badge-soft: 0 0 10px rgba(41, 151, 255, 0.25);
+
   /* -- json syntax -------------------------------------------------------- */
   --syntax-key: #4aa8ff;
   --syntax-string: #30d158;

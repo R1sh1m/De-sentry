@@ -5,6 +5,10 @@ supersedes: nothing
 extends: docs/architecture.md
 ---
 
+<p align="center">
+  <img src="assets/banner-slim.svg" width="100%" alt="De-Sentry">
+</p>
+
 # De-Sentry v2 — Architecture
 
 This document covers what v2 adds. `docs/architecture.md` still describes the

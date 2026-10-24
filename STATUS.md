@@ -1,7 +1,7 @@
 ---
 title: De-Sentry — build status
 version: 2.0
-updated: 2026-10-18
+updated: 2026-10-22
 ---
 
 # De-Sentry v2: build status
@@ -12,24 +12,24 @@ the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
-> **Read this first — what has actually been run.** The current Windows
-> snapshot builds and passes all 12 C++ tests, the frontend build and invariant
-> checks, and all 18 airplane-mode checks. The same snapshot starts the
-> multi-node transit test and passes startup, initial replication, and the
-> outage write, but the test currently times out waiting for a held replica;
-> it is therefore not reported as green. Linux/macOS/MSVC cross-build proof,
-> packaged installer E2E, and the invite/pairing UI remain open. [§3](#3-verification)
-> and [`ISSUES.md`](ISSUES.md) are the authoritative detail.
+> **Read this first — what has actually been run.** As of 2026-10-22 the
+> current Windows snapshot builds and passes all 13 C++ tests, the frontend
+> build and invariant checks, all 18 airplane-mode checks, the 22-check
+> transit-replay suite, the 18-check USB-node suite, and a 16-check 8-node
+> chaos soak. `cargo check` is clean. Linux/macOS/MSVC cross-build proof,
+> packaged installer E2E, and the invite/pairing UI remain open.
+> [§3](#3-verification) and [`ISSUES.md`](ISSUES.md) are the authoritative
+> detail.
 
 ## Current next steps
 
 The older remediation queue in this file is historical. The active work list is
 maintained in `ISSUES.md` and currently begins with:
 
-1. Diagnose and stabilize the held-replica wait in
-   `tests/integration/transit_replay_test.py`. On 2026-10-18 the test passed
-   cluster startup, initial replication, and the outage write, then timed out
-   waiting for a holder; this must not be reported as a green replay run.
+1. Carry the transit-replay proof to Linux and macOS. The held-replica timeout
+   reported on 2026-10-18 no longer reproduces on Windows: the suite passed all
+   22 checks on 2026-10-22. The remaining gap is cross-platform, not
+   correctness on this box.
 2. Re-run release validation from the current tree on Linux, macOS, and MSVC,
    including platform-specific filesystem sync and installer paths.
 3. Exercise the packaged Windows installer end to end, including node
@@ -38,9 +38,30 @@ maintained in `ISSUES.md` and currently begins with:
 5. Decide and execute the retention scheduler and secondary-index work, or
    remove their advertised-but-unimplemented surfaces.
 
-The current Windows snapshot did pass all 12 C++ tests, the frontend build,
-QR/CSS/accessibility checks, and all 18 airplane-mode checks. Those results do
-not close the replay timeout or cross-platform/release gaps above.
+The 2026-10-22 pass below records the current Windows results. Those results do
+not close the cross-platform or release gaps above.
+
+### Executed 2026-10-22: full Windows re-verification
+
+Windows box 1 (MSYS2 UCRT64 GCC 16.2, CMake + MinGW Makefiles, OpenSSL 3.6,
+Rust 1.98.1 MSVC, Python 3.13).
+
+| Check | Result |
+| --- | --- |
+| `cmake --build build -j` | clean: `desentryd`, `desentry_cli` and 13 test binaries |
+| `ctest --test-dir build --output-on-failure` | **13 / 13 passed** (incl. `at_rest_test`, `retention_test`, `transit_test`) |
+| `airplane_mode_test.py` | **ALL 18 CHECKS PASSED** |
+| `transit_replay_test.py` | **ALL 22 CHECKS PASSED** (hold, intent, claim, reconverge, verify, quorum refusal, 403, doc survives) |
+| `usb_node_test.py` | **ALL 18 CHECKS PASSED** (identity travels, catch-up, verify) |
+| `soak_test.py --nodes 8 --writes 60 --chaos 2` | **ALL 16 CHECKS PASSED** (converged in 0.4 s, one checksum everywhere, all chains verify) |
+| `cargo check` in `app/src-tauri` | **clean** (52 s, default features) |
+| `npm run build` (typecheck + Vite) | clean |
+| `npm run check:css`, `check:qr`, `check:a11y` | all passed |
+
+**Not run in this pass:** headed `tauri:dev` click-through, `tauri:build`,
+installed-MSI E2E, live USB hardware attach, 50-node soak, Docker build,
+Linux/macOS/MSVC engine builds, vendored-backend builds. Nothing above should
+be read as proof of those.
 
 ---
 
@@ -300,7 +321,7 @@ Not run in this pass: `tauri:build`/installer launch, wizard E2E, ONNX
 sizing drill, Python suites, Docker, CI workflows, Linux/macOS/MSVC,
 installer upgrade path, vendored-backend builds.
 
-Docs reconciliation (same pass, no build needed): `Project_Statement/`
+Docs reconciliation (same pass, no build needed): `docs/project_statement.md`
 items 1/3/4 rewritten to match the implementation (no coordinator anywhere;
 temporary loss + anti-entropy supported; discovery + 50-node soak real) with
 the honest non-guarantees kept (bounded convergence time, arbitrary

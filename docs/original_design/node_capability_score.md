@@ -169,7 +169,7 @@ peer_score(P) =
 network_score = mean(peer_score(P) for P in reachable_peers)
 ```
 
-> `10 / latency_ms` normalizes so that 10 ms → 1.0, 20 ms → 0.5. On loopback (course demo), latency will be ~0.1 ms → near-perfect score; this is expected.
+> `10 / latency_ms` normalizes so that 10 ms → 1.0, 20 ms → 0.5. On loopback (local demo), latency will be ~0.1 ms → near-perfect score; this is expected.
 
 ---
 

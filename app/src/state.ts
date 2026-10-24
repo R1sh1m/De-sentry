@@ -281,6 +281,23 @@ export const store = new Store();
 const dismissedPaths = new Set<string>();
 const connectingPaths = new Set<string>();
 
+/** Node IDs the user explicitly deleted. Suppressed from re-adds so a racing
+ * sidecar `node-state` event cannot resurrect a node the user just removed.
+ * Entries expire after 60 seconds so a legitimately returning node can come back. */
+const deletedNodeIds = new Set<string>();
+const DELETED_TTL_MS = 60_000;
+
+function markDeleted(nodeId: string): void {
+  deletedNodeIds.add(nodeId);
+  window.setTimeout(() => deletedNodeIds.delete(nodeId), DELETED_TTL_MS);
+}
+
+export { markDeleted };
+
+function isDeleted(nodeId: string): boolean {
+  return deletedNodeIds.has(nodeId);
+}
+
 // -- convergence -------------------------------------------------------------
 
 /**
@@ -294,6 +311,8 @@ export function convergenceOf(node: NodeView): Convergence {
   if (node.process.supervisor) return "supervisor";
   if (!node.reachable || node.process.process !== "running") return "offline";
 
+  // Brain not yet fetched: node is initializing, don't grade it as lagging yet.
+  // Wait until we have actual collection data to compare.
   if (node.brain === null) return "lagging";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
   for (const peer of store.dataNodes()) {
@@ -311,6 +330,8 @@ export function convergenceOf(node: NodeView): Convergence {
     }
     if (!comparedCollection && nodeCollections.size > 0 && peerCollections.size > 0) return "lagging";
   }
+  // If we have no collections to compare (empty node or no peers with collections),
+  // consider it converged as long as it's reachable and running.
   return "converged";
 }
 
@@ -408,6 +429,7 @@ export async function refreshNodeList(): Promise<void> {
   const seen = new Set<string>();
 
   for (const process of processes) {
+    if (isDeleted(process.node_id)) continue;
     seen.add(process.node_id);
     const existing = store.state.nodes.get(process.node_id);
     if (existing === undefined) {
@@ -686,6 +708,7 @@ export async function refreshDiscovered(): Promise<void> {
 function handleSidecarEvent(event: SidecarEvent): void {
   switch (event.kind) {
     case "node-state": {
+      if (isDeleted(event.node.node_id)) break;
       const existing = store.state.nodes.get(event.node.node_id);
       if (existing === undefined) store.state.nodes.set(event.node.node_id, blankView(event.node));
       else existing.process = event.node;
