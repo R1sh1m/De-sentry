@@ -117,6 +117,25 @@ cmake --build . -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 
 ctest --output-on-failure
 ```
 
+### Desktop app fallback build
+
+The desktop app's optional ONNX sizing model is enabled by default. Environments
+that cannot link the native ONNX runtime can still compile and test the
+deterministic keyword fallback:
+
+```bash
+cd app/src-tauri
+mkdir -p binaries
+touch binaries/desentryd-$(rustc -vV | sed -n 's/^host: //p')
+cargo check --no-default-features
+cargo test --no-default-features
+```
+
+Password verifier salts are generated directly from the operating system
+entropy source through the existing `getrandom` dependency, so the fallback
+build does not depend on an optional `rand_core` feature being enabled by a
+transitive dependency.
+
 ### Optional Storage Backends
 
 De-Sentry includes 5 native zero-dependency engines: KV, columnar, time-series, vector HNSW, and graph. Additional storage engines are opt-in, must be placed in `third_party/`, and are **never downloaded automatically**:

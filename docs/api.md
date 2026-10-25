@@ -34,6 +34,7 @@ All data plane endpoints are peer-to-peer. Writes are processed locally, broadca
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/_status` | Node identity, public key, uptime, peer count, at-rest encryption posture |
+| `GET` | `/_ping` | Storage-independent process liveness probe; returns `{ "ok": true }` |
 | `GET` | `/_peers` | List all discovered and connected P2P peers |
 | `GET` | `/_brain` | Compact health snapshot: signed ledger tip, collection checksums, peers |
 | `GET` | `/_placement/:collection/:key` | Consistent-hash ring replica subset and displaced owner status |
@@ -49,6 +50,21 @@ All data plane endpoints are peer-to-peer. Writes are processed locally, broadca
 | `POST` | `/_ledger/verify` | Execute full cryptographic verification of local ledger chain |
 | `POST` | `/_verify` | Compare and verify remote peer ledger tip against local tip |
 | `POST` | `/_checkpoint` | Quorum-gated garbage collection of ledger entries prior to checkpoint |
+
+### Liveness and detail endpoints
+
+The desktop app uses `GET /_ping` as the authoritative process liveness check.
+It does not read storage, catalogs, quotas, or checksum state, so a running
+node remains reachable while a storage-heavy endpoint is busy or temporarily
+blocked on a lock. The app treats `/_status`, `/_brain`, and `/_quota` as
+best-effort detail snapshots; failure of one of those endpoints does not by
+itself mark the node offline.
+
+`GET /_ping` returns HTTP `200` with a minimal JSON body:
+
+```json
+{ "ok": true }
+```
 
 ### Transit Store (Offline Handoff)
 

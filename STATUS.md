@@ -42,6 +42,15 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > verification is recorded below; `npm run build` passed and the unsigned DMG
 > has been refreshed and verified.
 
+> **2026-10-25 — CI Rust fallback fix.** The Linux Rust job failed because
+> `argon2::password_hash::rand_core::OsRng` is feature-gated in the resolved
+> dependency graph. Password salt generation now uses the already-declared
+> `getrandom` dependency and encodes the resulting 16-byte OS-random salt with
+> `SaltString`; no transitive feature override is required. Local
+> `cargo check --no-default-features` and `cargo test --no-default-features`
+> passed, including **49 tests**. This fix was pushed as `9e0ce25`; the
+> resulting GitHub Actions run is the authoritative CI result.
+
 > **2026-10-24 — pairing QR layout (UI only, no backend change).** The pairing
 > sheet's QR card stretched full width and left a blank right half. It now
 > renders as a two-column share block — QR left, Node P2P ports / Mesh code
@@ -268,6 +277,22 @@ the app bundle, then exited nonzero because the configured updater public key
 has no signing private key in this environment. The app was not signed with a
 Developer ID. A live multi-node click-through and three-PC LAN run remain
 unverified.
+
+### Executed 2026-10-25: solid blue actions and local ledger labels
+
+Primary buttons now use the solid blue interaction color throughout the app.
+Node cards and the console identify the displayed ledger height as local and
+explain that different nodes can have different heights while their replicated
+collections agree. The displayed height is each node's own WAL position;
+remote CRDT merges do not append the peer's WAL entries locally, and the
+**In sync** badge compares collection checksums rather than ledger heights.
+
+Verified: `cd app && npm run build` passed (TypeScript and Vite). Built the
+Apple Silicon `.app` and manually packaged the unsigned DMG with an
+Applications shortcut; `hdiutil verify` reports a valid image. Tauri exited
+after producing the app bundle because the configured updater public key has
+no signing private key in this environment. No Developer ID signing or live
+UI click-through was performed.
 
 ### Executed 2026-10-25: unsigned-for-distribution Apple Silicon app and DMG
 
