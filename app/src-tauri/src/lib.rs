@@ -236,6 +236,7 @@ fn start_supervisor(state: &AppState) -> Result<(), String> {
             discovery_port: allocation.discovery_port,
             supervisor: true,
             discovery_enabled: false,
+            mesh_isolated: false,
             removable: false,
             encrypted: false,
             unlock_secret: None,

@@ -48,8 +48,8 @@ import {
 
 // -- view models -------------------------------------------------------------
 
-/** How a node's stored collection contents compare with reachable mesh peers. */
-export type Convergence = "converged" | "lagging" | "offline" | "supervisor";
+/** How a node's stored collection contents compare with its mesh peers. */
+export type Convergence = "converged" | "lagging" | "offline" | "supervisor" | "isolated";
 
 export interface NodeView {
   /** What the sidecar knows: process state, ports, paths. Always present. */
@@ -302,21 +302,29 @@ function isDeleted(nodeId: string): boolean {
 
 /**
  * Classifies a node by comparing its collection checksums with other reachable
- * nodes. Each node's WAL is a locally written audit chain, so equal ledger
- * heights with different tip hashes do not, by themselves, mean the replicated
- * data has diverged. A checksum mismatch means the node is still catching up;
+ * mesh nodes in the app's shared membership domain. Local-only nodes are
+ * intentionally independent databases and must not make mesh nodes look behind
+ * merely because their contents differ.
+ * Each node's WAL is a locally written audit chain, so equal ledger heights
+ * with different tip hashes do not, by themselves, mean the replicated data
+ * has diverged. A checksum mismatch means the node is still catching up;
  * matching checksums mean the live collection contents agree.
  */
 export function convergenceOf(node: NodeView): Convergence {
   if (node.process.supervisor) return "supervisor";
   if (!node.reachable || node.process.process !== "running") return "offline";
 
+  // Local-only nodes form their own data domain. They neither join nor compare
+  // against mesh members, even when the same collection names exist there.
+  if (node.process.mesh_isolated) return "isolated";
+
   // Brain not yet fetched: node is initializing, don't grade it as lagging yet.
   // Wait until we have actual collection data to compare.
   if (node.brain === null) return "lagging";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
   for (const peer of store.dataNodes()) {
-    if (peer.process.node_id === node.process.node_id || !peer.reachable || peer.brain === null) continue;
+    if (peer.process.node_id === node.process.node_id || peer.process.mesh_isolated ||
+        !peer.reachable || peer.brain === null) continue;
     const peerCollections = new Map(peer.brain.collections.map((collection) => [collection.name, collection.checksum]));
     let comparedCollection = false;
     for (const [name, checksum] of nodeCollections) {
@@ -543,7 +551,10 @@ async function runSubscription(subscription: Subscription): Promise<void> {
         }
         const timer = window.setTimeout(async () => {
           refreshDebounces.delete(subscription.nodeId);
-          await refreshNode(subscription.nodeId, { quota: false });
+          // The overview uses quota.used_bytes for its stored-size label.
+          // Refresh it alongside the brain after writes/replication, otherwise
+          // newly-created replicas can remain stuck at the initial 0 B value.
+          await refreshNode(subscription.nodeId);
           if (batch.changes.some((c) => c.operation === "CHECKPOINT")) await refreshTopology();
         }, REFRESH_DEBOUNCE_MS);
         refreshDebounces.set(subscription.nodeId, timer);

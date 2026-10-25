@@ -28,6 +28,8 @@ export interface SupervisedNode {
   discovery_port: number;
   supervisor: boolean;
   discovery_enabled: boolean;
+  /** True only for a local-only node with no configured bootstrap peers. */
+  mesh_isolated: boolean;
   /** Process state as the supervisor sees it, independent of the node's own API. */
   process: "starting" | "running" | "restarting" | "stopped" | "failed";
   pid: number | null;

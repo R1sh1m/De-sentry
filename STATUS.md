@@ -30,6 +30,18 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
 > Verification details and limits are in [§3](#3-verification).
 
+> **2026-10-25 — isolated-node status and stored-size refresh.** The overview
+> had compared every local node regardless of mesh membership, so an isolated
+> node with different data made the independent LAN nodes appear to be catching
+> up. It also skipped quota refreshes after replicated writes, leaving the
+> overview at `0 B` after storage had grown. The live inspector confirmed the
+> affected LAN node actually held 3,426,188 bytes while its card still showed
+> zero; its API also reported a healthy, probed LAN peer. The overview now
+> compares mesh members only (local-only nodes are labeled `Local only`) and
+> refreshes quota after change batches. Build
+> verification is recorded below; `npm run build` passed and the unsigned DMG
+> has been refreshed and verified.
+
 > **2026-10-24 — pairing QR layout (UI only, no backend change).** The pairing
 > sheet's QR card stretched full width and left a blank right half. It now
 > renders as a two-column share block — QR left, Node P2P ports / Mesh code
@@ -195,14 +207,16 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 | `cmake --build build -j 4` | Clean build of engine, CLI, and all 13 C++ test binaries. |
 | `ctest --test-dir build --output-on-failure` | **13 / 13 passed** on macOS arm64. |
 | `cd app && npm run build`, `npm run check:css`, `npm run check:qr` | All passed (TypeScript/Vite build and both invariant checks). |
+| Follow-up overview regression fix | `npm run build`, `npm run check:css`, and `npm run check:qr` passed; Rust `cargo test` passed **47 tests** (1 ignored). Rebuilt the `.app`; Tauri then exited after bundling because the updater private key is not configured. Repackaged the unsigned DMG and `hdiutil verify` reports **VALID**. |
 | `cargo check` in `app/src-tauri` | Clean. |
 | Isolated LAN workflow through real `desentryd` processes | Host plus two bootstrap joiners replicated a 16,400-byte synthetic PDF in seven chunks; both peers reconstructed byte-identical content. A standalone node accepted no P2P connection and its document stayed absent from the mesh. |
 | Updated Tauri app bundle | `.app` bundled with the current engine sidecar, ONNX model, and ONNX runtime. Tauri exited nonzero after creating the app because it also tried to sign the updater artifact and no `TAURI_SIGNING_PRIVATE_KEY` is configured. |
-| Refreshed unsigned DMG | Manually packaged with `hdiutil makehybrid` and compressed as UDZO; `hdiutil verify` reports a valid image. Artifact: `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg` (28 MiB). Developer ID signing and notarization were not performed. |
+| Refreshed unsigned DMG | Manually packaged a staging folder containing `De-Sentry.app` plus an `Applications` shortcut, then compressed as UDZO. Read-only mount confirmed both at the image root; `hdiutil verify` reports a valid image. Artifact: `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg` (28 MiB). Developer ID signing and notarization were not performed. |
 
 **Not run:** connecting three physical PCs, launching the refreshed DMG, and
-clicking through the native file-save dialog. The live desktop app was only
-inspected; no existing nodes or files were changed.
+clicking through the native file-save dialog. The current live app was inspected
+through read-only diagnostics; no existing nodes or files were changed. The
+follow-up fixes are in the refreshed DMG, which has not been launched.
 
 ### Executed 2026-10-25: unsigned-for-distribution Apple Silicon app and DMG
 

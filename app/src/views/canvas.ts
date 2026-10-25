@@ -46,6 +46,7 @@ const STATUS_VAR: Record<Convergence, string> = {
   lagging: "var(--color-status-lagging)",
   offline: "var(--color-status-offline)",
   supervisor: "var(--color-status-supervisor)",
+  isolated: "var(--color-ink-muted-48)",
 };
 
 const STATUS_TEXT: Record<Convergence, string> = {
@@ -53,6 +54,7 @@ const STATUS_TEXT: Record<Convergence, string> = {
   lagging: "Catching up",
   offline: "Offline",
   supervisor: "Supervisor",
+  isolated: "Local only",
 };
 
 /**
@@ -842,7 +844,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     const displayName = truncate(rawName, 22);
     const hash = p.node.tip?.entry_hash;
     const isZeroOrEmptyHash = !hash || /^0+$/.test(hash);
-    const metaText = p.status === "offline"
+    const metaText = p.status === "offline" || p.status === "isolated"
       ? STATUS_TEXT[p.status]
       : isZeroOrEmptyHash
         ? `#${tipId}`

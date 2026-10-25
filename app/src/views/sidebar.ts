@@ -359,6 +359,7 @@ function statusLabel(status: Convergence): string {
     case "lagging": return "Catching up";
     case "offline": return "Offline";
     case "supervisor": return "Supervisor";
+    case "isolated": return "Local only";
   }
 }
 

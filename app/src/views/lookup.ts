@@ -350,7 +350,8 @@ export function createLookup(): LookupHandles {
         const nodesZone = el("div", { class: "lookup__nodes" });
         for (const n of r.nodes) {
           const chip = el("div", { class: "lookup__node-chip" });
-          const dot = el("span", { class: "dot", "data-status": n.status, role: "img", "aria-label": n.status });
+          const statusLabel = n.status === "isolated" ? "Local only" : n.status;
+          const dot = el("span", { class: "dot", "data-status": n.status, role: "img", "aria-label": statusLabel });
           const name = el("span", { class: "mono", text: shortNode(n.node_id, 8) });
           chip.appendChild(dot);
           chip.appendChild(name);

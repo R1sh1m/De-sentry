@@ -280,6 +280,12 @@ pub fn start_existing_node(
         .get("discovery_enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(!supervisor);
+    let has_bootstrap_peers = existing
+        .get("bootstrap_peers")
+        .and_then(|peers| peers.as_array())
+        .map(|peers| !peers.is_empty())
+        .unwrap_or(false);
+    let mesh_isolated = !supervisor && !discovery_enabled && !has_bootstrap_peers;
     let keychain_ref = existing
         .get("keychain_ref")
         .and_then(|v| v.as_str())
@@ -317,6 +323,7 @@ pub fn start_existing_node(
         discovery_port: allocation.discovery_port,
         supervisor,
         discovery_enabled,
+        mesh_isolated,
         removable: false,
         encrypted,
         unlock_secret,
@@ -535,6 +542,9 @@ pub fn create_node(
     };
 
     let discovery_enabled = request.discovery_enabled.unwrap_or(!request.supervisor);
+    let mesh_isolated = !request.supervisor
+        && !discovery_enabled
+        && request.bootstrap_peers.is_empty();
     let replication_factor = if !discovery_enabled {
         1
     } else {
@@ -623,6 +633,7 @@ pub fn create_node(
         discovery_port: allocation.discovery_port,
         supervisor: request.supervisor,
         discovery_enabled,
+        mesh_isolated,
         removable: request.removable,
         encrypted: request.encrypt_at_rest,
         unlock_secret: recovery_key.clone(),
@@ -1098,6 +1109,12 @@ pub fn unlock_node(
             .get("discovery_enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(!supervisor);
+        let has_bootstrap_peers = existing
+            .get("bootstrap_peers")
+            .and_then(|peers| peers.as_array())
+            .map(|peers| !peers.is_empty())
+            .unwrap_or(false);
+        let mesh_isolated = !supervisor && !discovery_enabled && !has_bootstrap_peers;
 
         LaunchSpec {
             node_name,
@@ -1108,6 +1125,7 @@ pub fn unlock_node(
             discovery_port: allocation.discovery_port,
             supervisor,
             discovery_enabled,
+            mesh_isolated,
             removable: false,
             encrypted: true,
             unlock_secret: Some(secret.clone()),
