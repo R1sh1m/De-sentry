@@ -51,7 +51,7 @@ export function createDropbox(): DropboxHandles {
     logs: string[];
   }
 
-  /** Files bigger than this are refused before readAsText (memory guard). */
+  /** Files bigger than this are refused before encoding (memory guard). */
   const MAX_INTAKE_BYTES = 64 * 1024 * 1024;
 
   let staged: StagedItem[] = [];
@@ -334,7 +334,7 @@ export function createDropbox(): DropboxHandles {
       el("p", {
         class: "muted",
         style: "max-width: 680px; margin-top: 4px; line-height: 1.5;",
-        text: "Drop any files, JSON records, vector embeddings, time-series metrics, or text notes here. The Dropbox classifies the workload, chooses the optimal storage engine, and synchronizes the records into the mesh.",
+        text: "Drop files to preserve their original bytes, or paste JSON, CSV, vector embeddings, time-series metrics, or text to analyze and ingest structured records. File assets synchronize across the mesh and can be saved in their original form.",
       }),
     );
 
@@ -362,7 +362,7 @@ export function createDropbox(): DropboxHandles {
       },
       el("div", { class: "drop-zone__icon-wrap" }, icon(Icons.inbox, 30)),
       el("h3", { style: "margin: 12px 0 4px; font-size: var(--text-base);", text: "Drag & drop data files here" }),
-      el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "Supports JSON, CSV, Vectors, Logs, or Plain Text" }),
+      el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "File uploads preserve exact bytes; paste JSON, CSV, vectors, logs, or plain text for structured intake." }),
       el("div", { class: "row", style: "justify-content: center;" }, browseBtn, fileInput),
     );
 
@@ -547,33 +547,7 @@ export function createDropbox(): DropboxHandles {
       store.toast("error", `Could not read '${file.name}'`, `File is ${file.size} bytes; the intake limit is ${MAX_INTAKE_BYTES} bytes. Split it and retry.`);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        store.toast("error", `Could not read '${file.name}'`, "The file could not be decoded as text.");
-        return;
-      }
-      // readAsText never fails on binary -- it decodes garbage with U+FFFD
-      // replacements. Detect that and re-read as a data URL instead, so
-      // images, PDFs and zips ingest as base64 asset documents (chunked by
-      // chunkRecords like any other oversized field) rather than mojibake.
-      if (reader.result.includes("�")) {
-        readFileAsAsset(file);
-        return;
-      }
-      stageData(analyzeText(reader.result, file.name), file.name);
-    };
-    reader.onerror = () => {
-      store.toast("error", `Could not read '${file.name}'`, reader.error ? reader.error.message : "Read failed.");
-    };
-    reader.onabort = () => {
-      store.toast("warning", `Skipped '${file.name}'`, "The read was aborted.");
-    };
-    try {
-      reader.readAsText(file);
-    } catch (error) {
-      store.toast("error", `Could not read '${file.name}'`, describeError(error));
-    }
+    readFileAsAsset(file);
   }
 
   function readFileAsAsset(file: File): void {
@@ -593,7 +567,7 @@ export function createDropbox(): DropboxHandles {
         {
           workload: "raw",
           title: `Binary file: ${file.name}`,
-          summary: `Binary asset (${bytes(file.size)}); stored base64-encoded and chunked.`,
+          summary: `File asset (${bytes(file.size)}); original bytes preserved and oversized data chunked.`,
           suggestedCollection: "assets",
           suggestedEngine: "kv",
           records: [{

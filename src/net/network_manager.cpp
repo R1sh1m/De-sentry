@@ -161,11 +161,21 @@ Status NetworkManager::Start() {
     // node_id == SHA-256(pubkey), so this binding is trustworthy.
     peer_table_.MarkHandshakeProven(node_id, pubkey, host, p2p_port);
   });
-  Status listen_st = transport_->StartListening(
-      config_.p2p_bind_addr, [this](const std::string& peer_id, const WireMessage& req) {
-        return HandleRequest(peer_id, req);
-      });
-  if (!listen_st.ok()) return listen_st;
+  // A sidecar-created standalone node has discovery disabled and no static
+  // bootstrap peers. Keep it off the data plane entirely: it neither dials
+  // LAN peers nor accepts an inbound connection that could start gossip.
+  // Static-bootstrap nodes with discovery disabled remain supported.
+  const bool isolated_local_node = !config_.supervisor && !config_.discovery_enabled &&
+                                   config_.bootstrap_peers.empty();
+  if (isolated_local_node) {
+    DSN_LOG_INFO("network", "standalone node: P2P listener disabled; data remains local");
+  } else {
+    Status listen_st = transport_->StartListening(
+        config_.p2p_bind_addr, [this](const std::string& peer_id, const WireMessage& req) {
+          return HandleRequest(peer_id, req);
+        });
+    if (!listen_st.ok()) return listen_st;
+  }
 
   if (config_.discovery_enabled) {
     UdpAdvertisement advert;

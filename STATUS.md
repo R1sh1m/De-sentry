@@ -12,12 +12,23 @@ the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
-> **Read this first — what has actually been run.** As of 2026-10-22 the
-> current Windows snapshot builds and passes all 13 C++ tests, the frontend
-> build and invariant checks, all 18 airplane-mode checks, the 22-check
-> transit-replay suite, the 18-check USB-node suite, and a 16-check 8-node
-> chaos soak. `cargo check` is clean. Linux/macOS/MSVC cross-build proof,
-> packaged installer E2E, and the invite/pairing UI remain open.
+> **Read this first — what has actually been run.** The 2026-10-22 Windows
+> snapshot passes all 13 C++ tests, frontend checks, airplane-mode,
+> transit-replay, USB-node, and 8-node chaos suites. On 2026-10-25, macOS
+> arm64 passed all 13 C++ tests, frontend build/invariant checks, Rust
+> `cargo check`, and an isolated host-plus-two-joiners workflow including
+> binary-file replication and standalone isolation. Physical-PC LAN behavior,
+> launch-from-DMG, and the native save-dialog click-through remain unverified.
+
+> **2026-10-25 — LAN demo workflow repairs.** The Add Device flow now defaults
+> invited nodes to LAN Mesh; the host shows its LAN address, P2P port, and mesh
+> code instead of a QR that the app could not consume. Standalone nodes no
+> longer open a P2P listener when they have no bootstrap peers. Every file
+> upload preserves its original bytes, and the explorer can reconstruct and
+> save the original file; pasted text still uses structured intake. The
+> refreshed unsigned Apple Silicon DMG is
+> `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+> Verification details and limits are in [§3](#3-verification).
 
 > **2026-10-24 — pairing QR layout (UI only, no backend change).** The pairing
 > sheet's QR card stretched full width and left a blank right half. It now
@@ -58,22 +69,24 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 The older remediation queue in this file is historical. The active work list is
 maintained in `ISSUES.md` and currently begins with:
 
-1. Carry the transit-replay proof to Linux and macOS. The held-replica timeout
+1. Carry the transit-replay proof to macOS and Linux. The held-replica timeout
    reported on 2026-10-18 no longer reproduces on Windows: the suite passed all
-   22 checks on 2026-10-22. The macOS engine/integration path remains unrun.
+   22 checks on 2026-10-22. macOS now passes CTest and the LAN file workflow,
+   but the transit-replay integration suite remains unrun there.
 2. Re-run release validation from the current tree on Linux, macOS, and MSVC,
    including platform-specific filesystem sync and installer launch paths. An
-   unsigned Apple Silicon DMG now builds locally; the Tauri DMG creation path
-   still fails in this environment before its image can be mounted or styled.
+   updated unsigned Apple Silicon DMG was packaged and verified manually; the
+   Tauri DMG creation path still fails during `hdiutil create`/`resize` here.
 3. Exercise the packaged Windows installer end to end, including node
    creation, restart, deletion, upgrade, and rollback.
-4. Implement the invite/pairing UI over the verified membership-secret backend.
+4. Validate the manual invite flow on three physical PCs, including LAN
+   firewall reachability and the native file-save dialog.
 5. Decide and execute the retention scheduler and secondary-index work, or
    remove their advertised-but-unimplemented surfaces.
 
 The 2026-10-22 pass below records the current Windows results. The local macOS
-DMG packaging result is recorded separately in §3; neither closes the
-cross-platform engine/integration or installer-launch gaps above.
+engine and package results are in §3; they do not close the Linux/MSVC engine,
+cross-platform integration, or installer-launch gaps above.
 
 ### Executed 2026-10-22: full Windows re-verification
 
@@ -174,6 +187,22 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 ---
 
 ## 3. Verification
+
+### Executed 2026-10-25: three-node demo workflow repairs and refreshed DMG
+
+| Check | Result |
+| --- | --- |
+| `cmake --build build -j 4` | Clean build of engine, CLI, and all 13 C++ test binaries. |
+| `ctest --test-dir build --output-on-failure` | **13 / 13 passed** on macOS arm64. |
+| `cd app && npm run build`, `npm run check:css`, `npm run check:qr` | All passed (TypeScript/Vite build and both invariant checks). |
+| `cargo check` in `app/src-tauri` | Clean. |
+| Isolated LAN workflow through real `desentryd` processes | Host plus two bootstrap joiners replicated a 16,400-byte synthetic PDF in seven chunks; both peers reconstructed byte-identical content. A standalone node accepted no P2P connection and its document stayed absent from the mesh. |
+| Updated Tauri app bundle | `.app` bundled with the current engine sidecar, ONNX model, and ONNX runtime. Tauri exited nonzero after creating the app because it also tried to sign the updater artifact and no `TAURI_SIGNING_PRIVATE_KEY` is configured. |
+| Refreshed unsigned DMG | Manually packaged with `hdiutil makehybrid` and compressed as UDZO; `hdiutil verify` reports a valid image. Artifact: `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg` (28 MiB). Developer ID signing and notarization were not performed. |
+
+**Not run:** connecting three physical PCs, launching the refreshed DMG, and
+clicking through the native file-save dialog. The live desktop app was only
+inspected; no existing nodes or files were changed.
 
 ### Executed 2026-10-25: unsigned-for-distribution Apple Silicon app and DMG
 

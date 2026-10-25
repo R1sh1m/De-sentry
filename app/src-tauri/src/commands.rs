@@ -112,6 +112,32 @@ pub fn mesh_secret() -> Reply<String> {
         .map_err(|_| "the mesh code is not available on this device".to_owned())
 }
 
+/// Finds the IPv4 address selected by the system's LAN route without sending
+/// a packet. The documentation-only TEST-NET address is never reachable; a
+/// UDP connect just asks the OS which local interface it would use.
+#[tauri::command]
+pub fn lan_address() -> Reply<Option<String>> {
+    use std::net::UdpSocket;
+
+    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
+        return Ok(None);
+    };
+    if socket.connect("192.0.2.1:9").is_err() {
+        return Ok(None);
+    }
+    let Ok(local) = socket.local_addr() else {
+        return Ok(None);
+    };
+    let std::net::IpAddr::V4(ip) = local.ip() else {
+        return Ok(None);
+    };
+    let octets = ip.octets();
+    if ip.is_unspecified() || ip.is_loopback() || (octets[0] == 169 && octets[1] == 254) {
+        return Ok(None);
+    }
+    Ok(Some(ip.to_string()))
+}
+
 #[tauri::command]
 pub fn list_nodes(state: State<'_, std::sync::Arc<AppState>>) -> Reply<Vec<SupervisedNode>> {
     Ok(state.views())
@@ -249,6 +275,11 @@ pub fn start_existing_node(
         .get("encrypt_at_rest")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let supervisor = existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false);
+    let discovery_enabled = existing
+        .get("discovery_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(!supervisor);
     let keychain_ref = existing
         .get("keychain_ref")
         .and_then(|v| v.as_str())
@@ -284,7 +315,8 @@ pub fn start_existing_node(
         api_port: allocation.api_port,
         p2p_port: allocation.p2p_port,
         discovery_port: allocation.discovery_port,
-        supervisor: existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false),
+        supervisor,
+        discovery_enabled,
         removable: false,
         encrypted,
         unlock_secret,
@@ -590,6 +622,7 @@ pub fn create_node(
         p2p_port: allocation.p2p_port,
         discovery_port: allocation.discovery_port,
         supervisor: request.supervisor,
+        discovery_enabled,
         removable: request.removable,
         encrypted: request.encrypt_at_rest,
         unlock_secret: recovery_key.clone(),
@@ -1060,6 +1093,12 @@ pub fn unlock_node(
             return Err(error);
         }
 
+        let supervisor = existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false);
+        let discovery_enabled = existing
+            .get("discovery_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(!supervisor);
+
         LaunchSpec {
             node_name,
             data_dir: target_dir.clone(),
@@ -1067,7 +1106,8 @@ pub fn unlock_node(
             api_port: allocation.api_port,
             p2p_port: allocation.p2p_port,
             discovery_port: allocation.discovery_port,
-            supervisor: existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false),
+            supervisor,
+            discovery_enabled,
             removable: false,
             encrypted: true,
             unlock_secret: Some(secret.clone()),
@@ -1251,6 +1291,102 @@ pub async fn pick_save_file(
         .add_filter("Text", &["txt"])
         .blocking_save_file();
     Ok(file.map(|path| path.to_string()))
+}
+
+const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ASSET_BASE64_BYTES: usize = ((MAX_ASSET_BYTES + 2) / 3) * 4;
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// Decodes the standard padded base64 written by FileReader.readAsDataURL.
+/// Strict padding checks keep malformed mesh documents from becoming files.
+fn decode_asset_base64(input: &str) -> Reply<Vec<u8>> {
+    if input.len() > MAX_ASSET_BASE64_BYTES {
+        return Err("this file is larger than the 64 MiB asset limit".into());
+    }
+    if input.len() % 4 != 0 {
+        return Err("the replicated file data has invalid base64 padding".into());
+    }
+
+    let bytes = input.as_bytes();
+    let block_count = bytes.len() / 4;
+    let mut output = Vec::with_capacity((bytes.len() / 4) * 3);
+    for (block_index, block) in bytes.chunks_exact(4).enumerate() {
+        let last = block_index + 1 == block_count;
+        let a = base64_value(block[0]).ok_or_else(|| "the replicated file data contains invalid base64".to_owned())?;
+        let b = base64_value(block[1]).ok_or_else(|| "the replicated file data contains invalid base64".to_owned())?;
+        output.push((a << 2) | (b >> 4));
+
+        if block[2] == b'=' {
+            if !last || block[3] != b'=' || (b & 0x0f) != 0 {
+                return Err("the replicated file data has invalid base64 padding".into());
+            }
+            continue;
+        }
+
+        let c = base64_value(block[2]).ok_or_else(|| "the replicated file data contains invalid base64".to_owned())?;
+        output.push((b << 4) | (c >> 2));
+        if block[3] == b'=' {
+            if !last || (c & 0x03) != 0 {
+                return Err("the replicated file data has invalid base64 padding".into());
+            }
+            continue;
+        }
+        let d = base64_value(block[3]).ok_or_else(|| "the replicated file data contains invalid base64".to_owned())?;
+        output.push((c << 6) | d);
+    }
+    Ok(output)
+}
+
+fn safe_asset_filename(filename: &str) -> String {
+    let name = filename.rsplit(|ch| ch == '/' || ch == '\\').next().unwrap_or("");
+    let sanitized: String = name
+        .chars()
+        .map(|ch| if ch.is_control() { '_' } else { ch })
+        .collect();
+    let sanitized = sanitized.trim().trim_matches('.');
+    if sanitized.is_empty() || sanitized == ".." {
+        "asset.bin".to_owned()
+    } else {
+        sanitized.to_owned()
+    }
+}
+
+/// Reconstructs an imported mesh asset and writes it only to a path selected
+/// by the user. The peer-provided filename is used as a suggestion, never as
+/// a path.
+#[tauri::command]
+pub async fn save_asset_file(
+    app: AppHandle,
+    filename: String,
+    base64_data: String,
+) -> Reply<Option<String>> {
+    let bytes = decode_asset_base64(&base64_data)?;
+    if bytes.len() > MAX_ASSET_BYTES {
+        return Err("this file is larger than the 64 MiB asset limit".into());
+    }
+    let default_name = safe_asset_filename(&filename);
+    let file = app
+        .dialog()
+        .file()
+        .set_title("Save reconstructed file")
+        .set_file_name(&default_name)
+        .blocking_save_file();
+    let Some(path) = file else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(|error| format!("could not use the selected save path: {error}"))?;
+    std::fs::write(&path, bytes).map_err(|error| format!("could not save the file: {error}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Opens a node's data directory in the platform's file manager.

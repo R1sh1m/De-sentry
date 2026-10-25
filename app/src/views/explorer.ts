@@ -9,8 +9,9 @@
  */
 
 import { apiFor, ApiError, type DocumentRow } from "../api.js";
+import { sidecar } from "../bridge.js";
 import { refreshNode, store } from "../state.js";
-import { count, documentPreview, engineLabel, json, truncate } from "../util/format.js";
+import { bytes, count, documentPreview, engineLabel, json, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
 
@@ -325,6 +326,15 @@ export function createExplorer(): ExplorerHandles {
     render();
   }
 
+  async function saveAssetFile(filename: string, base64Data: string): Promise<void> {
+    try {
+      const path = await sidecar.saveAssetFile(filename, base64Data);
+      if (path !== null) store.toast("success", "File reconstructed", `Saved ${filename} to ${path}.`, 5000);
+    } catch (error) {
+      store.toast("error", "Could not save file", describeError(error), 5000);
+    }
+  }
+
   async function selectKey(key: string): Promise<void> {
     if (state === null) return;
     if (state.dirty) {
@@ -609,6 +619,9 @@ export function createExplorer(): ExplorerHandles {
 
     // If this is a chunked document, display the reassembled content read‑only.
     if (current.isChunked) {
+      const manifest = current.rows.find((row) => row.key === current.selectedKey)?.document as Record<string, unknown> | undefined;
+      const assetFilename = typeof manifest?.filename === "string" ? manifest.filename : "";
+      const isBinaryAsset = assetFilename !== "" && current.chunkField === "base64";
       // Header row – same as non‑chunked but without edit controls.
       const header = el(
         "div",
@@ -627,16 +640,36 @@ export function createExplorer(): ExplorerHandles {
       let contentArea: HTMLElement;
       if (current.reassemblyError) {
         contentArea = el("p", { class: "error-note", text: current.reassemblyError });
+      } else if (isBinaryAsset && current.reassembled !== null) {
+        const size = typeof manifest?.size_bytes === "number" ? bytes(manifest.size_bytes) : "Unknown size";
+        const mime = typeof manifest?.mime === "string" ? manifest.mime : "application/octet-stream";
+        contentArea = el("div", { class: "stack" },
+          el("strong", { text: "Original file reconstructed" }),
+          el("p", { class: "muted", text: `${assetFilename} · ${size} · ${mime}` }),
+          el("p", { class: "muted", text: "Save the file below, then open it from the folder you choose." }),
+        );
       } else if (current.reassembled !== null) {
         // Use a <pre> to preserve whitespace; make it read‑only.
         contentArea = el("pre", { class: "explorer__doc", style: "white-space: pre-wrap;" }, current.reassembled);
       } else {
-        contentArea = el("p", { class: "muted", text: "Reassembling…" });
+        contentArea = el("p", { class: "muted", text: isBinaryAsset ? "Reconstructing original file…" : "Reassembling…" });
       }
 
       // Delete is still allowed; Save is disabled because the document is read‑only.
       const deleteButton = el("button", { class: "btn btn--danger btn--sm", type: "button", text: "Delete" });
       on(deleteButton, "click", () => void remove());
+
+      const downloadButton = isBinaryAsset
+        ? el("button", {
+            class: "btn btn--primary btn--sm",
+            type: "button",
+            text: "Save original file",
+            disabled: current.reassembled === null,
+          })
+        : null;
+      if (downloadButton) on(downloadButton, "click", () => {
+        if (current.reassembled !== null) void saveAssetFile(assetFilename, current.reassembled);
+      });
 
       const saveButton = el("button", {
         class: "btn btn--primary btn--sm",
@@ -654,7 +687,7 @@ export function createExplorer(): ExplorerHandles {
         contentArea,
         // Show any generic error (e.g., from loading the manifest) below the content.
         current.error ? el("p", { class: "error-note", text: current.error }) : null,
-        el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, deleteButton, saveButton)),
+        el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, downloadButton, deleteButton, saveButton)),
       );
     }
 
@@ -693,8 +726,26 @@ export function createExplorer(): ExplorerHandles {
 
     const dirtyNote = el("span", { class: "muted", style: "font: var(--text-fine);", text: current.dirty ? "Unsaved edits" : "" });
 
+    const selectedDoc = current.rows.find((row) => row.key === current.selectedKey)?.document as Record<string, unknown> | undefined;
+    const assetFilename = typeof selectedDoc?.filename === "string" ? selectedDoc.filename : "";
+    const isBinaryAsset = assetFilename !== "" && typeof selectedDoc?.base64 === "string";
+    const downloadButton = isBinaryAsset
+      ? el("button", { class: "btn btn--sm btn--primary", type: "button", text: "Save original file" })
+      : null;
+    if (downloadButton && isBinaryAsset && typeof selectedDoc?.base64 === "string") {
+      on(downloadButton, "click", () => void saveAssetFile(assetFilename, selectedDoc.base64 as string));
+    }
+
     let contentArea: HTMLElement;
-    if (current.viewMode === "formatted" && !current.dirty) {
+    if (isBinaryAsset) {
+      const size = typeof selectedDoc?.size_bytes === "number" ? bytes(selectedDoc.size_bytes) : "Unknown size";
+      const mime = typeof selectedDoc?.mime === "string" ? selectedDoc.mime : "application/octet-stream";
+      contentArea = el("div", { class: "stack" },
+        el("strong", { text: "Original file ready" }),
+        el("p", { class: "muted", text: `${assetFilename} · ${size} · ${mime}` }),
+        el("p", { class: "muted", text: "Save the file below, then open it from the folder you choose." }),
+      );
+    } else if (current.viewMode === "formatted" && !current.dirty) {
       contentArea = el("div", { class: "syntax-viewer" });
       contentArea.appendChild(highlightJson(current.draft));
     } else {
@@ -724,6 +775,7 @@ export function createExplorer(): ExplorerHandles {
           "div",
           { class: "row" },
           engine ? el("span", { class: "chip", text: engineLabel(engine) }) : null,
+          downloadButton,
           formatBtn,
           modeBtn,
         ),

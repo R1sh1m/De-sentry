@@ -27,6 +27,7 @@ export interface SupervisedNode {
   p2p_port: number;
   discovery_port: number;
   supervisor: boolean;
+  discovery_enabled: boolean;
   /** Process state as the supervisor sees it, independent of the node's own API. */
   process: "starting" | "running" | "restarting" | "stopped" | "failed";
   pid: number | null;
@@ -454,6 +455,11 @@ export const sidecar = {
     return invoke<string>("mesh_secret");
   },
 
+  /** LAN IPv4 selected by the system route, or null when the machine is offline. */
+  lanAddress(): Promise<string | null> {
+    return invoke<string | null>("lan_address");
+  },
+
   /** Every `desentryd` this app owns, supervisor included. */
   listNodes(): Promise<SupervisedNode[]> {
     return invoke<SupervisedNode[]>("list_nodes");
@@ -566,6 +572,11 @@ export const sidecar = {
 
   pickSaveFile(title: string, defaultName: string): Promise<string | null> {
     return invoke<string | null>("pick_save_file", { title, defaultName });
+  },
+
+  /** Reconstructs a replicated base64 asset and saves it through the native save dialog. */
+  saveAssetFile(filename: string, base64Data: string): Promise<string | null> {
+    return invoke<string | null>("save_asset_file", { filename, base64Data });
   },
 
   /** Opens a node's data directory. Takes a node id; the sidecar resolves and allowlists the path. */

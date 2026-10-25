@@ -8,12 +8,10 @@
  * re-render does not move the caret.
  */
 
-import { apiFor } from "./api.js";
 import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
-import { qrSvg } from "./util/qr.js";
 import { createMeshGlobe, type GlobeHandle, type GlobeLink, type GlobeNodePoint } from "./util/meshGlobe.js";
 import { canvasZoomFit, canvasZoomStep, createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
@@ -122,11 +120,7 @@ function openShortcutsCheatsheet(): void {
 
 // -- pairing sheet -----------------------------------------------------------
 
-/**
- * The pairing QR. It carries addresses and a public key, never a secret --
- * pairing tells a peer where to dial and whom to expect; the secure-channel
- * handshake is what actually authenticates.
- */
+/** Join another device to an existing LAN mesh, or show this node's invite details. */
 function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void): void {
 
   const body = el("div", { class: "wizard" });
@@ -155,7 +149,7 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
     "div",
     { class: "wizard__titlebar" },
     el("span", { style: "width: 28px;" }),
-    el("span", { class: "wizard__titlebar-title", text: "Add Device" }),
+    el("span", { class: "wizard__titlebar-title", text: "Join a LAN Mesh" }),
     closeButton,
   );
 
@@ -166,7 +160,7 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
   const peerInput = el("textarea", {
     class: "input",
     rows: "2",
-    placeholder: "192.168.1.20:7801",
+    placeholder: "192.168.1.20:7802",
     "aria-label": "Peer address or addresses",
   }) as HTMLTextAreaElement;
   const secretInput = el("input", {
@@ -179,8 +173,8 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
   const shareSection = el(
     "section",
     { class: "stack" },
-    el("h3", { class: "card__title", text: "Share this device" }),
-    el("div", { class: "muted", text: "Loading this device’s QR details…" }),
+    el("h3", { class: "card__title", text: "Share this mesh" }),
+    el("div", { class: "muted", text: "Loading this mesh’s join details…" }),
   );
   const joinButton = el("button", { class: "btn btn--primary", type: "button", text: "Continue to create node" });
   on(joinButton, "click", () => {
@@ -198,22 +192,22 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
       return;
     }
     dismiss();
-    onJoin(peers, secretInput.value.trim());
+    onJoin(peers, secretInput.value.trim().toLowerCase());
   });
 
   replace(
     content,
-    el("h2", { class: "wizard__title", text: "Add Device" }),
-    el("p", { class: "wizard__lead", text: "Join an existing mesh by entering a peer’s LAN IP and P2P port, then its mesh code. The next screen will create a local node configured to connect to it." }),
+    el("h2", { class: "wizard__title", text: "Join a LAN Mesh" }),
+    el("p", { class: "wizard__lead", text: "On the host computer, choose LAN Mesh when creating its first node. On each other computer, enter one of that node’s LAN addresses and its P2P port, then the shared mesh code." }),
     el("div", { class: "pairing-field" },
-      el("label", { class: "field-label", text: "Peer address or addresses" }),
+      el("label", { class: "field-label", text: "Host address and P2P port" }),
       peerInput,
     ),
     el("div", { class: "pairing-field" },
-      el("label", { class: "field-label", text: "Mesh code" }),
+      el("label", { class: "field-label", text: "Mesh code from the host" }),
       secretInput,
     ),
-    el("p", { class: "muted", text: "The mesh code is saved in this computer’s OS keychain. Changing it moves this app’s data nodes to that mesh." }),
+    el("p", { class: "muted", text: "The next screen will create a LAN Mesh node with these details. Isolated Standalone nodes keep discovery off and do not join this mesh." }),
     joinButton,
     el("hr"),
     shareSection,
@@ -226,33 +220,25 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
       // the supervisor coming online.
       await refreshNodeList();
       const nodes = await sidecar.listNodes();
-      const supervisor = nodes.find((node) => node.supervisor && node.process === "running");
-      const port = supervisor?.api_port ?? store.state.supervisorPort;
-      if (port === null || port === undefined) {
-        throw new Error("The local supervisor has not started. You can still join another device using the form above.");
-      }
-      const [pairing, meshSecret] = await Promise.all([apiFor(port).pairing(), sidecar.meshSecret()]);
-      const localNodes = nodes.filter((node) => !node.supervisor && node.process === "running");
+      const [meshSecret, lanAddress] = await Promise.all([sidecar.meshSecret(), sidecar.lanAddress()]);
+      const localNodes = nodes.filter((node) => !node.supervisor && node.discovery_enabled && node.process === "running");
       const shareDetails = el(
         "div",
         { class: "pairing-share" },
-        el("div", { class: "pairing-share__qr" },
-          el("div", { class: "qr qr--constellation" }, qrSvg(JSON.stringify(pairing), { scale: 4, title: "Pairing code" })),
-        ),
         el("div", { class: "pairing-share__meta" },
           el("dl", { class: "kv" },
-            el("dt", { text: "Node P2P ports" }),
-            el("dd", { class: "mono", text: localNodes.length > 0 ? localNodes.map((node) => `${node.node_name}: ${node.p2p_port}`).join("\n") : "no running data nodes" }),
+            el("dt", { text: "Host address and P2P port" }),
+            el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: localNodes.length > 0 && lanAddress ? localNodes.map((node) => `${lanAddress}:${node.p2p_port}`).join("\n") : localNodes.length > 0 ? `LAN address could not be detected. Use this node's P2P port (${localNodes.map((node) => node.p2p_port).join(", ")}) with the host computer's LAN IP.` : "Create and start a LAN Mesh data node first." }),
             el("dt", { text: "Mesh code" }),
             el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: meshSecret }),
           ),
         ),
-        el("p", { class: "muted pairing-share__note", text: "The QR contains public peer details only." }),
-        el("p", { class: "muted pairing-share__note", text: "Share the mesh code only with people you want to allow into this mesh." }),
+        el("p", { class: "muted pairing-share__note", text: "On each other computer, use Pair another device and enter one address above plus this mesh code." }),
+        el("p", { class: "muted pairing-share__note", text: "The mesh code grants access to this mesh. Share it only with trusted people." }),
       );
-      replace(shareSection, el("h3", { class: "card__title", text: "Share this device" }), shareDetails);
+      replace(shareSection, el("h3", { class: "card__title", text: "Share this mesh" }), shareDetails);
     } catch (error) {
-      replace(shareSection, el("h3", { class: "card__title", text: "Share this device" }), el("p", { class: "error-note", text: `${describeError(error)} Joining another device is still available above.` }));
+      replace(shareSection, el("h3", { class: "card__title", text: "Share this mesh" }), el("p", { class: "error-note", text: `${describeError(error)} Joining another device is still available above.` }));
     }
   })();
 }
@@ -390,17 +376,16 @@ function build(): void {
   );
   on(title, "click", openAboutSheet);
 
-  // Pairing uses a QR glyph now: the sheet shows a scannable code that links
-  // another device. The old shield conflated pairing with security status.
+  // Mesh icon opens manual LAN invite details and the join form.
   const pairButton = el(
     "button",
     {
       class: "btn btn--sm btn--ghost btn--icon-only",
       type: "button",
-      title: "Pair another device (QR code)",
+      title: "Join or share a LAN mesh",
       "aria-label": "Pair another device",
     },
-    icon(Icons.qr, 15),
+    icon(Icons.mesh, 15),
   );
   on(pairButton, "click", showAddDevice);
 

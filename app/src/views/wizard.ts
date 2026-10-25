@@ -781,7 +781,7 @@ export function createWizard(): WizardHandles {
           "Database Architecture",
           draft.standalone
             ? "Architecture 1: Multi-Database Isolation. Pure standalone database with dedicated private schema and zero replication. No network discovery or LAN syncing."
-            : "Architecture 2: Mesh Replicas. Automatically discovers peers on the LAN and replicates collections across the mesh (replication factor 3).",
+            : "Architecture 2: LAN Mesh. Connects to the host address you entered and discovers other mesh peers on the LAN; collections replicate across connected data nodes (replication factor 3).",
           modeChoice,
         );
       })(),
@@ -1483,7 +1483,7 @@ export function createWizard(): WizardHandles {
             .split(/[\n,;]+/)
             .map((peer) => peer.trim())
             .filter(Boolean),
-      mesh_secret: draft.meshSecret.trim() || undefined,
+      mesh_secret: draft.standalone ? undefined : draft.meshSecret.trim() || undefined,
       description: draft.description,
       preallocate: draft.preallocate,
       key_mode: draft.encrypt ? draft.keyMode : "generated",
@@ -1909,6 +1909,10 @@ export function createWizard(): WizardHandles {
       draft = newDraft();
       draft.bootstrapPeerText = config?.bootstrapPeers?.join("\n") ?? "";
       draft.meshSecret = config?.meshSecret ?? "";
+      // The Add Device flow has already collected both required join details.
+      // Default that node to LAN Mesh so create_node does not silently drop its
+      // bootstrap peers by keeping the fresh wizard's standalone default.
+      draft.standalone = !(draft.bootstrapPeerText.trim() !== "" && draft.meshSecret.trim() !== "");
       draft.engines = store.state.engines;
       open = true;
       element.hidden = false;

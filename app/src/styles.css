@@ -3299,7 +3299,7 @@ select.ledger__filter-control option {
   padding: var(--space-sm);
   border-radius: 0;
 }
-/* Pairing share: QR on the left, metadata on the right, bottom-aligned. */
+/* Mesh invite details stay readable and easy to select for manual copying. */
 .pairing-share {
   display: flex;
   gap: var(--space-lg);
@@ -3307,14 +3307,8 @@ select.ledger__filter-control option {
   justify-content: center;
   flex-wrap: wrap;
 }
-.pairing-share__qr {
-  flex: 0 0 auto;
-}
-.pairing-share__qr .qr {
-  margin: 0;
-}
 .pairing-share__meta {
-  flex: 1 1 280px;
+  flex: 0 1 640px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -3335,20 +3329,6 @@ select.ledger__filter-control option {
   width: 100%;
   margin: var(--space-sm) 0 0;
 }
-/* Pairing constellation: the QR resolves like stars appearing. */
-.qr--constellation svg {
-  animation: qr-twinkle 1.2s ease-out both;
-}
-@keyframes qr-twinkle {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .qr--constellation svg {
-    animation: none;
-  }
-}
-
 .row {
   display: flex;
   align-items: center;

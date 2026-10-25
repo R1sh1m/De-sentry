@@ -1,6 +1,6 @@
 # De-Sentry — Issue Inventory
 
-Updated: 2026-10-18
+Updated: 2026-10-25
 
 This is a working issue inventory, not a release claim. **Observed** means a
 local test or build reproduced it. **Code-confirmed** means the behavior is
@@ -11,15 +11,17 @@ validation. **Gap** means required behavior has not been exercised.
 ## Executive assessment
 
 The core engine, storage backends, CRDT layer, ledger v2, networking, supervisor,
-and desktop app now possess an authoritative passing baseline: all 12 C++ test
-binaries build and pass cleanly (`acl_test`, `at_rest_test`, `crdt_test`, `crypto_test`,
-`ledger_v2_test`, `liveness_test`, `network_test`, `placement_test`, `quota_test`,
-`router_test`, `storage_test`, `transit_test`), 34/34 Rust unit tests pass, the
-frontend builds cleanly, and a release MSI package (36.8 MiB) has been produced.
+and desktop app have a passing baseline: all 13 C++ test binaries build and pass
+cleanly, 34/34 Rust unit tests pass, and the frontend builds cleanly. A release
+MSI package (36.8 MiB) has also been produced. On 2026-10-25, the current macOS
+tree passed all 13 C++ tests, frontend checks, and Rust `cargo check`; a local
+host-plus-two-joiners LAN workflow replicated and reconstructed a binary file,
+and a standalone node remained isolated. See `STATUS.md` §3 for the scope and
+remaining physical-device checks.
 
 The historical correctness blockers have been addressed and verified:
 
-1. **Test baseline established**: 12/12 C++ test binaries green with active assertions (`-UNDEBUG`).
+1. **Test baseline established**: 13/13 C++ test binaries green with active assertions (`-UNDEBUG`).
 2. **Quota contract fixed**: ceiling-MiB remainder distribution ensures shares sum exactly, and `kOutOfSpace` is consistently returned on capacity exhaustion.
 3. **Storage-test hang bounded**: 256-level descent bound in `FindLeaf` and root-page validation in `ResetForReplay` prevent loops on zero-filled or uninitialized pages.
 4. **WAL and materialized state aligned**: size validation occurs pre-append, replay runs inside overdraft MergeScope, and CRC32 is enforced on read.
@@ -378,7 +380,7 @@ Pending / future platform verification:
 - Optional vendored backends (SQLite, sqlite-vec, DuckDB, LMDB) remain opt-in and unexercised in default shipping builds.
 - Installer update/upgrade behavior has not been tested.
 
-## Active next-work queue (2026-10-18)
+## Active next-work queue (2026-10-25)
 
 These are the issues to work on next. They are ordered by release risk first,
 then by product value. Do not mark an item fixed from a code inspection alone;
@@ -387,9 +389,9 @@ record the exact command and environment that proves it.
 | ID | Priority | Work | Current evidence | Definition of done |
 |---|---|---|---|---|
 | `transit-replay-timeout` | P0 | Diagnose the held-replica wait in `transit_replay_test.py` and make the test/protocol deterministic without weakening the durability guarantee. | **Resolved 2026-10-18**: two current runs passed all 22 checks; the stale-observation gate is now deterministic and holder selection was not defective. | Reproduce twice, identify whether the fault is timing, holder selection, or test setup, add a focused regression, then pass the full replay test and airplane-mode test. |
-| `cross-platform-release` | P0 | Prove the engine and app on Linux, macOS, and MSVC, including the platform-specific filesystem sync paths. | Windows validation is current; macOS remains unavailable on this machine and Linux/MSVC evidence is historical or container-only. | Fresh builds, CTest, relevant integration smoke, and honest platform notes for each supported target. |
+| `cross-platform-release` | P0 | Prove the engine and app on Linux, macOS, and MSVC, including the platform-specific filesystem sync paths. | Current Windows validation remains; macOS arm64 engine tests, frontend checks, Rust check, and unsigned DMG packaging are now verified. Linux/MSVC evidence is historical or container-only; the DMG has not been launched. | Fresh builds, CTest, relevant integration smoke, and honest platform notes for each supported target. |
 | `installer-e2e` | P0 | Exercise packaged install, sidecar startup, node creation, upgrade, and rollback behavior. | A Windows MSI has existed historically, but packaged upgrade and a complete installer-to-node flow are not the current acceptance baseline. | Build the installer from the current tree, install it, create/restart/delete a node through the app, test upgrade/uninstall, and record artifacts without secrets. |
-| `invite-pairing-ui` | P1 | Add the second-device membership flow for the already-implemented cluster secret and fingerprint. | Backend membership secret and fingerprint are verified; manual secret entry works, but QR/invite UX is still absent. | A user can create an invite on device A, transfer it safely, join on device B, see fingerprint confirmation, and recover from rejection without exposing the secret in logs. |
+| `invite-pairing-ui` | P1 | Complete and validate the manual three-PC LAN demo flow. | Host address/P2P port and mesh code are shown; join preselects LAN Mesh; a real three-process bootstrap test replicated and reconstructed a binary file. Standalone nodes now have no P2P listener. | Verify on three physical PCs, including firewall reachability, node creation through the app, and the native save dialog. QR scanning and fingerprint confirmation remain future UX work. |
 | `retention-scheduler` | P1 | Make retention policy execution automatic and observable instead of requiring a manual endpoint. | **Fixed 2026-10-18**: each engine runs a bounded periodic sweep; `_status.retention` reports the last run, collections considered, chunks dropped, and the last error. Changed `node_engine.h/.cpp`, `routes.cpp`, retention comments, and `tests/retention_test.cpp`. `ctest` is 13/13 green. | Scheduler respects collection policy, quota/ledger safety, restart behavior, and has focused tests plus a visible last-run/error state. |
 | `secondary-indexes` | P1 | Implement or explicitly remove the advertised secondary-index capability. | Index names persist in metadata and API responses but are not built or queried. | Either ship one bounded indexed-query path with tests and quota accounting, or remove the option and update all user-facing docs. |
 | `ledger-digest-cache` | P2 | Replace remaining full-scan digest work with incremental/repairable summaries where profiling justifies it. | The digest cache exists, but parts of the verification path still scan ledger/storage state. | Benchmark a representative mesh, define the invariant, add corruption/rebuild coverage, and keep full-scan fallback explicit. |
