@@ -26,7 +26,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argon2::{
-    password_hash::{PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
 use serde::{Deserialize, Serialize};
@@ -94,7 +94,11 @@ pub struct NodeSecurity {
 /// Creates a verifier for `secret` using Argon2id with OWASP 2024 minimum
 /// parameters (m=19456 KiB, t=2, p=1) and a random 16-byte salt.
 pub fn make_verifier(secret: &str) -> Result<Verifier, PasswordError> {
-    let salt = SaltString::generate(&mut OsRng);
+    let mut salt_bytes = [0u8; 16];
+    getrandom::getrandom(&mut salt_bytes)
+        .map_err(|e| PasswordError::Kdf(format!("could not generate salt: {e}")))?;
+    let salt = SaltString::encode_b64(&salt_bytes)
+        .map_err(|e| PasswordError::Kdf(format!("could not encode salt: {e}")))?;
     let argon2 = Argon2::default();
     argon2
         .hash_password(secret.as_bytes(), &salt)
@@ -155,7 +159,6 @@ pub fn node_security(state: State<'_, Arc<AppState>>, node_id: String) -> Result
     let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable")?;
     let handle = nodes.get(&node_id).ok_or_else(|| format!("no node with id {node_id}"))?;
     let data_dir = handle.spec.data_dir.clone();
-    let keychain_ref = handle.spec.config_path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or(&node_id);
 
     // Load security.json if present.
     let record = match load(&data_dir) {
