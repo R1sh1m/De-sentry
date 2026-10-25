@@ -56,6 +56,10 @@ void PrintUsage() {
       "See config/node.example.json for every configurable field.\n");
 }
 
+void PrintVersion() {
+  std::printf("desentryd %s\n", DESENTRY_VERSION);
+}
+
 // Reads one line from stdin (the sidecar writes the unlock key followed by a
 // newline, then closes the pipe). Only called when --read-unlock-stdin was
 // passed, so a hand-run in a terminal never blocks on input.
@@ -109,6 +113,9 @@ int main(int argc, char** argv) {
       desentry::Logger::Instance().SetLevel(ParseLogLevel(argv[++i]));
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
+      return 0;
+    } else if (arg == "--version") {
+      PrintVersion();
       return 0;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());

@@ -179,8 +179,8 @@
   /* Glow tokens. box-shadow takes the whole list; filter takes the function. */
   --glow-brand-strong: 0 0 20px rgba(41, 151, 255, 0.50), 0 0 40px rgba(41, 151, 255, 0.25);
   --glow-brand-soft: 0 4px 20px rgba(41, 151, 255, 0.15);
-  --glow-action-hover: 0 4px 16px rgba(0, 240, 255, 0.35), 0 0 24px rgba(41, 151, 255, 0.30);
-  --glow-action-active: 0 0 8px rgba(0, 240, 255, 0.45);
+  --glow-action-hover: 0 4px 16px rgba(41, 151, 255, 0.35), 0 0 24px rgba(41, 151, 255, 0.30);
+  --glow-action-active: 0 0 8px rgba(41, 151, 255, 0.45);
   --glow-badge-soft: 0 0 10px rgba(41, 151, 255, 0.25);
 
   /* -- json syntax -------------------------------------------------------- */

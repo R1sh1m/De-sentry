@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(desentry LANGUAGES CXX C)
+project(desentry VERSION 2.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -167,6 +167,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(desentryd apps/desentry_node/main.cpp)
 target_link_libraries(desentryd PRIVATE desentry_core)
+target_compile_definitions(desentryd PRIVATE DESENTRY_VERSION="${PROJECT_VERSION}")
 
 # ---------------------------------------------------------------------------
 # CLI helper: thin wrapper around the local HTTP API for demos/scripts.

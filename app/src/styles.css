@@ -89,7 +89,7 @@ input::-ms-clear {
  * Brand accents
  *
  * The chrome carries the brand: a gradient wordmark, one hairline under the
- * header, a gradient primary action and a soft halo on the brand badge. These
+ * header, a solid blue primary action and a soft halo on the brand badge. These
  * are wash and chrome only -- semantic colour stays with the status block in
  * tokens.css, and no accent ever encodes state.
  * ------------------------------------------------------------------------ */
@@ -1178,14 +1178,7 @@ svg.mesh {
   outline-offset: 2px;
 }
 .btn--primary {
-  background: linear-gradient(
-    90deg,
-    var(--color-primary) 0%,
-    var(--color-primary) 18%,
-    var(--accent-cyan) 50%,
-    var(--accent-violet) 82%,
-    var(--accent-violet) 100%
-  );
+  background: var(--color-primary);
   color: #ffffff;
   border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15), var(--glow-brand-strong);
