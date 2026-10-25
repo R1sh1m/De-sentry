@@ -1,7 +1,7 @@
 ---
 title: De-Sentry — build status
 version: 2.0
-updated: 2026-10-22
+updated: 2026-10-25
 ---
 
 # De-Sentry v2: build status
@@ -42,6 +42,16 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > `border-radius: 0` and `display: inline-block` so QR codes render with sharp
 > corners as required by the ISO standard. Verified: `npm run build` clean,
 > `check:qr` passes (ISO conformance checks unchanged).
+>
+> **2026-10-25 — unsigned-for-distribution Apple Silicon DMG.** Built the Tauri release app on
+> macOS arm64 with its `desentryd` sidecar and bundled ONNX model/runtime. The
+> Tauri DMG script could not use `hdiutil create`/`resize` in this environment
+> (`Device not configured`), so the same app bundle was packaged with
+> `hdiutil makehybrid` and compressed as UDZO. The 28 MiB artifact is
+> `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+> Developer ID signing and notarization were not performed. The app was not
+> launched from the image; see [§3](#3-verification) for the exact commands
+> and remaining limits.
 
 ## Current next steps
 
@@ -50,18 +60,20 @@ maintained in `ISSUES.md` and currently begins with:
 
 1. Carry the transit-replay proof to Linux and macOS. The held-replica timeout
    reported on 2026-10-18 no longer reproduces on Windows: the suite passed all
-   22 checks on 2026-10-22. The remaining gap is cross-platform, not
-   correctness on this box.
+   22 checks on 2026-10-22. The macOS engine/integration path remains unrun.
 2. Re-run release validation from the current tree on Linux, macOS, and MSVC,
-   including platform-specific filesystem sync and installer paths.
+   including platform-specific filesystem sync and installer launch paths. An
+   unsigned Apple Silicon DMG now builds locally; the Tauri DMG creation path
+   still fails in this environment before its image can be mounted or styled.
 3. Exercise the packaged Windows installer end to end, including node
    creation, restart, deletion, upgrade, and rollback.
 4. Implement the invite/pairing UI over the verified membership-secret backend.
 5. Decide and execute the retention scheduler and secondary-index work, or
    remove their advertised-but-unimplemented surfaces.
 
-The 2026-10-22 pass below records the current Windows results. Those results do
-not close the cross-platform or release gaps above.
+The 2026-10-22 pass below records the current Windows results. The local macOS
+DMG packaging result is recorded separately in §3; neither closes the
+cross-platform engine/integration or installer-launch gaps above.
 
 ### Executed 2026-10-22: full Windows re-verification
 
@@ -162,6 +174,25 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 ---
 
 ## 3. Verification
+
+### Executed 2026-10-25: unsigned-for-distribution Apple Silicon app and DMG
+
+macOS 27.0.1 arm64, Rust/Cargo 1.99.1, bundled Node 24.19.0 (the Homebrew
+Node binary had a missing `simdjson` dylib). The existing `build/desentryd`
+was arm64 and was staged by the app script.
+
+| Check | Result |
+| --- | --- |
+| `PATH="/Users/harshitborade/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" CARGO_BUILD_JOBS=2 npm run tauri:build -- --bundles dmg` | Frontend and Tauri release app built. Tauri's DMG script then failed: `hdiutil create` returned `Device not configured`. |
+| Manual DMG packaging | `hdiutil makehybrid -default-volume-name De-Sentry -hfs` followed by `hdiutil convert -format UDZO` succeeded; produced `De-Sentry_2.0.0_aarch64.dmg` (28 MiB). |
+| Bundle contents | arm64 app and `desentryd`; bundled `model.onnx`, `libonnxruntime.dylib`, tokenizer and prototypes; Applications symlink in the image staging folder. `LSMinimumSystemVersion` is 14.0. |
+| Signing | No Developer ID signature or notarization. The local app binary carries only the normal ad-hoc linker signature. |
+
+**Not run:** launching the app from the DMG, node creation/restore, engine tests
+on macOS, or attaching the final image in this environment. Tauri's standard
+DMG script could not use its device-backed create/resize steps here, so the
+artifact is assembled as a read-only HFS+ hybrid image and compressed with
+UDZO; its Finder background and icon positioning are not configured.
 
 ### Executed 2026-09-20: Deep-Dive Storage Investigation, Multi-Engine Auditing, and Fixes
 
@@ -928,8 +959,9 @@ small, fixable ways.
   until that step runs.
 - Vendored backends are unbuilt in this tree by default. `GET /_engines` is
   the only trustworthy answer to "what does this binary actually have".
-- Installers (MSI / .dmg / AppImage) are configured but have never been
-  produced here.
+- Linux installers (AppImage/.deb) and an installer launched end to end remain
+  unverified here. An unsigned Apple Silicon DMG was produced on 2026-10-25;
+  it was not launched from the image.
 
 ---
 
