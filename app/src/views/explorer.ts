@@ -182,6 +182,11 @@ interface ExplorerState {
   mayHaveMore: boolean;
   keyFilter: string;
   viewMode: "formatted" | "edit";
+  isChunked: boolean;
+  chunkTotal: number;
+  chunkField: string;
+  reassembled: string | null;
+  reassemblyError: string | null;
 }
 
 export interface ExplorerHandles {
@@ -243,7 +248,20 @@ export function createExplorer(): ExplorerHandles {
         mayHaveMore: page.documents.length === PAGE_SIZE,
         keyFilter: prev !== null && prev.collection === collection ? prev.keyFilter : "",
         viewMode: prev !== null && prev.collection === collection ? prev.viewMode : "formatted",
+        isChunked: false,
+        chunkTotal: 0,
+        chunkField: "",
+        reassembled: null,
+        reassemblyError: null,
       };
+      // If the selected row is a chunked manifest, reassemble its parts.
+      const selectedDoc = selectedRow?.document as Record<string, unknown> | undefined;
+      if (selectedRow && selectedDoc?.chunked === true && typeof selectedDoc.chunk_total === 'number') {
+        state.isChunked = true;
+        state.chunkTotal = selectedDoc.chunk_total as number;
+        state.chunkField = typeof selectedDoc.chunk_field === 'string' ? (selectedDoc.chunk_field as string) : 'text';
+        void reassemble(selectedRow);
+      }
     } catch (error) {
       state = {
         nodeId,
@@ -258,8 +276,52 @@ export function createExplorer(): ExplorerHandles {
         mayHaveMore: false,
         keyFilter: "",
         viewMode: "formatted",
+        isChunked: false,
+        chunkTotal: 0,
+        chunkField: "",
+        reassembled: null,
+        reassemblyError: null,
       };
     }
+    render();
+  }
+
+  /**
+   * Fetch every part of a chunked manifest (#0 … #n-1) and concatenate the
+   * chunk_field (falling back to "text") into a single reassembled string.
+   * Updates state and re-renders when done, or records which part is missing.
+   */
+  async function reassemble(row: DocumentRow): Promise<void> {
+    if (state === null) return;
+    const node = store.node(state.nodeId);
+    if (node === undefined) return;
+
+    const doc = row.document as Record<string, unknown>;
+    const chunkTotal = typeof doc.chunk_total === 'number' ? doc.chunk_total : 0;
+    const chunkField = typeof doc.chunk_field === 'string' ? (doc.chunk_field as string) : 'text';
+
+    const parts: string[] = [];
+    for (let i = 0; i < chunkTotal; i++) {
+      try {
+        const part = await apiFor(node.process.api_port).getDocument(state.collection, `${row.key}#${i}`);
+        const partDoc = part as Record<string, unknown>;
+        let text = '';
+        if (typeof partDoc[chunkField] === 'string') {
+          text = partDoc[chunkField] as string;
+        } else if (typeof partDoc.text === 'string') {
+          text = partDoc.text as string;
+        }
+        parts.push(text);
+      } catch {
+        state.reassemblyError = `Missing part #${i} of ${chunkTotal}`;
+        state.reassembled = null;
+        render();
+        return;
+      }
+    }
+
+    state.reassembled = parts.join('');
+    state.reassemblyError = null;
     render();
   }
 
@@ -274,6 +336,24 @@ export function createExplorer(): ExplorerHandles {
     state.draft = row ? json(row.document) : "";
     state.dirty = false;
     state.viewMode = "formatted";
+
+    // Reset chunked state for the newly selected row.
+    state.isChunked = false;
+    state.chunkTotal = 0;
+    state.chunkField = "";
+    state.reassembled = null;
+    state.reassemblyError = null;
+
+    // Detect a chunked manifest and reassemble its parts (read-only).
+    const doc = row?.document as Record<string, unknown> | undefined;
+    if (row && doc?.chunked === true && typeof doc.chunk_total === 'number') {
+      state.isChunked = true;
+      state.chunkTotal = doc.chunk_total as number;
+      state.chunkField = typeof doc.chunk_field === 'string' ? (doc.chunk_field as string) : 'text';
+      void reassemble(row);
+      return;
+    }
+
     render();
   }
 
@@ -407,14 +487,21 @@ export function createExplorer(): ExplorerHandles {
       }
 
       for (const row of filtered) {
+        const doc = row.document as Record<string, unknown> | undefined;
+        const isChunked = doc?.chunked === true && typeof doc.chunk_total === 'number';
         const button = el("button", {
           class: "explorer__key",
           type: "button",
           role: "option",
           "aria-selected": String(row.key === current.selectedKey),
           title: `${row.key} — ${documentPreview(row.document)}`,
-          text: truncate(row.key, 60),
-        });
+        },
+        el("span", { text: truncate(row.key, 60) }),
+        isChunked ? el("span", {
+          class: "badge",
+          style: "margin-left: 8px; font-size: 10px; padding: 1px 5px;",
+          text: `Chunked file (${doc.chunk_total} parts)`,
+        }) : null);
         on(button, "click", () => void selectKey(row.key));
         keysContainer.appendChild(button);
       }
@@ -520,6 +607,58 @@ export function createExplorer(): ExplorerHandles {
       return emptyState({ title: "No document selected", body: "Pick a key on the left, or create one with + New document." });
     }
 
+    // If this is a chunked document, display the reassembled content read‑only.
+    if (current.isChunked) {
+      // Header row – same as non‑chunked but without edit controls.
+      const header = el(
+        "div",
+        { class: "row row--between" },
+        el("span", { class: "mono", style: "font-weight: 600;", text: current.selectedKey }),
+        el(
+          "div",
+          { class: "row" },
+          engine ? el("span", { class: "chip", text: engineLabel(engine) }) : null,
+          // Show a badge indicating chunked status.
+          el("span", { class: "badge", style: "margin-left: 8px; font-size: 10px; padding: 1px 5px;", text: `Chunked file (${current.chunkTotal} parts)` }),
+        ),
+      );
+
+      // Content area – either the reassembled text, an error, or a loading placeholder.
+      let contentArea: HTMLElement;
+      if (current.reassemblyError) {
+        contentArea = el("p", { class: "error-note", text: current.reassemblyError });
+      } else if (current.reassembled !== null) {
+        // Use a <pre> to preserve whitespace; make it read‑only.
+        contentArea = el("pre", { class: "explorer__doc", style: "white-space: pre-wrap;" }, current.reassembled);
+      } else {
+        contentArea = el("p", { class: "muted", text: "Reassembling…" });
+      }
+
+      // Delete is still allowed; Save is disabled because the document is read‑only.
+      const deleteButton = el("button", { class: "btn btn--danger btn--sm", type: "button", text: "Delete" });
+      on(deleteButton, "click", () => void remove());
+
+      const saveButton = el("button", {
+        class: "btn btn--primary btn--sm",
+        type: "button",
+        text: "Save",
+        disabled: true,
+      });
+
+      const dirtyNote = el("span", { class: "muted", style: "font: var(--text-fine);", text: "" });
+
+      return el(
+        "div",
+        { class: "card stack" },
+        header,
+        contentArea,
+        // Show any generic error (e.g., from loading the manifest) below the content.
+        current.error ? el("p", { class: "error-note", text: current.error }) : null,
+        el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, deleteButton, saveButton)),
+      );
+    }
+
+    // Non‑chunked document handling (existing implementation).
     const modeBtn = el(
       "button",
       { class: "btn btn--sm btn--ghost", type: "button" },
