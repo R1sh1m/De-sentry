@@ -42,6 +42,20 @@
       <circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.055"/>
     </pattern>
 
+    <linearGradient id="sentry-grad-shield" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0071e3" />
+      <stop offset="100%" stop-color="#004085" />
+    </linearGradient>
+    <linearGradient id="sentry-grad-glow" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#2997ff" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#0071e3" stop-opacity="0" />
+    </linearGradient>
+    <radialGradient id="sentry-grad-core" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="50%" stop-color="#64d2ff" />
+      <stop offset="100%" stop-color="#0071e3" stop-opacity="0" />
+    </radialGradient>
+
     <clipPath id="frame">
       <rect x="0" y="0" width="1280" height="320" rx="20"/>
     </clipPath>
@@ -100,47 +114,49 @@
       </g>
     </g>
 
-    <!-- emblem -->
-    <g transform="translate(84 96)">
-      <circle cx="44" cy="44" r="42" fill="none" stroke="url(#accent)" stroke-width="1.6" opacity="0.75"/>
-      <circle cx="44" cy="44" r="31" fill="none" stroke="#2997ff" stroke-width="1" opacity="0.35"/>
-      <g filter="url(#glow)">
-        <circle cx="44" cy="44" r="12" fill="none" stroke="#00f0ff" stroke-width="2.2"/>
-        <circle cx="44" cy="44" r="4.2" fill="#00f0ff"/>
+    <!-- Sentry Aegis Brand Mark -->
+    <g transform="translate(68 86) scale(1.22)">
+      <!-- Shield halo backglow -->
+      <path d="M50 8 L85 22.5 C85 55 70 78 50 92 C30 78 15 55 15 22.5 Z" fill="#2997ff" opacity="0.25" filter="url(#glow)"/>
+      <!-- Shield Body -->
+      <path d="M50 8 L85 22.5 C85 55 70 78 50 92 C30 78 15 55 15 22.5 Z" fill="url(#sentry-grad-shield)" stroke="#2997ff" stroke-width="2" stroke-linejoin="round"/>
+      <!-- Facet Light Highlights -->
+      <path d="M50 8 L15 22.5 C15 55 30 78 50 92 L50 50 Z" fill="url(#sentry-grad-glow)"/>
+      <!-- Constellation Mesh Web Lines -->
+      <g stroke="#ffffff" stroke-width="1.75" stroke-opacity="0.65" stroke-linecap="round">
+        <line x1="50" y1="28" x2="70" y2="60"/>
+        <line x1="70" y1="60" x2="30" y2="60"/>
+        <line x1="30" y1="60" x2="50" y2="28"/>
+        <line x1="50" y1="28" x2="50" y2="49"/>
+        <line x1="70" y1="60" x2="50" y2="49"/>
+        <line x1="30" y1="60" x2="50" y2="49"/>
       </g>
-      <g fill="#9fd0ff">
-        <circle cx="44" cy="6" r="2.6"/>
-        <circle cx="77" cy="25" r="2.2"/>
-        <circle cx="77" cy="63" r="2.6"/>
-        <circle cx="44" cy="82" r="2.2"/>
-        <circle cx="11" cy="63" r="2.6"/>
-        <circle cx="11" cy="25" r="2.2"/>
+      <!-- Satellite Nodes -->
+      <g fill="#ffffff" filter="url(#glow)">
+        <circle cx="50" cy="28" r="4.5"/>
+        <circle cx="70" cy="60" r="4.5"/>
+        <circle cx="30" cy="60" r="4.5"/>
       </g>
-      <g stroke="#2997ff" stroke-width="0.9" opacity="0.45">
-        <path d="M44 6 L44 32"/>
-        <path d="M77 25 L62 38"/>
-        <path d="M77 63 L62 50"/>
-        <path d="M44 82 L44 56"/>
-        <path d="M11 63 L26 50"/>
-        <path d="M11 25 L26 38"/>
-      </g>
+      <!-- Central Sentinel Core -->
+      <circle cx="50" cy="49" r="12" fill="url(#sentry-grad-core)" filter="url(#glow)"/>
+      <polygon points="50,42 55,49 50,56 45,49" fill="#ffffff"/>
     </g>
 
     <!-- wordmark -->
-    <text x="196" y="138" font-family="'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', Inter, system-ui, sans-serif"
+    <text x="206" y="138" font-family="'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', Inter, system-ui, sans-serif"
           font-size="60" font-weight="700" letter-spacing="-1.6" fill="url(#wordmark)">De-Sentry</text>
 
-    <rect x="198" y="158" width="104" height="3" rx="1.5" fill="url(#accent)" opacity="0.9"/>
+    <rect x="208" y="158" width="104" height="3" rx="1.5" fill="url(#accent)" opacity="0.9"/>
 
-    <text x="198" y="192" font-family="'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif"
+    <text x="208" y="192" font-family="'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif"
           font-size="18" font-weight="400" fill="#cccccc" opacity="0.88">Decentralized peer-to-peer database engine</text>
 
-    <text x="198" y="222" font-family="'SF Mono', ui-monospace, Menlo, Consolas, monospace"
+    <text x="208" y="222" font-family="'SF Mono', ui-monospace, Menlo, Consolas, monospace"
           font-size="13" fill="#8e8e93" letter-spacing="0.4">no coordinator · no leader · no single point of failure</text>
 
     <!-- chips -->
     <g font-family="'SF Pro Text', 'Segoe UI', Inter, system-ui, sans-serif" font-size="11.5" font-weight="600">
-      <g transform="translate(198 246)">
+      <g transform="translate(208 246)">
         <rect width="86" height="24" rx="12" fill="#2997ff" fill-opacity="0.12" stroke="#2997ff" stroke-opacity="0.35"/>
         <text x="43" y="16" text-anchor="middle" fill="#9fd0ff" letter-spacing="0.5">C++17</text>
       </g>

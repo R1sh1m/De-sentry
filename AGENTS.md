@@ -85,7 +85,7 @@ still never on the data path.
 ## 3. Build and test
 
 Per-OS prerequisites (and the error → fix table for when one is missing) live
-in `README.md` § Prerequisites / Troubleshooting. The short version: OpenSSL
+in `docs/building.md` and `docs/troubleshooting.md` (linked from `README.md`). The short version: OpenSSL
 **development headers** for the engine; Rust ≥ 1.77, Node ≥ 18 and — on Linux
 — the webkit2gtk / appindicator / rsvg packages for the app. Python needs
 nothing installed; `clients/python/requirements.txt` is empty on purpose, and
