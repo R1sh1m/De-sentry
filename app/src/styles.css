@@ -985,6 +985,9 @@ svg.mesh {
 .dot[data-status="lagging"] {
   background: var(--color-status-lagging);
 }
+.dot[data-status="waiting"] {
+  background: var(--color-status-lagging);
+}
 .dot[data-status="offline"] {
   background: var(--color-status-offline);
 }
@@ -1032,6 +1035,10 @@ svg.mesh {
   color: var(--color-status-converged);
 }
 .badge[data-tone="lagging"] {
+  background: var(--color-status-lagging-bg);
+  color: var(--color-status-lagging);
+}
+.badge[data-tone="waiting"] {
   background: var(--color-status-lagging-bg);
   color: var(--color-status-lagging);
 }

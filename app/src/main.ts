@@ -9,7 +9,7 @@
  */
 
 import { isTauri, sidecar } from "./bridge.js";
-import { boot, convergenceOf, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
+import { boot, convergenceOf, reachabilitySummary, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
 import { qrSvg } from "./util/qr.js";
@@ -320,7 +320,7 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
 
 function openAboutSheet(): void {
   const nodes = store.dataNodes();
-  const reachable = nodes.filter((n) => n.reachable).length;
+  const nodeSummary = reachabilitySummary(nodes);
   const port = store.state.supervisorPort;
   const appInfo = store.state.appInfo;
   const appVersion = appInfo?.version ?? "unknown";
@@ -438,7 +438,7 @@ function openAboutSheet(): void {
       el("dt", { text: "Supervisor" }),
       el("dd", { class: "mono", text: port !== null ? `127.0.0.1:${port}` : "offline" }),
       el("dt", { text: "Active Mesh" }),
-      el("dd", { text: `${reachable}/${nodes.length} data nodes online` }),
+      el("dd", { text: nodeSummary }),
       el("dt", { text: "Shortcuts" }),
       el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · 3 (ledger) · Ctrl+R" }),
       el("dt", { text: "Updates" }),
@@ -752,7 +752,6 @@ function build(): void {
     }
 
     const nodes = store.dataNodes();
-    const reachable = nodes.filter((n) => n.reachable).length;
     const info = state.appInfo;
     const globePoints: GlobeNodePoint[] = nodes.map((n) => ({
       id: n.process.node_id,
@@ -782,7 +781,7 @@ function build(): void {
 
     const subtitle = [
       state.busy !== "" ? state.busy : state.supervisorPort === null ? "supervisor starting…" : "supervisor active",
-      `${reachable}/${nodes.length} online`,
+      reachabilitySummary(nodes),
       info?.on_battery ? "on battery" : null,
       info?.background_mode ? "background sync" : null,
     ]

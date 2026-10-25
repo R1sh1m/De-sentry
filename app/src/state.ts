@@ -49,7 +49,7 @@ import {
 // -- view models -------------------------------------------------------------
 
 /** How a node's stored collection contents compare with its mesh peers. */
-export type Convergence = "converged" | "lagging" | "offline" | "supervisor" | "isolated";
+export type Convergence = "converged" | "lagging" | "waiting" | "checking" | "offline" | "supervisor" | "isolated";
 
 export interface NodeView {
   /** What the sidecar knows: process state, ports, paths. Always present. */
@@ -71,6 +71,8 @@ export interface NodeView {
   changeCursor: number;
   /** Bumped whenever the feed reports a gap, so the UI can say so. */
   resyncs: number;
+  /** First time this app session saw the node; used to avoid false startup-offline state. */
+  firstSeenMs: number;
   lastUpdatedMs: number;
 }
 
@@ -304,6 +306,9 @@ function isDeleted(nodeId: string): boolean {
 
 // -- convergence -------------------------------------------------------------
 
+/** Give restored nodes time to answer their first API probe before calling them offline. */
+const INITIAL_REACHABILITY_GRACE_MS = 20_000;
+
 /**
  * Classifies a node by comparing its collection checksums with other reachable
  * mesh nodes in the app's shared membership domain. Local-only nodes are
@@ -316,7 +321,20 @@ function isDeleted(nodeId: string): boolean {
  */
 export function convergenceOf(node: NodeView): Convergence {
   if (node.process.supervisor) return "supervisor";
-  if (!node.reachable || node.process.process !== "running") return "offline";
+  if (node.process.process === "stopped" || node.process.process === "failed") return "offline";
+  if (!node.reachable) {
+    // The sidecar restores nodes before the UI starts probing them. Until the
+    // first status response arrives, a running process is unverified, not
+    // offline. This is especially important when its first local API request
+    // takes several seconds while storage indexes warm up.
+    if (
+      node.status === null &&
+      node.lastUpdatedMs === 0 &&
+      Date.now() - node.firstSeenMs < INITIAL_REACHABILITY_GRACE_MS
+    ) return "checking";
+    return "offline";
+  }
+  if (node.process.process !== "running") return "offline";
 
   // Local-only nodes form their own data domain. They neither join nor compare
   // against mesh members, even when the same collection names exist there.
@@ -325,6 +343,9 @@ export function convergenceOf(node: NodeView): Convergence {
   // Brain not yet fetched: node is initializing, don't grade it as lagging yet.
   // Wait until we have actual collection data to compare.
   if (node.brain === null) return "lagging";
+  // A LAN node with no peers is online but cannot replicate yet. Do not label
+  // an empty peer set as converged: that suggests the mesh transfer completed.
+  if (node.peers.length === 0) return "waiting";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
   for (const peer of store.dataNodes()) {
     if (peer.process.node_id === node.process.node_id || peer.process.mesh_isolated ||
@@ -345,6 +366,16 @@ export function convergenceOf(node: NodeView): Convergence {
   // If we have no collections to compare (empty node or no peers with collections),
   // consider it converged as long as it's reachable and running.
   return "converged";
+}
+
+/** One shared count label for the app header and topology view. */
+export function reachabilitySummary(nodes: NodeView[]): string {
+  if (nodes.length === 0) return "No nodes";
+  const online = nodes.filter((node) => node.reachable && node.process.process === "running").length;
+  const checking = nodes.filter((node) => convergenceOf(node) === "checking").length;
+  if (checking === nodes.length) return `Checking ${checking} node${checking === 1 ? "" : "s"}…`;
+  if (checking > 0) return `${online}/${nodes.length} online · ${checking} checking`;
+  return `${online}/${nodes.length} nodes online`;
 }
 
 /** The furthest-ahead ledger tip among reachable data nodes, used for display. */
@@ -373,6 +404,7 @@ function blankView(process: SupervisedNode): NodeView {
     unreachableReason: "",
     changeCursor: -1,
     resyncs: 0,
+    firstSeenMs: Date.now(),
     lastUpdatedMs: 0,
   };
 }
@@ -385,11 +417,9 @@ function describeError(error: unknown): string {
 }
 
 /**
- * Refreshes one node's snapshot.
- *
- * `/_brain` already carries collections, peers and the tip, so the common case
- * is two requests, not six. Status is fetched alongside it for the ports,
- * uptime and broadcast counters the brain omits.
+ * Refreshes one node's status and snapshot. Liveness comes from the storage-
+ * independent `/_ping`; status, checksum scans, and quota are best-effort detail
+ * requests and cannot make a responsive process look offline.
  */
 export async function refreshNode(nodeId: string, options: { quota?: boolean } = {}): Promise<void> {
   const view = store.state.nodes.get(nodeId);
@@ -404,8 +434,25 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
 
   const api = apiFor(view.process.api_port);
   try {
-    const [status, brain] = await Promise.all([api.status(), api.brain()]);
-    view.status = status;
+    await api.ping();
+  } catch (error) {
+    view.reachable = false;
+    view.unreachableReason = describeError(error);
+    checkNodeHealth(nodeId, view);
+    store.notify();
+    return;
+  }
+
+  view.reachable = true;
+  view.unreachableReason = "";
+  view.lastUpdatedMs = Date.now();
+  checkNodeHealth(nodeId, view);
+  store.notify();
+
+  const [statusResult, brainResult] = await Promise.allSettled([api.status(), api.brain()]);
+  if (statusResult.status === "fulfilled") view.status = statusResult.value;
+  if (brainResult.status === "fulfilled") {
+    const brain = brainResult.value;
     view.brain = brain;
     view.peers = brain.known_peers;
     view.tip = {
@@ -413,23 +460,25 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
       entry_id: brain.ledger_tip.entry_id,
       entry_hash: brain.ledger_tip.entry_hash,
       signature: brain.ledger_tip.signature,
-      public_key_hex: status.public_key_hex,
+      public_key_hex: view.status?.public_key_hex ?? "",
     };
-    if (options.quota !== false) {
-      // Per-engine quota is a separate call and only the inspector shows it,
-      // so it is refreshed with the rest rather than on its own timer.
-      view.quota = await api.quota().catch(() => view.quota);
-      if (view.quota && !view.process.supervisor) {
-        const quotaMb = view.brain?.free_quota_mb ?? Math.round(view.quota.limit_bytes / (1024 * 1024));
-        sidecar.syncStorageReservation(view.process.data_dir, view.quota.used_bytes, quotaMb).catch(() => {});
-      }
+  }
+  if (statusResult.status === "rejected" && brainResult.status === "rejected") {
+    // Keep the last good overview. These detail endpoints may contend on
+    // storage locks; only a failed `/_ping` means the process is unreachable.
+    checkNodeHealth(nodeId, view);
+    store.notify();
+    return;
+  }
+
+  if (options.quota !== false) {
+    // Per-engine quota is a separate call and only the inspector shows it,
+    // so it is refreshed with the rest rather than on its own timer.
+    view.quota = await api.quota().catch(() => view.quota);
+    if (view.quota && !view.process.supervisor) {
+      const quotaMb = view.brain?.free_quota_mb ?? Math.round(view.quota.limit_bytes / (1024 * 1024));
+      sidecar.syncStorageReservation(view.process.data_dir, view.quota.used_bytes, quotaMb).catch(() => {});
     }
-    view.reachable = true;
-    view.unreachableReason = "";
-    view.lastUpdatedMs = Date.now();
-  } catch (error) {
-    view.reachable = false;
-    view.unreachableReason = describeError(error);
   }
   checkNodeHealth(nodeId, view);
   store.notify();
@@ -566,13 +615,29 @@ async function runSubscription(subscription: Subscription): Promise<void> {
         // A poll that timed out with no changes still proves the node is alive.
         if (!view.reachable) await refreshNode(subscription.nodeId);
       }
-    } catch (error) {
+    } catch {
       if (subscription.stopped || subscription.controller.signal.aborted) return;
-      const view2 = store.state.nodes.get(subscription.nodeId);
-      if (view2 !== undefined && view2.reachable) {
-        view2.reachable = false;
-        view2.unreachableReason = describeError(error);
-        store.notify();
+      // A change-feed failure can be local to that endpoint. Probe the
+      // storage-independent ping before declaring the whole node offline.
+      try {
+        await api.ping();
+        if (subscription.stopped || subscription.controller.signal.aborted) return;
+        const current = store.state.nodes.get(subscription.nodeId);
+        if (current !== undefined) {
+          current.reachable = true;
+          current.unreachableReason = "";
+          current.lastUpdatedMs = Date.now();
+          checkNodeHealth(subscription.nodeId, current);
+          store.notify();
+        }
+      } catch (probeError) {
+        const current = store.state.nodes.get(subscription.nodeId);
+        if (current !== undefined && current.reachable) {
+          current.reachable = false;
+          current.unreachableReason = describeError(probeError);
+          checkNodeHealth(subscription.nodeId, current);
+          store.notify();
+        }
       }
       await sleep(retryMs);
       retryMs = Math.min(RETRY_MAX_MS, retryMs * 2);

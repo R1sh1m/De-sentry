@@ -220,10 +220,42 @@ export function createExplorer(): ExplorerHandles {
     if (node === undefined) return;
     const generation = ++loadGeneration;
     reassemblyGeneration++;
-    if (state !== null) {
+    if (state !== null && state.nodeId === nodeId && state.collection === collection) {
       state.loading = true;
       state.error = "";
       render();
+    } else {
+      // Install the new target before any render. Previously a node switch
+      // kept the old node's state here, then render() saw the mismatch and
+      // called load() again. Each call repeated that cycle synchronously,
+      // spawning a burst of duplicate page requests against the new node.
+      // Apart from leaving the skeleton stuck, that request storm could make
+      // every node's API appear unreachable.
+      const previous = state;
+      const sameCollection = previous !== null && previous.collection === collection;
+      state = {
+        nodeId,
+        collection,
+        rows: [],
+        pageStack: sameCollection ? [...previous.pageStack] : [],
+        selectedKey: sameCollection ? previous.selectedKey : null,
+        draft: "",
+        dirty: false,
+        loading: true,
+        error: "",
+        mayHaveMore: false,
+        keyFilter: sameCollection ? previous.keyFilter : "",
+        viewMode: sameCollection ? previous.viewMode : "formatted",
+        isChunked: false,
+        chunkTotal: 0,
+        chunkField: "",
+        reassembled: null,
+        reassemblyError: null,
+        reassemblyProgress: 0,
+        savingAsset: false,
+        savedAssetPath: null,
+        assetActionError: null,
+      };
     }
 
     try {

@@ -12,7 +12,7 @@
  * longer a right-hand inspector column.
  */
 
-import { convergenceOf, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
+import { convergenceOf, reachabilitySummary, refreshNodeList, refreshTopology, store, type Convergence, type NodeView } from "../state.js";
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
 import { openChangePassphraseModal } from "./changePassphraseModal.js";
@@ -86,6 +86,8 @@ function rawNameOf(node: NodeView): string {
 const STATUS_VAR: Record<Convergence, string> = {
   converged: "var(--color-status-converged)",
   lagging: "var(--color-status-lagging)",
+  waiting: "var(--color-status-lagging)",
+  checking: "var(--color-ink-muted-48)",
   offline: "var(--color-status-offline)",
   supervisor: "var(--color-status-supervisor)",
   isolated: "var(--color-ink-muted-48)",
@@ -94,6 +96,8 @@ const STATUS_VAR: Record<Convergence, string> = {
 const STATUS_TEXT: Record<Convergence, string> = {
   converged: "In sync",
   lagging: "Catching up",
+  waiting: "Waiting for peers",
+  checking: "Checking connection",
   offline: "Offline",
   supervisor: "Supervisor",
   isolated: "Local only",
@@ -1232,7 +1236,7 @@ function treeView(nodes: NodeView[]): HTMLElement {
     el("div", { class: "row", style: "gap: 8px; align-items: center;" },
       icon(Icons.mesh, 16),
       el("strong", { style: "font-size: 15px;", text: "De-Sentry Hierarchical Topology" }),
-      el("span", { class: "badge", text: `${nodes.length} node${nodes.length === 1 ? "" : "s"} online` }),
+      el("span", { class: "badge", text: reachabilitySummary(nodes) }),
     ),
     el("span", { class: "muted", style: "font-size: 12px;", text: "Tiered View: Root → Storage Media → Nodes → Collections" }),
   );

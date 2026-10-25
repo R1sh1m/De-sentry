@@ -166,6 +166,15 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
   // bypassed by claiming a different node_id would not be an ACL.
   auto self = [engine]() { return engine->SelfRequestor(); };
 
+  // The desktop app uses this route only to decide whether the process is
+  // alive. Keep it independent from storage, quota, and catalog locks so an
+  // upload, recovery, or checksum scan cannot make a running node look offline.
+  server->Get("/_ping", [](const HttpRequest&) -> HttpResponse {
+    JsonValue::Object obj;
+    obj.emplace_back("ok", JsonValue(true));
+    return JsonOk(JsonValue(std::move(obj)));
+  });
+
   // -- document CRUD --------------------------------------------------------
   server->Put("/db/:collection/:key", [engine, network, self](const HttpRequest& req) -> HttpResponse {
     const std::string& collection = req.params.at("collection");

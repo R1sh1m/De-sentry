@@ -477,46 +477,48 @@ export class NodeApi {
     const onAbort = () => controller.abort();
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    if (cachedToken === null) await apiToken();
-    let response: Response;
     try {
+      if (cachedToken === null) await apiToken();
       const base: Record<string, string> =
         body === undefined ? {} : { "Content-Type": "application/json" };
-      response = await fetch(url, {
+      const response = await fetch(url, {
         method,
         signal: controller.signal,
         headers: authHeaders(base),
         body: body === undefined ? undefined : JSON.stringify(body),
       });
+      // Keep the timeout active until the entire response body has arrived.
+      // fetch() resolves as soon as headers arrive; clearing the timer there
+      // let a stalled body leave collection pages and node refreshes loading
+      // forever even though the request had a nominal timeout.
+      const text = await response.text();
+      let parsed: unknown = null;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          // A non-JSON body from a JSON API means something is badly wrong;
+          // surface the raw text rather than a parse error about it.
+          if (!response.ok) throw new ApiError(response.status, text.slice(0, 200), url);
+          parsed = text;
+        }
+      }
+
+      if (!response.ok) {
+        const message =
+          parsed && typeof parsed === "object" && "error" in parsed
+            ? String((parsed as { error: unknown }).error)
+            : `HTTP ${response.status}`;
+        throw new ApiError(response.status, message, url);
+      }
+      return parsed as T;
     } catch (cause) {
-      if (options.signal?.aborted) throw cause;
+      if (cause instanceof ApiError || options.signal?.aborted) throw cause;
       throw new UnreachableError(this.baseUrl, cause);
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", onAbort);
     }
-
-    const text = await response.text();
-    let parsed: unknown = null;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        // A non-JSON body from a JSON API means something is badly wrong;
-        // surface the raw text rather than a parse error about it.
-        if (!response.ok) throw new ApiError(response.status, text.slice(0, 200), url);
-        parsed = text;
-      }
-    }
-
-    if (!response.ok) {
-      const message =
-        parsed && typeof parsed === "object" && "error" in parsed
-          ? String((parsed as { error: unknown }).error)
-          : `HTTP ${response.status}`;
-      throw new ApiError(response.status, message, url);
-    }
-    return parsed as T;
   }
 
   private get<T>(path: string, options?: RequestOptions): Promise<T> {
@@ -546,38 +548,42 @@ export class NodeApi {
     const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-    if (cachedToken === null) await apiToken();
-    let response: Response;
     try {
+      if (cachedToken === null) await apiToken();
       const base: Record<string, string> =
         body === undefined ? {} : { "Content-Type": "application/json" };
-      response = await fetch(url, {
+      const response = await fetch(url, {
         method,
         signal: controller.signal,
         headers: authHeaders(base),
         body: body === undefined ? undefined : JSON.stringify(body),
       });
+      const text = await response.text();
+      let parsed: unknown = text;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = text;
+        }
+      }
+      return { status: response.status, statusText: response.statusText, body: parsed };
     } catch (cause) {
       throw new UnreachableError(this.baseUrl, cause);
     } finally {
       clearTimeout(timeout);
     }
-    const text = await response.text();
-    let parsed: unknown = text;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
-      }
-    }
-    return { status: response.status, statusText: response.statusText, body: parsed };
   }
 
   // -- node state ------------------------------------------------------------
 
   status(options?: RequestOptions): Promise<NodeStatus> {
     return this.get<NodeStatus>("/_status", options);
+  }
+
+  /** Minimal process liveness probe; unlike `/_status`, this reads no storage state. */
+  async ping(options?: RequestOptions): Promise<void> {
+    await this.get<{ ok: boolean }>("/_ping", options);
   }
 
   brain(options?: RequestOptions): Promise<Brain> {

@@ -1250,14 +1250,13 @@ pub fn node_security(
 /// Sets, changes or removes a node's password.
 #[tauri::command]
 pub fn set_node_password(
-    app: AppHandle,
     state: State<'_, std::sync::Arc<AppState>>,
     node_id: String,
     current_secret: Option<String>,
     new_password: Option<String>,
     remember: bool,
 ) -> Reply<password::NodeSecurity> {
-    password::set_node_password(app, state, node_id, current_secret, new_password, remember)
+    password::set_node_password(state, node_id, current_secret, new_password, remember)
 }
 
 /// Strength of a candidate passphrase for the wizard meter (no secret leaves

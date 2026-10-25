@@ -30,7 +30,7 @@ use argon2::{
     Argon2,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::appstate::AppState;
 
@@ -151,7 +151,6 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-#[tauri::command]
 pub fn node_security(state: State<'_, Arc<AppState>>, node_id: String) -> Result<NodeSecurity, String> {
     let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable")?;
     let handle = nodes.get(&node_id).ok_or_else(|| format!("no node with id {node_id}"))?;
@@ -195,9 +194,7 @@ pub fn node_security(state: State<'_, Arc<AppState>>, node_id: String) -> Result
 ///   * remove: `current_secret = Some(..)`, `new_password = None`
 ///
 /// `remember` stores (or clears) the new password in the OS keychain.
-#[tauri::command]
 pub fn set_node_password(
-    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     node_id: String,
     current_secret: Option<String>,
@@ -256,7 +253,7 @@ pub fn set_node_password(
             }
 
             drop(nodes);
-            node_security(app, state, node_id)
+            node_security(state, node_id)
         }
         None => {
             // Removing the password. Verify current secret first.
@@ -274,7 +271,7 @@ pub fn set_node_password(
             let _ = crate::keychain::forget(&reference);
 
             drop(nodes);
-            node_security(app, state, node_id)
+            node_security(state, node_id)
         }
     }
 }

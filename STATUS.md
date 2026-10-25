@@ -218,6 +218,57 @@ clicking through the native file-save dialog. The current live app was inspected
 through read-only diagnostics; no existing nodes or files were changed. The
 follow-up fixes are in the refreshed DMG, which has not been launched.
 
+### Executed 2026-10-25: prevent stalled reads from marking live nodes offline
+
+The app's HTTP timeout used to end when response headers arrived, before the
+response body was read. A stalled collection or asset body could therefore keep
+the UI loading indefinitely. Separately, a slow `/_brain` checksum scan or a
+failed change-feed poll could mark a process offline even when `/_status` still
+responded. The timeout now covers the full body read; node liveness is based on
+the storage-independent `/_ping`, while `/_status`, `/_brain`, and quota are
+best-effort details. Change-feed failures probe `/_ping` before changing
+reachability. A LAN node with no known peers is shown as **Waiting for peers**,
+rather than **In sync**. Isolated nodes remain in their own local-only domain.
+
+Verified: `cd app && npm run build` passed (TypeScript and Vite). In the running
+app, both node status endpoints returned HTTP 200; the local-only node reported
+zero peers and the LAN node reported `/_peers: []` with no bootstrap peers in
+`/_config`. The LAN node's PDF later loaded and reconstructed in the Explorer.
+This did not identify the Explorer's separate node-switch request loop, fixed
+below. It does not verify live replication between physical PCs. The active
+app process was not restarted, so that running instance still has the old
+frontend.
+
+The Tauri bundle build exposed duplicate `#[tauri::command]` annotations on
+the password helpers and their registered wrappers. Removed the helper
+annotations and unnecessary `AppHandle` forwarding; the registered wrapper
+commands remain the window API. The arm64 app bundle then built. Tauri exited
+nonzero after bundling because no updater signing private key is configured;
+that signing step is separate from this unsigned DMG. Packaged the app with an
+Applications shortcut into `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+`hdiutil verify` reports a valid image. A read-only mount attempt failed with
+`Device not configured`, so image contents could not be inspected after
+creation; the staging folder contained `De-Sentry.app` and the Applications
+shortcut. A physical-PC replication run remains unverified.
+
+### Executed 2026-10-25: fix Explorer node switching request loop
+
+When Explorer switched from a collection on one node to the same collection
+on another node, it retained the previous node's state until the first fetch
+completed. Rendering saw the old node ID and recursively started another
+load, creating a burst of duplicate page requests. Explorer now installs a
+loading state for the selected node and collection before rendering or making
+the request, so switching nodes starts one fetch and stale responses remain
+discarded by the load generation guard.
+
+Verified: TypeScript typecheck and Vite production build passed. Built the
+Apple Silicon `.app` and manually assembled the unsigned DMG with an
+Applications shortcut; `hdiutil verify` reports a valid image. Tauri produced
+the app bundle, then exited nonzero because the configured updater public key
+has no signing private key in this environment. The app was not signed with a
+Developer ID. A live multi-node click-through and three-PC LAN run remain
+unverified.
+
 ### Executed 2026-10-25: unsigned-for-distribution Apple Silicon app and DMG
 
 macOS 27.0.1 arm64, Rust/Cargo 1.99.1, bundled Node 24.19.0 (the Homebrew

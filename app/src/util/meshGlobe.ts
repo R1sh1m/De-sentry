@@ -6,7 +6,7 @@
  * interactive cursor gravity, and live peer anchors from the cryptographic mesh.
  */
 
-export type GlobeStatus = "converged" | "lagging" | "diverged" | "offline" | "supervisor" | "isolated";
+export type GlobeStatus = "converged" | "lagging" | "waiting" | "checking" | "diverged" | "offline" | "supervisor" | "isolated";
 
 export interface GlobeNodePoint {
   id: string;
@@ -63,6 +63,8 @@ function readPalette(): Palette {
     status: {
       converged: cssVar("--color-status-converged", "#30d158"),
       lagging: cssVar("--color-status-lagging", "#ffd60a"),
+      waiting: cssVar("--color-status-lagging", "#ffd60a"),
+      checking: cssVar("--color-ink-muted-48", "#8e8e93"),
       diverged: cssVar("--color-status-offline", "#ff453a"),
       offline: cssVar("--color-status-offline", "#ff453a"),
       supervisor: cssVar("--color-status-supervisor", "#bf5af2"),
