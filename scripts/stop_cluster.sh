@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Stops every node started by run_cluster.sh (SIGTERM -> clean checkpointed shutdown).
 set -euo pipefail
-RUN_DIR="/tmp/desentry_cluster"
+# Honour TMPDIR so this works where /tmp is not writable, and two people on
+# a shared machine do not collide.
+RUN_DIR="${DESENTRY_RUN_DIR:-${TMPDIR:-/tmp}/desentry_cluster}"
 
 if [ ! -d "$RUN_DIR" ]; then
   echo "no cluster running (no $RUN_DIR)"
