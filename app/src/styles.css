@@ -1164,9 +1164,9 @@ svg.mesh {
   background: linear-gradient(
     90deg,
     var(--color-primary) 0%,
-    var(--color-primary) 8%,
+    var(--color-primary) 18%,
     var(--accent-cyan) 50%,
-    var(--accent-violet) 92%,
+    var(--accent-violet) 82%,
     var(--accent-violet) 100%
   );
   color: #ffffff;
@@ -3081,11 +3081,11 @@ select.ledger__filter-control option {
 }
 
 .qr {
-  display: block;
+  display: inline-block;
   image-rendering: pixelated;
-  border-radius: var(--radius-sm);
   background: #ffffff;
   padding: var(--space-sm);
+  border-radius: 0;
 }
 /* Pairing share: QR on the left, metadata on the right, bottom-aligned. */
 .pairing-share {

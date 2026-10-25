@@ -32,9 +32,16 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > `.btn--primary` used a 135° diagonal direction, which on pill-shaped buttons
 > made the left and right ends appear cut off (the gradient's diagonal stops
 > didn't reach the extreme ends cleanly). Changed to a horizontal 90° gradient
-> so each end shows a solid color (blue left, violet right) with cyan in the
-> middle. Verified: `cd app && npm run build` clean, `check:css`/`check:qr`/
-> `check:a11y` all pass.
+> with widened solid color zones (18%/82%) so each end shows a solid color
+> (blue left, violet right) with cyan in the middle. Verified: `cd app && npm
+> run build` clean, `check:css`/`check:qr`/`check:a11y` all pass.
+>
+> **2026-10-25 — QR code rendering.** The `.qr` class had `border-radius:
+> var(--radius-sm)` which rounded the corners of QR codes, making the finder
+> patterns appear clipped and potentially affecting scan reliability. Changed to
+> `border-radius: 0` and `display: inline-block` so QR codes render with sharp
+> corners as required by the ISO standard. Verified: `npm run build` clean,
+> `check:qr` passes (ISO conformance checks unchanged).
 
 ## Current next steps
 
