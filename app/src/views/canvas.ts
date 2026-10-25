@@ -25,7 +25,49 @@ import { emptyState } from "../util/empty.js";
 const purposeCache = new Map<string, string | null>();
 
 /** Node physical folder size on disk cache (bytes), keyed by node id. */
-const diskUsageCache = new Map<string, number>();
+const diskUsageCache = new Map<string, { bytes: number; quotaUsedBytes: number | null; dataDir: string }>();
+const diskUsagePending = new Set<string>();
+const diskUsageRetryAfter = new Map<string, number>();
+
+function diskUsageFor(node: NodeView): number | undefined {
+  const nodeId = node.process.node_id;
+  const cached = diskUsageCache.get(nodeId);
+  if (!cached) return undefined;
+  const quotaUsedBytes = node.quota?.used_bytes ?? null;
+  if (cached.dataDir !== node.process.data_dir || cached.quotaUsedBytes !== quotaUsedBytes) {
+    diskUsageCache.delete(nodeId);
+    return undefined;
+  }
+  return cached.bytes;
+}
+
+function refreshDiskUsage(node: NodeView): void {
+  const nodeId = node.process.node_id;
+  if (diskUsageFor(node) !== undefined || diskUsagePending.has(nodeId)) return;
+  if ((diskUsageRetryAfter.get(nodeId) ?? 0) > Date.now()) return;
+  const port = store.state.supervisorPort;
+  if (port === null) return;
+
+  const dataDir = node.process.data_dir;
+  const quotaUsedBytes = node.quota?.used_bytes ?? null;
+  diskUsagePending.add(nodeId);
+  apiFor(port).inspect(dataDir).then((candidate) => {
+    const current = store.state.nodes.get(nodeId);
+    if (current?.process.data_dir === dataDir) {
+      if (typeof candidate.used_bytes === "number") {
+        diskUsageCache.set(nodeId, { bytes: candidate.used_bytes, quotaUsedBytes, dataDir });
+        diskUsageRetryAfter.delete(nodeId);
+      } else {
+        diskUsageRetryAfter.set(nodeId, Date.now() + 5000);
+      }
+    }
+  }).catch(() => {
+    diskUsageRetryAfter.set(nodeId, Date.now() + 5000);
+  }).finally(() => {
+    diskUsagePending.delete(nodeId);
+    store.notify();
+  });
+}
 
 /** Node allocation mode cache (reserved vs dynamic), keyed by node id. */
 const allocationModeCache = new Map<string, "reserved" | "dynamic">();
@@ -950,7 +992,7 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       ?? "—";
     const engines = [...new Set(collections.map((c) => c.engine))];
     const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
-    const diskBytes = diskUsageCache.get(node.process.node_id);
+    const diskBytes = diskUsageFor(node);
     const allocMode = allocationModeCache.get(node.process.node_id);
     const uptime = node.status ? duration(node.status.uptime_seconds) : "—";
     const cached = purposeCache.get(node.process.node_id);
@@ -1048,7 +1090,11 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
           const desc = candidate.description;
           purposeCache.set(node.process.node_id, typeof desc === "string" && desc.trim() !== "" ? desc : null);
           if (typeof candidate.used_bytes === "number") {
-            diskUsageCache.set(node.process.node_id, candidate.used_bytes);
+            diskUsageCache.set(node.process.node_id, {
+              bytes: candidate.used_bytes,
+              quotaUsedBytes: node.quota?.used_bytes ?? null,
+              dataDir: node.process.data_dir,
+            });
           }
           if (typeof candidate.preallocated === "boolean") {
             allocationModeCache.set(node.process.node_id, candidate.preallocated ? "reserved" : "dynamic");
@@ -1229,7 +1275,8 @@ function treeView(nodes: NodeView[]): HTMLElement {
 
       const collections = node.brain?.collections ?? [];
       const totalDocs = collections.reduce((sum, c) => sum + c.document_count, 0);
-      const diskBytes = diskUsageCache.get(node.process.node_id);
+      const diskBytes = diskUsageFor(node);
+      if (diskBytes === undefined) refreshDiskUsage(node);
       const diskNote = diskBytes !== undefined ? ` · ${bytes(diskBytes)} on disk` : "";
       const storageSummary = node.quota
         ? `${count(totalDocs)} docs · ${bytes(node.quota.used_bytes)} stored of ${bytes(node.quota.limit_bytes)} limit${diskNote}`

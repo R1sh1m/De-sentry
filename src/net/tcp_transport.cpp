@@ -96,6 +96,12 @@ void TcpTransport::HandleConnection(dsn_socket_t client_fd) {
     active_conns_.fetch_sub(1);
     return;
   }
+  if (hs.value().peer_node_id == identity_->node_id()) {
+    DSN_LOG_WARN("tcp", "rejected inbound self-connection");
+    CloseSocket(client_fd);
+    active_conns_.fetch_sub(1);
+    return;
+  }
   SessionKeys keys = hs.value().keys;
 
   auto req_or = RecvEncrypted(client_fd, &keys, kMaxMessageBytes);
@@ -212,6 +218,11 @@ StatusOr<WireMessage> TcpTransport::SendRequest(const std::string& host, uint16_
   if (!hs.ok()) {
     CloseSocket(fd);
     return hs.status();
+  }
+  if (hs.value().peer_node_id == identity_->node_id()) {
+    CloseSocket(fd);
+    return Status::AuthError("refusing P2P self-connection to " + host + ":" +
+                             std::to_string(port));
   }
   SessionKeys keys = hs.value().keys;
 

@@ -3317,8 +3317,14 @@ select.ledger__filter-control option {
   justify-content: center;
   flex-wrap: wrap;
 }
+.pairing-share__qr {
+  flex: 0 0 auto;
+}
+.pairing-share__qr .qr {
+  margin: 0;
+}
 .pairing-share__meta {
-  flex: 0 1 640px;
+  flex: 1 1 280px;
   min-width: 0;
   display: flex;
   flex-direction: column;

@@ -215,6 +215,11 @@ Status KvBPlusBackend::Verify() {  // Every key the index reports must resolve t
     BPlusTree* index = IndexFor(collection);
     if (index == nullptr) return Status::Corruption("kv backend: missing index for " + collection);
     for (auto& [key, rid] : index->Scan("", 0)) {
+      RID routed_rid;
+      if (!index->Search(key, &routed_rid) || !(routed_rid == rid)) {
+        return Status::Corruption("kv backend: B+Tree routing mismatch for key " + key +
+                                  " in " + collection);
+      }
       Page* page = pool_->FetchPage(rid.page_id);
       if (page == nullptr) {
         return Status::Corruption("kv backend: unreadable page " + std::to_string(rid.page_id) +
@@ -233,6 +238,12 @@ Status KvBPlusBackend::Verify() {  // Every key the index reports must resolve t
 
 Status KvBPlusBackend::Flush() {
   std::lock_guard<std::mutex> lock(mu_);
+  // Root ids change whenever a split creates a new root. Keep the persisted
+  // collection metadata in sync before flushing pages, then commit roots.json
+  // after those pages have reached the disk manager.
+  for (const auto& [collection, index] : indexes_) {
+    if (index) roots_[collection] = index->root_page_id();
+  }
   pool_->FlushAllPages();
   Status st = SaveRoots();
   if (!st.ok()) return st;

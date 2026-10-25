@@ -681,16 +681,30 @@ export function createDropbox(): DropboxHandles {
         item.logs.push(`Engine bind skipped (${describeError(err)}); ingesting into the existing binding.`);
       }
       // Oversized records are chunked into manifest + parts (see
-      // chunkRecords); failures stay per-record so one bad document never
-      // aborts the rest of the file.
+      // chunkRecords). Keep processing independent records, but do not publish
+      // a file manifest if any of that file's parts failed to write.
       const outgoing = chunkRecords(item.payload.records);
       if (outgoing.length !== item.payload.records.length) {
         item.logs.push(`Split ${item.payload.records.length} oversized record(s) into ${outgoing.length} chunked writes (page budget ~4 KiB).`);
       }
+      const failedChunkParents = new Set<string>();
       for (const r of outgoing) {
         if (item.cancelled) {
           item.logs.push("Cancelled by the user; remaining records were not sent.");
           break;
+        }
+        const doc = typeof r.doc === "object" && r.doc !== null && !Array.isArray(r.doc)
+          ? r.doc as Record<string, unknown>
+          : undefined;
+        const chunkParent = doc && typeof doc.parent_key === "string" &&
+          typeof doc.part_index === "number"
+          ? doc.parent_key
+          : undefined;
+        const isChunkManifest = doc?.chunked === true && typeof doc.chunk_total === "number";
+        if (isChunkManifest && failedChunkParents.has(r.key)) {
+          failCount++;
+          item.logs.push(`✗ Manifest "${r.key}" was not committed because one or more file chunks failed.`);
+          continue;
         }
         try {
           const res = await api.putDocument(item.targetCollection, r.key, r.doc);
@@ -700,6 +714,7 @@ export function createDropbox(): DropboxHandles {
           }
         } catch (err) {
           failCount++;
+          if (chunkParent) failedChunkParents.add(chunkParent);
           item.logs.push(`✗ Failed "${r.key}": ${describeError(err)}`);
         }
       }

@@ -133,11 +133,14 @@ bool BPlusTree::RootLooksValid(BufferPoolManager* bpm, page_id_t root_id) {
   Page* p = bpm->FetchPage(root_id);
   if (p == nullptr) return false;
   // An initialised root is either a leaf (which may legitimately be empty) or
-  // an internal node with at least one key. A zero-filled page -- what a read
-  // past the end of the data file returns -- is neither, so a root id that
-  // survived in metadata while its page never reached disk is rejected here
-  // instead of being descended into.
-  const bool valid = IsLeaf(p) || NumKeys(p) > 0;
+  // an internal node with at least one key, and it must have no parent. The
+  // old backend persisted the first root page but failed to persist a new root
+  // after a split. That old page is still a valid leaf, so checking only its
+  // shape let point lookups start in the leftmost leaf and miss later keys.
+  // Reject a non-root page here; StorageEngine will rebuild the index by
+  // replaying the authoritative ledger.
+  const bool valid = Hdr(p)->parent_page_id == kInvalidPageId &&
+                     (IsLeaf(p) || NumKeys(p) > 0);
   bpm->UnpinPage(root_id, false);
   return valid;
 }

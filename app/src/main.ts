@@ -12,6 +12,7 @@ import { isTauri, sidecar } from "./bridge.js";
 import { boot, convergenceOf, refreshNodeList, stopAllSubscriptions, store } from "./state.js";
 import { el, icon, Icons, on, replace } from "./util/dom.js";
 import { sentryLogoSvg } from "./util/logo.js";
+import { qrSvg } from "./util/qr.js";
 import { createMeshGlobe, type GlobeHandle, type GlobeLink, type GlobeNodePoint } from "./util/meshGlobe.js";
 import { canvasZoomFit, canvasZoomStep, createCanvas } from "./views/canvas.js";
 import { createExplorer } from "./views/explorer.js";
@@ -26,6 +27,39 @@ import { openPalette } from "./views/palette.js";
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatPeerAddress(address: string, port: number): string {
+  const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
+  return `${host}:${port}`;
+}
+
+function validPeerAddress(peer: string): boolean {
+  const match = /^(?:\[[0-9a-fA-F:]+\]|[^\s,:]+):(\d{1,5})$/.exec(peer);
+  return match !== null && Number(match[1]) >= 1 && Number(match[1]) <= 65535;
+}
+
+function parseLanMeshInvite(text: string): { peers: string[]; meshSecret: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("The scanned text is not a De-Sentry LAN mesh invite.");
+  }
+  if (typeof value !== "object" || value === null) throw new Error("The scanned text is not a De-Sentry LAN mesh invite.");
+  const invite = value as Record<string, unknown>;
+  if (
+    invite.type !== "de-sentry.lan-mesh-invite" ||
+    invite.version !== 1 ||
+    !Array.isArray(invite.peers) ||
+    invite.peers.length === 0 ||
+    !invite.peers.every((peer) => typeof peer === "string" && validPeerAddress(peer)) ||
+    typeof invite.mesh_secret !== "string" ||
+    !/^[0-9a-fA-F]{64}$/.test(invite.mesh_secret)
+  ) {
+    throw new Error("The QR invite is missing a valid host address or mesh code.");
+  }
+  return { peers: invite.peers as string[], meshSecret: invite.mesh_secret.toLowerCase() };
 }
 
 // -- theme -------------------------------------------------------------------
@@ -170,6 +204,23 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
     placeholder: "Paste the mesh code from the other device",
     "aria-label": "Mesh code",
   }) as HTMLInputElement;
+  const scannedInviteInput = el("textarea", {
+    class: "input",
+    rows: "2",
+    placeholder: "Paste the text copied from the host’s QR code",
+    "aria-label": "Scanned LAN mesh invite",
+  }) as HTMLTextAreaElement;
+  const useInviteButton = el("button", { class: "btn btn--sm", type: "button", text: "Use scanned invite" });
+  on(useInviteButton, "click", () => {
+    try {
+      const invite = parseLanMeshInvite(scannedInviteInput.value.trim());
+      peerInput.value = invite.peers.join("\n");
+      secretInput.value = invite.meshSecret;
+      store.toast("success", "Mesh invite loaded", "Host address and mesh code are ready.", 3500);
+    } catch (error) {
+      store.toast("warning", "Could not read mesh invite", describeError(error), 5000);
+    }
+  });
   const shareSection = el(
     "section",
     { class: "stack" },
@@ -179,10 +230,7 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
   const joinButton = el("button", { class: "btn btn--primary", type: "button", text: "Continue to create node" });
   on(joinButton, "click", () => {
     const peers = peerInput.value.split(/[\n,;]+/).map((peer) => peer.trim()).filter(Boolean);
-    const valid = peers.every((peer) => {
-      const match = /^(?:\[[0-9a-fA-F:]+\]|[^\s,:]+):(\d{1,5})$/.exec(peer);
-      return match !== null && Number(match[1]) >= 1 && Number(match[1]) <= 65535;
-    });
+    const valid = peers.every(validPeerAddress);
     if (peers.length === 0 || !valid) {
       store.toast("warning", "Enter a peer address", "Use the other computer’s LAN IP and P2P port, for example 192.168.1.20:7801.");
       return;
@@ -199,6 +247,14 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
     content,
     el("h2", { class: "wizard__title", text: "Join a LAN Mesh" }),
     el("p", { class: "wizard__lead", text: "On the host computer, choose LAN Mesh when creating its first node. On each other computer, enter one of that node’s LAN addresses and its P2P port, then the shared mesh code." }),
+    shareSection,
+    el("hr"),
+    el("div", { class: "pairing-field" },
+      el("label", { class: "field-label", text: "Scanned host invite (optional)" }),
+      scannedInviteInput,
+      el("p", { class: "muted", text: "Scan the host QR with a camera or QR reader, copy its text, then paste it here to fill the address and mesh code." }),
+      useInviteButton,
+    ),
     el("div", { class: "pairing-field" },
       el("label", { class: "field-label", text: "Host address and P2P port" }),
       peerInput,
@@ -209,8 +265,6 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
     ),
     el("p", { class: "muted", text: "The next screen will create a LAN Mesh node with these details. Isolated Standalone nodes keep discovery off and do not join this mesh." }),
     joinButton,
-    el("hr"),
-    shareSection,
   );
 
   void (async () => {
@@ -222,13 +276,32 @@ function openPairingSheet(onJoin: (peers: string[], meshSecret: string) => void)
       const nodes = await sidecar.listNodes();
       const [meshSecret, lanAddress] = await Promise.all([sidecar.meshSecret(), sidecar.lanAddress()]);
       const localNodes = nodes.filter((node) => !node.supervisor && node.discovery_enabled && node.process === "running");
+      const hostPeer = localNodes.length > 0 && lanAddress
+        ? formatPeerAddress(lanAddress, localNodes[0].p2p_port)
+        : null;
+      const qrInvite = hostPeer === null
+        ? null
+        : qrSvg(JSON.stringify({
+            type: "de-sentry.lan-mesh-invite",
+            version: 1,
+            peers: [hostPeer],
+            mesh_secret: meshSecret,
+          }), { scale: 4, title: "LAN mesh invite" });
       const shareDetails = el(
         "div",
         { class: "pairing-share" },
+        qrInvite !== null
+          ? el("div", { class: "pairing-share__qr" },
+              el("div", { class: "qr qr--constellation" }, qrInvite),
+              el("p", { class: "muted pairing-share__note", text: "Scan this invite to get the host address and mesh code." }),
+            )
+          : el("div", { class: "pairing-share__qr pairing-share__qr--empty" },
+              el("p", { class: "muted", text: "Start a LAN Mesh data node with a detected LAN address to show its join QR." }),
+            ),
         el("div", { class: "pairing-share__meta" },
           el("dl", { class: "kv" },
             el("dt", { text: "Host address and P2P port" }),
-            el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: localNodes.length > 0 && lanAddress ? localNodes.map((node) => `${lanAddress}:${node.p2p_port}`).join("\n") : localNodes.length > 0 ? `LAN address could not be detected. Use this node's P2P port (${localNodes.map((node) => node.p2p_port).join(", ")}) with the host computer's LAN IP.` : "Create and start a LAN Mesh data node first." }),
+            el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: localNodes.length > 0 && lanAddress ? localNodes.map((node) => formatPeerAddress(lanAddress, node.p2p_port)).join("\n") : localNodes.length > 0 ? `LAN address could not be detected. Use this node's P2P port (${localNodes.map((node) => node.p2p_port).join(", ")}) with the host computer's LAN IP.` : "Create and start a LAN Mesh data node first." }),
             el("dt", { text: "Mesh code" }),
             el("dd", { class: "mono", style: "user-select: all; overflow-wrap: anywhere;", text: meshSecret }),
           ),
@@ -444,7 +517,7 @@ function build(): void {
   );
   on(title, "click", openAboutSheet);
 
-  // Mesh icon opens manual LAN invite details and the join form.
+  // Mesh icon opens the QR invite and join form.
   const pairButton = el(
     "button",
     {
@@ -467,7 +540,7 @@ function build(): void {
       title: "Command palette (Ctrl+K)",
       "aria-label": "Command palette",
     },
-    icon(Icons.search, 14),
+    icon(Icons.terminal, 14),
   );
   on(paletteButton, "click", openCommandPalette);
 

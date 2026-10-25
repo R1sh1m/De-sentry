@@ -1779,3 +1779,48 @@ the unsigned DMG was assembled from a staging folder and verified with
 `hdiutil verify`; its mounted root contains `De-Sentry.app` and an
 `Applications` shortcut. A live click-through on three physical PCs remains
 unverified.
+
+### LAN mesh QR visibility (2026-10-25)
+The Join a LAN Mesh sheet rendered the invite QR after the long join form, below
+the visible portion of the sheet. Moved Share this mesh above the join fields;
+the QR now fits on screen when a running LAN data node and LAN address are
+available. The Command Palette now uses the terminal icon; Universal Lookup
+keeps the search icon.
+
+Verified: `npm run build`, `check:qr`, and `check:css`; opened the rebuilt app,
+confirmed both LAN peer addresses and the QR render, and visually confirmed the
+full QR is visible before scrolling. Built unsigned `De-Sentry.app` and an
+unsigned DMG. Tauri's DMG helper still fails in the sandbox, so the DMG was
+assembled from the app bundle manually; `hdiutil verify` passed and a read-only
+mount contained `De-Sentry.app` plus the `Applications` shortcut. Not tested:
+scanning the invite with a separate device.
+
+### KV index recovery and incomplete file replication (2026-10-25)
+Fixed a stale B+Tree root that could pass the old shape check after a split.
+On reopen, the backend now rejects a persisted page that has a parent and
+rebuilds the index from the ledger; normal flushes persist the current root
+after flushing its pages. `/_verify` now compares scan results with point
+lookups, so the previous scan-visible / point-read-missing corruption is
+reported. Dropbox ingestion now withholds a chunked file's manifest if any
+part failed, instead of advertising an incomplete file. P2P also rejects
+authenticated self-connections; adopting a node removes a bootstrap entry
+that points back to that node's old local address and port.
+
+The topology's physical-size cache now tracks the node's stored-byte count and
+data directory, so a cached `0 B on disk` value is re-inspected after data is
+added or the node directory changes.
+
+Verified: C++ `desentryd` build, `npm run build`, and release Tauri app bundle
+build. Rebuilt the unsigned DMG from that app bundle; `hdiutil verify` reports
+the image checksum is valid. A read-only mount attempt failed with
+`Device not configured` in this sandbox, so the mounted image contents were
+not inspected this time. Live API checks on the repaired local nodes returned HTTP 200 for
+`assets/ass_6_pdf#2`, and `/_verify` returned `ok: true` on each checked node.
+The rebuilt unsigned `.app` is at `app/src-tauri/target/release/bundle/macos/De-Sentry.app`.
+Tauri's build command exits 1 after producing the app because it also attempts
+to sign the updater archive and no private signing key is configured. The
+current local app opens with no managed nodes, so the final adoption-time
+self-bootstrap cleanup was compile-checked but not live-checked. A three-PC
+LAN replication/reconstruction run and the full C++/integration suites remain
+unverified. The updated physical-size refresh path is compile-verified but not
+live-observed because this app session has no managed nodes running.

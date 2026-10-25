@@ -9,6 +9,7 @@
 //! they are written to be read by the person who hit the problem rather than
 //! by whoever wrote the code: what failed, on what, and what to do.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,32 @@ use crate::ports::PortAllocation;
 use crate::recovery;
 
 type Reply<T> = Result<T, String>;
+
+fn bootstrap_points_to_self(peer: &str, local_lan_address: Option<&str>, own_p2p_port: u16) -> bool {
+    let Some((host, port)) = peer.rsplit_once(':') else {
+        return false;
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        return false;
+    };
+    if port != own_p2p_port {
+        return false;
+    }
+
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let Ok(host_ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    if host_ip.is_loopback() {
+        return true;
+    }
+    local_lan_address
+        .and_then(|address| address.parse::<IpAddr>().ok())
+        .is_some_and(|local_ip| local_ip == host_ip)
+}
 
 fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
@@ -311,7 +338,8 @@ pub fn start_existing_node(
         None
     };
 
-    if let Err(error) = rewrite_ports(&config_path, &allocation) {
+    let local_lan_address = lan_address().ok().flatten();
+    if let Err(error) = rewrite_ports(&config_path, &allocation, local_lan_address.as_deref()) {
         state.release_ports(allocation);
         return Err(error);
     }
@@ -339,13 +367,43 @@ pub fn start_existing_node(
     Ok(view)
 }
 
-/// Rewrites only the port fields of an existing config, leaving the rest alone.
-fn rewrite_ports(config_path: &Path, allocation: &PortAllocation) -> Reply<()> {
+/// Rewrites ports on an adopted node and removes a bootstrap entry that points
+/// back to that node's previous LAN address and P2P port.
+fn rewrite_ports(
+    config_path: &Path,
+    allocation: &PortAllocation,
+    local_lan_address: Option<&str>,
+) -> Reply<()> {
     let text = std::fs::read_to_string(config_path).map_err(fail)?;
     let mut value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
         format!("{} is not valid JSON: {error}", config_path.display())
     })?;
     if let Some(object) = value.as_object_mut() {
+        let old_p2p_port = object
+            .get("p2p_port")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok())
+            .unwrap_or(0);
+        if old_p2p_port != 0 {
+            if let Some(peers) = object
+                .get_mut("bootstrap_peers")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                peers.retain(|peer| {
+                    let Some(address) = peer.as_str() else {
+                        return true;
+                    };
+                    if bootstrap_points_to_self(address, local_lan_address, old_p2p_port) {
+                        log::warn!(
+                            "removed self-referential bootstrap peer {address} while adopting {}",
+                            config_path.display()
+                        );
+                        return false;
+                    }
+                    true
+                });
+            }
+        }
         object.insert("api_port".into(), allocation.api_port.into());
         object.insert("p2p_port".into(), allocation.p2p_port.into());
         object.insert("discovery_port".into(), allocation.discovery_port.into());
@@ -442,10 +500,29 @@ pub fn create_node(
         {
             return Err("the mesh code must be the 64-character code shown on the device you are joining".into());
         }
+    }
+    if !request.bootstrap_peers.is_empty() && requested_mesh_secret.is_empty() {
+        return Err("enter the mesh code from the device you are joining as well as its peer address".into());
+    }
+
+    let allocation = state.allocate_ports().map_err(fail)?;
+    let local_lan_address = lan_address().ok().flatten();
+    if let Some(peer) = request.bootstrap_peers.iter().find(|peer| {
+        bootstrap_points_to_self(peer, local_lan_address.as_deref(), allocation.p2p_port)
+    }) {
+        state.release_ports(allocation);
+        return Err(format!(
+            "peer address {peer} points to this new node; enter another node’s LAN IP and P2P port"
+        ));
+    }
+
+    if !requested_mesh_secret.is_empty() {
         let current = std::env::var("DESENTRY_CLUSTER_SECRET").unwrap_or_default();
         if current != requested_mesh_secret {
-            keychain::store(keychain::MESH_SECRET_REF, requested_mesh_secret)
-                .map_err(|error| format!("could not save the mesh code in the OS keychain: {error}"))?;
+            if let Err(error) = keychain::store(keychain::MESH_SECRET_REF, requested_mesh_secret) {
+                state.release_ports(allocation);
+                return Err(format!("could not save the mesh code in the OS keychain: {error}"));
+            }
             std::env::set_var("DESENTRY_CLUSTER_SECRET", requested_mesh_secret);
 
             // Membership is app-wide. Move already-running data nodes onto
@@ -457,17 +534,15 @@ pub fn create_node(
                 .map(|node| node.node_id)
                 .collect();
             for node_id in running {
-                state.restart_node(&node_id).map_err(|error| {
-                    format!("mesh code was saved, but an existing node could not restart: {error}")
-                })?;
+                if let Err(error) = state.restart_node(&node_id) {
+                    state.release_ports(allocation);
+                    return Err(format!(
+                        "mesh code was saved, but an existing node could not restart: {error}"
+                    ));
+                }
             }
         }
     }
-    if !request.bootstrap_peers.is_empty() && requested_mesh_secret.is_empty() {
-        return Err("enter the mesh code from the device you are joining as well as its peer address".into());
-    }
-
-    let allocation = state.allocate_ports().map_err(fail)?;
 
     // Key mode: "generated" (recovery key) or "passphrase" (custom passphrase).
     // The node key exists from the first write rather than converted after.
@@ -1101,7 +1176,8 @@ pub fn unlock_node(
         // untouched.
         let secret = resolve_unlock_secret(&target_dir, &password)?;
         let allocation = state.allocate_ports().map_err(fail)?;
-        if let Err(error) = rewrite_ports(&config_path, &allocation) {
+        let local_lan_address = lan_address().ok().flatten();
+        if let Err(error) = rewrite_ports(&config_path, &allocation, local_lan_address.as_deref()) {
             state.release_ports(allocation);
             return Err(error);
         }
