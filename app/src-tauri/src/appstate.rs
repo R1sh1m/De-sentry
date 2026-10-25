@@ -78,6 +78,9 @@ pub struct AppState {
     reserved: Mutex<HashSet<u16>>,
     /// Recovery keys generated but not yet exported. Never persisted.
     pending_keys: Mutex<HashMap<String, String>>,
+    /// Reconstructed files the user chose to save in this app session. Shell
+    /// actions can open only these paths, never arbitrary paths from the webview.
+    pub saved_asset_files: Mutex<HashSet<PathBuf>>,
     /// Node id of the app's own supervisor.
     pub supervisor_id: Mutex<Option<String>>,
     /// Startup failure retained for the UI when the window opens without a supervisor.
@@ -97,6 +100,7 @@ impl AppState {
             nodes: Mutex::new(HashMap::new()),
             reserved: Mutex::new(HashSet::new()),
             pending_keys: Mutex::new(HashMap::new()),
+            saved_asset_files: Mutex::new(HashSet::new()),
             supervisor_id: Mutex::new(None),
             supervisor_start_error: Mutex::new(None),
             background_mode: AtomicBool::new(false),

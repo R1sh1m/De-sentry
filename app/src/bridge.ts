@@ -576,9 +576,14 @@ export const sidecar = {
     return invoke<string | null>("pick_save_file", { title, defaultName });
   },
 
-  /** Reconstructs a replicated base64 asset and saves it through the native save dialog. */
-  saveAssetFile(filename: string, base64Data: string): Promise<string | null> {
-    return invoke<string | null>("save_asset_file", { filename, base64Data });
+  /** Verifies and saves a reconstructed asset through the native save dialog. */
+  saveAssetFile(filename: string, base64Data: string, expectedSize: number, expectedSha256?: string): Promise<string | null> {
+    return invoke<string | null>("save_asset_file", { filename, base64Data, expectedSize, expectedSha256 });
+  },
+
+  /** Opens or reveals a file saved through this app during the current session. */
+  openSavedAsset(path: string, reveal: boolean): Promise<void> {
+    return invoke<void>("open_saved_asset", { path, reveal });
   },
 
   /** Opens a node's data directory. Takes a node id; the sidecar resolves and allowlists the path. */

@@ -387,6 +387,7 @@ pub fn run() {
             commands::mesh_secret,
             commands::lan_address,
             commands::save_asset_file,
+            commands::open_saved_asset,
             commands::pick_save_file,
             commands::reveal_node_files,
             commands::set_autostart,

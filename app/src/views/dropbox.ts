@@ -46,6 +46,7 @@ export function createDropbox(): DropboxHandles {
     targetNodeId: string;
     targetCollection: string;
     isIngesting: boolean;
+    ingestionComplete: boolean;
     /** Set by Discard: the detached PUT loop checks it per record and stops. */
     cancelled: boolean;
     logs: string[];
@@ -56,6 +57,7 @@ export function createDropbox(): DropboxHandles {
 
   let staged: StagedItem[] = [];
   let nextStagedId = 1;
+  let nextViewRequest = 1;
 
   function analyzeText(text: string, filename = ""): AnalyzedPayload {
     const trimmed = text.trim();
@@ -441,6 +443,7 @@ export function createDropbox(): DropboxHandles {
     const payload = item.payload;
 
     const nodeSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);", "aria-label": `Destination node for ${item.sourceName || payload.title}` }) as HTMLSelectElement;
+    nodeSelect.disabled = item.isIngesting || item.ingestionComplete;
     for (const n of nodes) {
       const quota = n.status?.quota;
       const freeMiB = n.brain?.free_quota_mb
@@ -463,6 +466,7 @@ export function createDropbox(): DropboxHandles {
       "aria-label": `Collection for ${item.sourceName || payload.title}`,
       style: "padding: 6px 10px; font-size: var(--text-sm); font-family: var(--font-mono); width: 160px;",
     }) as HTMLInputElement;
+    colInput.disabled = item.isIngesting || item.ingestionComplete;
     on(colInput, "input", () => { item.targetCollection = colInput.value.trim(); });
 
     const commitBtn = el(
@@ -471,11 +475,11 @@ export function createDropbox(): DropboxHandles {
         class: "btn btn--primary",
         type: "button",
         style: "gap: 6px;",
-        disabled: item.isIngesting || nodes.length === 0 ? "true" : undefined,
+        disabled: item.isIngesting || item.ingestionComplete || nodes.length === 0 ? "true" : undefined,
         title: nodes.length === 0 ? "No online nodes to ingest into" : undefined,
       },
       icon(Icons.plug, 14),
-      item.isIngesting ? "Ingesting…" : `Ingest ${payload.records.length} records`,
+      item.isIngesting ? "Ingesting…" : item.ingestionComplete ? "Ingested" : `Ingest ${payload.records.length} records`,
     );
 
     // Discard is disabled while ingesting: removing the card mid-loop used
@@ -506,6 +510,22 @@ export function createDropbox(): DropboxHandles {
     );
 
     const failures = item.logs.filter((l) => l.startsWith("✗")).length;
+    const fileName = item.payload.records.find((record) => {
+      const doc = record.doc as Record<string, unknown> | null;
+      return doc !== null && typeof doc === "object" && typeof doc.filename === "string";
+    });
+    const viewButton = item.ingestionComplete && item.payload.records.length > 0
+      ? el("button", { class: "btn btn--sm", type: "button", text: fileName ? "View file in Explorer" : "View data in Explorer" })
+      : null;
+    if (viewButton) on(viewButton, "click", () => {
+      store.select({
+        kind: "collection",
+        nodeId: item.targetNodeId,
+        collection: item.targetCollection,
+        key: item.payload.records[0].key,
+        focusRequest: nextViewRequest++,
+      });
+    });
 
     return el(
       "div",
@@ -529,7 +549,7 @@ export function createDropbox(): DropboxHandles {
         el("strong", { text: payload.records.length > 3 ? `Preview (first 3 of ${payload.records.length} records):` : `Preview (${payload.records.length} ${payload.records.length === 1 ? "record" : "records"}):`, style: "font-size: var(--text-xs); margin-bottom: 4px;" }),
         ...previewRows,
       ),
-      el("div", { class: "row", style: "gap: 10px;" }, commitBtn, cancelBtn),
+      el("div", { class: "row", style: "gap: 10px;" }, commitBtn, cancelBtn, viewButton),
       failures > 0 && !item.isIngesting
         ? el("p", { class: "error-note", text: `${failures} record${failures === 1 ? "" : "s"} failed — see the log below.` })
         : null,
@@ -563,27 +583,36 @@ export function createDropbox(): DropboxHandles {
         return;
       }
       const key = file.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      stageData(
-        {
-          workload: "raw",
-          title: `Binary file: ${file.name}`,
-          summary: `File asset (${bytes(file.size)}); original bytes preserved and oversized data chunked.`,
-          suggestedCollection: "assets",
-          suggestedEngine: "kv",
-          records: [{
-            key,
-            doc: {
-              filename: file.name,
-              mime: match[1] || "application/octet-stream",
-              size_bytes: file.size,
-              base64: match[2],
-              created_ms: Date.now(),
+      void file.arrayBuffer()
+        .then((contents) => crypto.subtle.digest("SHA-256", contents))
+        .then((digest) => {
+          const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          stageData(
+            {
+              workload: "raw",
+              title: `Binary file: ${file.name}`,
+              summary: `File asset (${bytes(file.size)}); original bytes preserved, chunked if needed, and SHA-256 recorded for reconstruction checks.`,
+              suggestedCollection: "assets",
+              suggestedEngine: "kv",
+              records: [{
+                key,
+                doc: {
+                  filename: file.name,
+                  mime: match[1] || "application/octet-stream",
+                  size_bytes: file.size,
+                  sha256,
+                  base64: match[2],
+                  created_ms: Date.now(),
+                },
+              }],
+              rawText: "",
             },
-          }],
-          rawText: "",
-        },
-        file.name,
-      );
+            file.name,
+          );
+        })
+        .catch((error: unknown) => {
+          store.toast("error", `Could not verify '${file.name}'`, describeError(error), 5000);
+        });
     };
     reader.onerror = () => {
       store.toast("error", `Could not read '${file.name}'`, reader.error ? reader.error.message : "Read failed.");
@@ -604,6 +633,7 @@ export function createDropbox(): DropboxHandles {
       targetCollection: payload.suggestedCollection,
       targetNodeId: best ? best.process.node_id : (store.dataNodes()[0]?.process.node_id ?? ""),
       isIngesting: false,
+      ingestionComplete: false,
       cancelled: false,
       logs: [],
     }];
@@ -630,6 +660,7 @@ export function createDropbox(): DropboxHandles {
     }
 
     item.isIngesting = true;
+    item.ingestionComplete = false;
     render();
     item.logs = [`Starting ingestion into node ${node.process.node_name || item.targetNodeId} / ${item.targetCollection}...`];
 
@@ -680,6 +711,7 @@ export function createDropbox(): DropboxHandles {
       const total = outgoing.length;
       const label = item.sourceName || item.targetCollection;
       if (failCount === 0) {
+        item.ingestionComplete = !item.cancelled;
         store.toast(
           "success",
           "Ingestion complete",

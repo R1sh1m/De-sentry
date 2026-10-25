@@ -16,9 +16,14 @@ import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
 
 const PAGE_SIZE = 200;
+const ASSET_CHUNK_CHARS = 3500;
+const MAX_ASSET_BYTES = 64 * 1024 * 1024;
+const MAX_ASSET_CHUNKS = Math.ceil((Math.ceil(MAX_ASSET_BYTES / 3) * 4) / ASSET_CHUNK_CHARS);
 
 /** Monotonic navigation id: stale page turns must not install their stacks. */
 let loadGeneration = 0;
+/** Invalidates part reads when the selected row or collection changes. */
+let reassemblyGeneration = 0;
 
 /** Pending key-filter debounce, shared so a re-render retires the orphan. */
 let sharedFilterTimer = 0;
@@ -188,6 +193,10 @@ interface ExplorerState {
   chunkField: string;
   reassembled: string | null;
   reassemblyError: string | null;
+  reassemblyProgress: number;
+  savingAsset: boolean;
+  savedAssetPath: string | null;
+  assetActionError: string | null;
 }
 
 export interface ExplorerHandles {
@@ -199,6 +208,7 @@ export function createExplorer(): ExplorerHandles {
   const element = el("div", { class: "explorer" });
 
   let state: ExplorerState | null = null;
+  let lastFocusRequest: number | null = null;
 
   async function load(
     nodeId: string,
@@ -208,7 +218,8 @@ export function createExplorer(): ExplorerHandles {
   ): Promise<void> {
     const node = store.node(nodeId);
     if (node === undefined) return;
-    loadGeneration++;
+    const generation = ++loadGeneration;
+    reassemblyGeneration++;
     if (state !== null) {
       state.loading = true;
       state.error = "";
@@ -220,6 +231,7 @@ export function createExplorer(): ExplorerHandles {
         start: start || undefined,
         limit: PAGE_SIZE,
       });
+      if (generation !== loadGeneration) return;
       // The engine's scan bound is inclusive: ask from the last visible key
       // and drop the repeated first row. (A trailing-space suffix hack was
       // tried before; it breaks on keys that genuinely end in a space.)
@@ -234,7 +246,15 @@ export function createExplorer(): ExplorerHandles {
       const prevSelected =
         prev !== null && prev.collection === collection ? prev.selectedKey : null;
       const kept = prevSelected !== null ? rows.find((r) => r.key === prevSelected) : undefined;
-      const selected = kept !== undefined ? kept.key : (rows.length > 0 ? rows[0].key : null);
+      const requestedKey = store.state.selection.kind === "collection" &&
+        store.state.selection.nodeId === nodeId &&
+        store.state.selection.collection === collection &&
+        store.state.selection.key === start
+          ? store.state.selection.key
+          : null;
+      const selected = requestedKey !== null && rows.some((row) => row.key === requestedKey)
+        ? requestedKey
+        : kept !== undefined ? kept.key : (rows.length > 0 ? rows[0].key : null);
       const selectedRow = rows.find((r) => r.key === selected);
       state = {
         nodeId,
@@ -254,6 +274,10 @@ export function createExplorer(): ExplorerHandles {
         chunkField: "",
         reassembled: null,
         reassemblyError: null,
+        reassemblyProgress: 0,
+        savingAsset: false,
+        savedAssetPath: null,
+        assetActionError: null,
       };
       // If the selected row is a chunked manifest, reassemble its parts.
       const selectedDoc = selectedRow?.document as Record<string, unknown> | undefined;
@@ -264,6 +288,7 @@ export function createExplorer(): ExplorerHandles {
         void reassemble(selectedRow);
       }
     } catch (error) {
+      if (generation !== loadGeneration) return;
       state = {
         nodeId,
         collection,
@@ -282,56 +307,148 @@ export function createExplorer(): ExplorerHandles {
         chunkField: "",
         reassembled: null,
         reassemblyError: null,
+        reassemblyProgress: 0,
+        savingAsset: false,
+        savedAssetPath: null,
+        assetActionError: null,
       };
     }
     render();
   }
 
-  /**
-   * Fetch every part of a chunked manifest (#0 … #n-1) and concatenate the
-   * chunk_field (falling back to "text") into a single reassembled string.
-   * Updates state and re-renders when done, or records which part is missing.
-   */
+  /** Fetches and validates ordered parts before enabling a reconstructed file. */
   async function reassemble(row: DocumentRow): Promise<void> {
-    if (state === null) return;
-    const node = store.node(state.nodeId);
+    const current = state;
+    if (current === null) return;
+    const generation = ++reassemblyGeneration;
+    const node = store.node(current.nodeId);
     if (node === undefined) return;
 
     const doc = row.document as Record<string, unknown>;
     const chunkTotal = typeof doc.chunk_total === 'number' ? doc.chunk_total : 0;
-    const chunkField = typeof doc.chunk_field === 'string' ? (doc.chunk_field as string) : 'text';
+    const chunkField = typeof doc.chunk_field === 'string' ? doc.chunk_field : 'text';
+    current.reassemblyProgress = 0;
+    current.reassemblyError = null;
+    current.reassembled = null;
+    render();
+
+    const stillSelected = (): boolean => state === current && current.selectedKey === row.key && generation === reassemblyGeneration;
+    const failReassembly = (message: string): void => {
+      if (!stillSelected()) return;
+      current.reassemblyError = message;
+      current.reassembled = null;
+      current.reassemblyProgress = 0;
+      render();
+    };
+
+    if (!Number.isSafeInteger(chunkTotal) || chunkTotal < 1 || chunkTotal > MAX_ASSET_CHUNKS) {
+      failReassembly("This file’s manifest has an invalid or unsupported number of parts.");
+      return;
+    }
+    if (!chunkField) {
+      failReassembly("This file’s manifest does not identify its chunk data.");
+      return;
+    }
 
     const parts: string[] = [];
-    for (let i = 0; i < chunkTotal; i++) {
-      try {
-        const part = await apiFor(node.process.api_port).getDocument(state.collection, `${row.key}#${i}`);
-        const partDoc = part as Record<string, unknown>;
-        let text = '';
-        if (typeof partDoc[chunkField] === 'string') {
-          text = partDoc[chunkField] as string;
-        } else if (typeof partDoc.text === 'string') {
-          text = partDoc.text as string;
+    const api = apiFor(node.process.api_port);
+    const batchSize = 32;
+    for (let start = 0; start < chunkTotal; start += batchSize) {
+      const end = Math.min(start + batchSize, chunkTotal);
+      const results = await Promise.all(Array.from({ length: end - start }, async (_, offset) => {
+        const index = start + offset;
+        try {
+          const part = await api.getDocument(current.collection, `${row.key}#${index}`);
+          return { index, part: part as Record<string, unknown>, error: null };
+        } catch (error) {
+          return { index, part: null, error };
         }
-        parts.push(text);
-      } catch {
-        state.reassemblyError = `Missing part #${i} of ${chunkTotal}`;
-        state.reassembled = null;
-        render();
+      }));
+      if (!stillSelected()) return;
+      for (const result of results) {
+        const i = result.index;
+        if (result.error !== null || result.part === null) {
+          failReassembly(`Could not read part #${i} of ${chunkTotal}: ${describeError(result.error)}`);
+          return;
+        }
+        const partDoc = result.part;
+        if (
+          partDoc.parent_key !== row.key ||
+          partDoc.part_index !== i ||
+          partDoc.part_total !== chunkTotal ||
+          partDoc.field !== chunkField ||
+          typeof partDoc.text !== 'string' ||
+          partDoc.text.length === 0 ||
+          partDoc.text.length > ASSET_CHUNK_CHARS ||
+          (i < chunkTotal - 1 && partDoc.text.length !== ASSET_CHUNK_CHARS)
+        ) {
+          failReassembly(`Part #${i} does not match this file’s manifest. The file was not reconstructed.`);
+          return;
+        }
+        parts.push(partDoc.text);
+        current.reassemblyProgress = i + 1;
+      }
+      render();
+    }
+
+    const joined = parts.join('');
+    if (chunkField === 'base64') {
+      const expectedSize = doc.size_bytes;
+      if (!Number.isSafeInteger(expectedSize) || (expectedSize as number) < 0 || (expectedSize as number) > MAX_ASSET_BYTES) {
+        failReassembly("This file’s manifest has an invalid size. The file was not reconstructed.");
+        return;
+      }
+      const expectedBase64Length = Math.ceil((expectedSize as number) / 3) * 4;
+      if (joined.length !== expectedBase64Length || chunkTotal !== Math.ceil(joined.length / ASSET_CHUNK_CHARS)) {
+        failReassembly("The reconstructed data length does not match the file manifest. The file was not saved.");
         return;
       }
     }
-
-    state.reassembled = parts.join('');
-    state.reassemblyError = null;
+    if (!stillSelected()) return;
+    current.reassembled = joined;
+    current.reassemblyError = null;
     render();
   }
 
-  async function saveAssetFile(filename: string, base64Data: string): Promise<void> {
+  async function saveAssetFile(
+    current: ExplorerState,
+    key: string,
+    filename: string,
+    base64Data: string,
+    expectedSize: number,
+    expectedSha256: string | undefined,
+  ): Promise<void> {
+    current.savingAsset = true;
+    current.assetActionError = null;
+    render();
     try {
-      const path = await sidecar.saveAssetFile(filename, base64Data);
-      if (path !== null) store.toast("success", "File reconstructed", `Saved ${filename} to ${path}.`, 5000);
+      const path = await sidecar.saveAssetFile(filename, base64Data, expectedSize, expectedSha256);
+      if (state !== current || current.selectedKey !== key) return;
+      if (path !== null) {
+        current.savedAssetPath = path;
+        store.toast("success", "File reconstructed", `Saved ${filename} to ${path}.`, 5000);
+      }
     } catch (error) {
-      store.toast("error", "Could not save file", describeError(error), 5000);
+      if (state !== current || current.selectedKey !== key) return;
+      current.assetActionError = describeError(error);
+      store.toast("error", "Could not save file", current.assetActionError, 5000);
+    } finally {
+      current.savingAsset = false;
+      if (state === current && current.selectedKey === key) render();
+    }
+  }
+
+  async function openSavedAsset(current: ExplorerState, reveal: boolean): Promise<void> {
+    if (current.savedAssetPath === null) return;
+    current.assetActionError = null;
+    try {
+      await sidecar.openSavedAsset(current.savedAssetPath, reveal);
+      const locationName = store.state.appInfo?.platform === "macos" ? "Finder" : "your file manager";
+      store.toast("success", reveal ? `File shown in ${locationName}` : "File opened", reveal ? `The reconstructed file is selected in ${locationName}.` : "The file was opened with your default app.", 4000);
+    } catch (error) {
+      current.assetActionError = describeError(error);
+      store.toast("error", reveal ? "Could not show file" : "Could not open file", current.assetActionError, 5000);
+      if (state === current) render();
     }
   }
 
@@ -342,6 +459,7 @@ export function createExplorer(): ExplorerHandles {
       if (!discard) return;
     }
     const row = state.rows.find((r) => r.key === key);
+    reassemblyGeneration++;
     state.selectedKey = key;
     state.draft = row ? json(row.document) : "";
     state.dirty = false;
@@ -353,6 +471,10 @@ export function createExplorer(): ExplorerHandles {
     state.chunkField = "";
     state.reassembled = null;
     state.reassemblyError = null;
+    state.reassemblyProgress = 0;
+    state.savingAsset = false;
+    state.savedAssetPath = null;
+    state.assetActionError = null;
 
     // Detect a chunked manifest and reassemble its parts (read-only).
     const doc = row?.document as Record<string, unknown> | undefined;
@@ -482,7 +604,9 @@ export function createExplorer(): ExplorerHandles {
     function renderKeysOnly(): void {
       replace(keysContainer);
       const filtered = current.rows.filter((r) =>
-        current.keyFilter ? r.key.toLowerCase().includes(current.keyFilter) : true,
+        current.keyFilter
+          ? `${r.key} ${String((r.document as Record<string, unknown> | undefined)?.filename ?? "")}`.toLowerCase().includes(current.keyFilter)
+          : true,
       );
 
       if (filtered.length === 0) {
@@ -499,14 +623,15 @@ export function createExplorer(): ExplorerHandles {
       for (const row of filtered) {
         const doc = row.document as Record<string, unknown> | undefined;
         const isChunked = doc?.chunked === true && typeof doc.chunk_total === 'number';
+        const displayName = typeof doc?.filename === "string" ? doc.filename : row.key;
         const button = el("button", {
           class: "explorer__key",
           type: "button",
           role: "option",
           "aria-selected": String(row.key === current.selectedKey),
-          title: `${row.key} — ${documentPreview(row.document)}`,
+          title: `${displayName} (${row.key}) — ${documentPreview(row.document)}`,
         },
-        el("span", { text: truncate(row.key, 60) }),
+        el("span", { text: truncate(displayName, 60) }),
         isChunked ? el("span", {
           class: "badge",
           style: "margin-left: 8px; font-size: 10px; padding: 1px 5px;",
@@ -643,51 +768,64 @@ export function createExplorer(): ExplorerHandles {
       } else if (isBinaryAsset && current.reassembled !== null) {
         const size = typeof manifest?.size_bytes === "number" ? bytes(manifest.size_bytes) : "Unknown size";
         const mime = typeof manifest?.mime === "string" ? manifest.mime : "application/octet-stream";
+        const savedPath = current.savedAssetPath;
         contentArea = el("div", { class: "stack" },
-          el("strong", { text: "Original file reconstructed" }),
+          el("strong", { text: "Reconstructed file ready to save" }),
           el("p", { class: "muted", text: `${assetFilename} · ${size} · ${mime}` }),
-          el("p", { class: "muted", text: "Save the file below, then open it from the folder you choose." }),
+          savedPath !== null
+            ? el("p", { class: "muted", text: `Saved copy: ${savedPath}` })
+            : el("p", { class: "muted", text: "Save a copy on this device to open it with your default app." }),
         );
       } else if (current.reassembled !== null) {
         // Use a <pre> to preserve whitespace; make it read‑only.
         contentArea = el("pre", { class: "explorer__doc", style: "white-space: pre-wrap;" }, current.reassembled);
       } else {
-        contentArea = el("p", { class: "muted", text: isBinaryAsset ? "Reconstructing original file…" : "Reassembling…" });
+        contentArea = el("p", {
+          class: "muted",
+          text: isBinaryAsset
+            ? `Reconstructing file parts (${current.reassemblyProgress}/${current.chunkTotal})…`
+            : `Reassembling parts (${current.reassemblyProgress}/${current.chunkTotal})…`,
+        });
       }
 
-      // Delete is still allowed; Save is disabled because the document is read‑only.
+      // The manifest is read-only; reconstruction actions stay beside the file status.
       const deleteButton = el("button", { class: "btn btn--danger btn--sm", type: "button", text: "Delete" });
       on(deleteButton, "click", () => void remove());
 
+      const expectedSize = manifest?.size_bytes;
+      const validSize = typeof expectedSize === "number" && Number.isSafeInteger(expectedSize) && expectedSize >= 0 && expectedSize <= MAX_ASSET_BYTES;
+      const expectedSha256 = typeof manifest?.sha256 === "string" ? manifest.sha256 : undefined;
       const downloadButton = isBinaryAsset
         ? el("button", {
             class: "btn btn--primary btn--sm",
             type: "button",
-            text: "Save original file",
-            disabled: current.reassembled === null,
+            text: current.savingAsset ? "Saving…" : current.savedAssetPath === null ? "Save a copy…" : "Save another copy…",
+            disabled: current.reassembled === null || !validSize || current.savingAsset,
           })
         : null;
       if (downloadButton) on(downloadButton, "click", () => {
-        if (current.reassembled !== null) void saveAssetFile(assetFilename, current.reassembled);
+        if (current.reassembled !== null && validSize) {
+          void saveAssetFile(current, current.selectedKey!, assetFilename, current.reassembled, expectedSize as number, expectedSha256);
+        }
       });
-
-      const saveButton = el("button", {
-        class: "btn btn--primary btn--sm",
-        type: "button",
-        text: "Save",
-        disabled: true,
-      });
-
-      const dirtyNote = el("span", { class: "muted", style: "font: var(--text-fine);", text: "" });
+      const openButton = current.savedAssetPath !== null
+        ? el("button", { class: "btn btn--sm", type: "button", text: "Open file" })
+        : null;
+      if (openButton) on(openButton, "click", () => void openSavedAsset(current, false));
+      const showInFolderButton = current.savedAssetPath !== null
+        ? el("button", { class: "btn btn--sm btn--ghost", type: "button", text: store.state.appInfo?.platform === "macos" ? "Show in Finder" : "Show in folder" })
+        : null;
+      if (showInFolderButton) on(showInFolderButton, "click", () => void openSavedAsset(current, true));
 
       return el(
         "div",
         { class: "card stack" },
         header,
         contentArea,
+        current.assetActionError ? el("p", { class: "error-note", text: current.assetActionError }) : null,
         // Show any generic error (e.g., from loading the manifest) below the content.
         current.error ? el("p", { class: "error-note", text: current.error }) : null,
-        el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, downloadButton, deleteButton, saveButton)),
+        el("div", { class: "row row--between" }, el("span", { class: "muted", text: `Stored in ${current.collection} on the selected node.` }), el("div", { class: "row" }, downloadButton, openButton, showInFolderButton, deleteButton)),
       );
     }
 
@@ -729,21 +867,33 @@ export function createExplorer(): ExplorerHandles {
     const selectedDoc = current.rows.find((row) => row.key === current.selectedKey)?.document as Record<string, unknown> | undefined;
     const assetFilename = typeof selectedDoc?.filename === "string" ? selectedDoc.filename : "";
     const isBinaryAsset = assetFilename !== "" && typeof selectedDoc?.base64 === "string";
+    const assetSize = selectedDoc?.size_bytes;
+    const validAssetSize = typeof assetSize === "number" && Number.isSafeInteger(assetSize) && assetSize >= 0 && assetSize <= MAX_ASSET_BYTES;
+    const assetSha256 = typeof selectedDoc?.sha256 === "string" ? selectedDoc.sha256 : undefined;
     const downloadButton = isBinaryAsset
-      ? el("button", { class: "btn btn--sm btn--primary", type: "button", text: "Save original file" })
+      ? el("button", {
+          class: "btn btn--sm btn--primary",
+          type: "button",
+          text: current.savingAsset ? "Saving…" : current.savedAssetPath === null ? "Save a copy…" : "Save another copy…",
+          disabled: !validAssetSize || current.savingAsset,
+        })
       : null;
     if (downloadButton && isBinaryAsset && typeof selectedDoc?.base64 === "string") {
-      on(downloadButton, "click", () => void saveAssetFile(assetFilename, selectedDoc.base64 as string));
+      on(downloadButton, "click", () => {
+        if (validAssetSize) void saveAssetFile(current, current.selectedKey!, assetFilename, selectedDoc.base64 as string, assetSize as number, assetSha256);
+      });
     }
 
     let contentArea: HTMLElement;
     if (isBinaryAsset) {
-      const size = typeof selectedDoc?.size_bytes === "number" ? bytes(selectedDoc.size_bytes) : "Unknown size";
+      const size = validAssetSize ? bytes(assetSize as number) : "Unknown size";
       const mime = typeof selectedDoc?.mime === "string" ? selectedDoc.mime : "application/octet-stream";
       contentArea = el("div", { class: "stack" },
-        el("strong", { text: "Original file ready" }),
+        el("strong", { text: "Reconstructed file ready to save" }),
         el("p", { class: "muted", text: `${assetFilename} · ${size} · ${mime}` }),
-        el("p", { class: "muted", text: "Save the file below, then open it from the folder you choose." }),
+        current.savedAssetPath !== null
+          ? el("p", { class: "muted", text: `Saved copy: ${current.savedAssetPath}` })
+          : el("p", { class: "muted", text: "Save a copy here to open it with your default app." }),
       );
     } else if (current.viewMode === "formatted" && !current.dirty) {
       contentArea = el("div", { class: "syntax-viewer" });
@@ -764,6 +914,15 @@ export function createExplorer(): ExplorerHandles {
       contentArea = area;
     }
 
+    const openButton = isBinaryAsset && current.savedAssetPath !== null
+      ? el("button", { class: "btn btn--sm", type: "button", text: "Open file" })
+      : null;
+    if (openButton) on(openButton, "click", () => void openSavedAsset(current, false));
+    const showInFolderButton = isBinaryAsset && current.savedAssetPath !== null
+      ? el("button", { class: "btn btn--sm btn--ghost", type: "button", text: store.state.appInfo?.platform === "macos" ? "Show in Finder" : "Show in folder" })
+      : null;
+    if (showInFolderButton) on(showInFolderButton, "click", () => void openSavedAsset(current, true));
+
     return el(
       "div",
       { class: "card stack" },
@@ -781,8 +940,9 @@ export function createExplorer(): ExplorerHandles {
         ),
       ),
       contentArea,
+      current.assetActionError ? el("p", { class: "error-note", text: current.assetActionError }) : null,
       current.error ? el("p", { class: "error-note", text: current.error }) : null,
-      el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, deleteButton, saveButton)),
+      el("div", { class: "row row--between" }, dirtyNote, el("div", { class: "row" }, downloadButton, openButton, showInFolderButton, deleteButton, saveButton)),
     );
   }
 
@@ -794,11 +954,22 @@ export function createExplorer(): ExplorerHandles {
     }
 
     if (state === null || state.nodeId !== selection.nodeId || state.collection !== selection.collection) {
-      void load(selection.nodeId, selection.collection);
+      lastFocusRequest = selection.focusRequest ?? null;
+      void load(selection.nodeId, selection.collection, selection.key ?? "");
       replace(
         element,
         el("div", { class: "card" }, el("div", { class: "skeleton", style: "height: 240px" })),
       );
+      return;
+    }
+
+    if (selection.key && selection.focusRequest !== undefined && selection.focusRequest !== lastFocusRequest) {
+      lastFocusRequest = selection.focusRequest;
+      if (!state.loading && state.rows.some((row) => row.key === selection.key)) {
+        void selectKey(selection.key);
+      } else {
+        void load(selection.nodeId, selection.collection, selection.key);
+      }
       return;
     }
 

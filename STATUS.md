@@ -1755,6 +1755,27 @@ Handoff: owner stores the key as the CI secret, then `git tag v2.0.0` +
 push fires the draft release.
 
 ### Still not run
-macOS anywhere; 50-node soak on this tree; invite-model pairing screen;
-headed wizard click-through by human hands; dashboard.html against the live
-mesh (CORS from file:// untested); keyboard nudge for dragged cards.
+macOS live app click-through; 50-node soak on this tree; invite-model pairing
+screen; headed wizard click-through by human hands; dashboard.html against the
+live mesh (CORS from file:// untested); keyboard nudge for dragged cards.
+
+### File asset reconstruction flow (2026-10-25)
+Dropbox now records the original file size and SHA-256 with each asset. After
+ingestion, **View file in Explorer** opens the exact manifest row. Explorer
+shows the original filename and reconstruction progress, validates each part's
+index and metadata, and refuses to save if the assembled size or SHA-256 does
+not match. After choosing a save location, the app offers **Open file** and
+**Show in Finder**. Native shell actions are limited to paths saved through the
+app during the current session.
+
+Verified: `npm run build`, `check:css`, `check:qr`, and `check:a11y`; `cargo
+test` **48 passed, 1 ignored**; `deep_dive_storage_test.py` passed including
+byte-identical zero-byte, binary, and 12 KB multi-part reconstruction with
+matching SHA-256. The C++ `ctest` suite was attempted, but this sandbox could
+not write its test data under `~/Library/Application Support/DeSentry` or bind
+the loopback port test; it is not recorded as passing. The app bundle was built
+unsigned. Tauri's DMG script failed at its `hdiutil` step in the sandbox, so
+the unsigned DMG was assembled from a staging folder and verified with
+`hdiutil verify`; its mounted root contains `De-Sentry.app` and an
+`Applications` shortcut. A live click-through on three physical PCs remains
+unverified.

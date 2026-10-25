@@ -27,11 +27,14 @@ Tests:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 # Add Python client and integration harness to path
@@ -368,6 +371,57 @@ def main() -> int:
             p = client_a.get("assets", f"big_file.txt#{i}")
             reassembled += p.get("text", "")
         assert_true(reassembled == large_content, f"Reassembled chunked content matches original ({len(reassembled)} bytes)")
+
+        # 9c. Binary assets: zero-byte, short binary, and multi-part round trips
+        # use the same manifest and part fields as app/src/views/dropbox.ts.
+        log("9c. Verifying exact binary asset reconstruction and checksums...")
+        binary_cases = [
+            ("empty.bin", b""),
+            ("small-binary.bin", bytes([0x00, 0xff, 0x10, 0x80, 0x00])),
+        ]
+        for filename, original in binary_cases:
+            encoded = base64.b64encode(original).decode("ascii")
+            manifest = {
+                "filename": filename,
+                "mime": "application/octet-stream",
+                "size_bytes": len(original),
+                "sha256": hashlib.sha256(original).hexdigest(),
+                "base64": encoded,
+            }
+            client_a.put("assets", filename, manifest)
+            stored = client_a.get("assets", filename)
+            rebuilt = base64.b64decode(stored["base64"], validate=True)
+            assert_true(rebuilt == original, f"{filename} reconstructs byte-for-byte ({len(original)} bytes)")
+            assert_true(hashlib.sha256(rebuilt).hexdigest() == stored["sha256"], f"{filename} SHA-256 matches its manifest")
+
+        large_binary = bytes((i * 37) % 256 for i in range(12001))
+        large_encoded = base64.b64encode(large_binary).decode("ascii")
+        binary_key = "multi-part-binary.bin"
+        part_total = math.ceil(len(large_encoded) / 3500)
+        for i in range(part_total):
+            client_a.put("assets", f"{binary_key}#{i}", {
+                "parent_key": binary_key,
+                "part_index": i,
+                "part_total": part_total,
+                "field": "base64",
+                "text": large_encoded[i * 3500 : (i + 1) * 3500],
+            })
+        binary_manifest = {
+            "filename": binary_key,
+            "mime": "application/octet-stream",
+            "size_bytes": len(large_binary),
+            "sha256": hashlib.sha256(large_binary).hexdigest(),
+            "chunked": True,
+            "chunk_total": part_total,
+            "chunk_field": "base64",
+        }
+        client_a.put("assets", binary_key, binary_manifest)
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            parts = list(pool.map(lambda i: client_a.get("assets", f"{binary_key}#{i}"), range(part_total)))
+        rebuilt_base64 = "".join(part["text"] for part in parts)
+        rebuilt_binary = base64.b64decode(rebuilt_base64, validate=True)
+        assert_true(rebuilt_binary == large_binary, f"multi-part binary asset reconstructs byte-for-byte ({len(large_binary)} bytes)")
+        assert_true(hashlib.sha256(rebuilt_binary).hexdigest() == binary_manifest["sha256"], "multi-part binary SHA-256 matches the manifest")
 
         # --------------------------------------------------------------------
         # 10. RESTART & PERSISTENCE TEST

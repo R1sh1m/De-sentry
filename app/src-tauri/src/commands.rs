@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -1365,6 +1366,34 @@ fn decode_asset_base64(input: &str) -> Reply<Vec<u8>> {
     Ok(output)
 }
 
+/// Validates reconstructed bytes before a save dialog can create a local file.
+fn verify_asset_payload(
+    base64_data: &str,
+    expected_size: u64,
+    expected_sha256: Option<&str>,
+) -> Reply<Vec<u8>> {
+    if expected_size > MAX_ASSET_BYTES as u64 {
+        return Err("this file is larger than the 64 MiB asset limit".into());
+    }
+    let bytes = decode_asset_base64(base64_data)?;
+    if bytes.len() as u64 != expected_size {
+        return Err(format!(
+            "the reconstructed file is {} bytes, but its manifest says {expected_size} bytes; the file was not saved",
+            bytes.len()
+        ));
+    }
+    if let Some(expected) = expected_sha256 {
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("the file manifest contains an invalid SHA-256 checksum".into());
+        }
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err("the reconstructed file checksum does not match its manifest; the file was not saved".into());
+        }
+    }
+    Ok(bytes)
+}
+
 fn safe_asset_filename(filename: &str) -> String {
     let name = filename.rsplit(|ch| ch == '/' || ch == '\\').next().unwrap_or("");
     let sanitized: String = name
@@ -1385,13 +1414,13 @@ fn safe_asset_filename(filename: &str) -> String {
 #[tauri::command]
 pub async fn save_asset_file(
     app: AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
     filename: String,
     base64_data: String,
+    expected_size: u64,
+    expected_sha256: Option<String>,
 ) -> Reply<Option<String>> {
-    let bytes = decode_asset_base64(&base64_data)?;
-    if bytes.len() > MAX_ASSET_BYTES {
-        return Err("this file is larger than the 64 MiB asset limit".into());
-    }
+    let bytes = verify_asset_payload(&base64_data, expected_size, expected_sha256.as_deref())?;
     let default_name = safe_asset_filename(&filename);
     let file = app
         .dialog()
@@ -1404,7 +1433,73 @@ pub async fn save_asset_file(
     };
     let path = path.into_path().map_err(|error| format!("could not use the selected save path: {error}"))?;
     std::fs::write(&path, bytes).map_err(|error| format!("could not save the file: {error}"))?;
+    let canonical_path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("the file was saved, but its location could not be verified: {error}"))?;
+    state
+        .saved_asset_files
+        .lock()
+        .map_err(|_| "the saved-file registry is unavailable".to_string())?
+        .insert(canonical_path);
     Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Opens or reveals a file saved by `save_asset_file` during this app session.
+/// The path is checked against the sidecar's in-memory save registry so a
+/// webview request cannot launch an arbitrary local file.
+#[tauri::command]
+pub fn open_saved_asset(
+    state: State<'_, std::sync::Arc<AppState>>,
+    path: String,
+    reveal: bool,
+) -> Reply<()> {
+    let target = std::fs::canonicalize(&path)
+        .map_err(|_| "the saved file is no longer available at that location".to_string())?;
+    if !target.is_file() {
+        return Err("the saved file is no longer available at that location".into());
+    }
+    let saved_files = state
+        .saved_asset_files
+        .lock()
+        .map_err(|_| "the saved-file registry is unavailable".to_string())?;
+    if !saved_files.contains(&target) {
+        return Err("save this reconstructed file from the app before opening it".into());
+    }
+    drop(saved_files);
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(&target);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        if reveal {
+            command.arg(format!("/select,{}", target.display()));
+        } else {
+            command.arg(&target);
+        }
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        if reveal {
+            command.arg(target.parent().unwrap_or(&target));
+        } else {
+            command.arg(&target);
+        }
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("could not open the saved file: {error}"))
 }
 
 /// Opens a node's data directory in the platform's file manager.
@@ -1531,6 +1626,22 @@ pub fn trigger_discovery_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_reconstruction_checks_empty_binary_size_and_checksum() {
+        assert_eq!(verify_asset_payload("", 0, None).unwrap(), Vec::<u8>::new());
+
+        // Includes NUL, a high-bit byte, and a non-text value so the test
+        // covers binary preservation rather than only UTF-8 round-tripping.
+        let original = vec![0x00, 0xff, 0x10, 0x80, 0x00];
+        let checksum = format!("{:x}", Sha256::digest(&original));
+        let rebuilt = verify_asset_payload("AP8QgAA=", original.len() as u64, Some(&checksum))
+            .expect("valid reconstructed file verifies");
+        assert_eq!(rebuilt, original);
+        assert!(verify_asset_payload("AP8QgAA=", 4, Some(&checksum)).is_err());
+        assert!(verify_asset_payload("AP8QgAA=", 5, Some(&"0".repeat(64))).is_err());
+        assert!(verify_asset_payload("AP8QgAA=", 5, Some("not a checksum")).is_err());
+    }
 
     #[test]
     fn allowlist_accepts_the_root_itself_and_children() {

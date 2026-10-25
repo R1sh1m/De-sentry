@@ -79,6 +79,10 @@ export interface Selection {
   nodeId?: string;
   mountPath?: string;
   collection?: string;
+  /** Optional document to focus after opening a collection from an action. */
+  key?: string;
+  /** Makes repeated requests to focus the same key distinct. */
+  focusRequest?: number;
 }
 
 export type CanvasMode = "tree" | "mesh";
