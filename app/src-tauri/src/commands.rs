@@ -22,6 +22,7 @@ use crate::configgen::{self, NodeConfigSpec, QuotaSplit};
 use crate::keychain;
 use crate::nodes::{LaunchSpec, LogLine, ProcessState, SupervisedNode};
 use crate::passphrase;
+use crate::password;
 use crate::ports::PortAllocation;
 use crate::recovery;
 
@@ -1159,6 +1160,28 @@ pub fn unlock_node(
 
     appstate::emit(&app, SidecarEvent::NodeState { node: view.clone() });
     Ok(view)
+}
+
+/// Reports a node's password-protection status to the window.
+#[tauri::command]
+pub fn node_security(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+) -> Reply<password::NodeSecurity> {
+    password::node_security(state, node_id)
+}
+
+/// Sets, changes or removes a node's password.
+#[tauri::command]
+pub fn set_node_password(
+    app: AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    current_secret: Option<String>,
+    new_password: Option<String>,
+    remember: bool,
+) -> Reply<password::NodeSecurity> {
+    password::set_node_password(app, state, node_id, current_secret, new_password, remember)
 }
 
 /// Strength of a candidate passphrase for the wizard meter (no secret leaves

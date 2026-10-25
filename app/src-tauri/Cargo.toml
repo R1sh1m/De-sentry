@@ -43,6 +43,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 sha2 = "0.10"
 hmac = "0.12"
 pbkdf2 = "0.12"
+# Password KDF for node unlock (OWASP 2024 minimum: m=19456 KiB, t=2, p=1)
+argon2 = "0.5"
 
 # Autostart on login. Official Tauri plugin; on Linux it writes a .desktop
 # file, on macOS a login item, on Windows a Run key.
@@ -98,6 +100,7 @@ features = ["onig"]
 # serially, not across threads (#2 fix). Documents the old
 # `-- --test-threads=1` workaround as code instead of lore.
 serial_test = "3"
+tempfile = "3"
 
 [profile.release]
 # The installers ship one binary per platform and are downloaded rarely; size

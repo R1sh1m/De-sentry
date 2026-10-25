@@ -468,6 +468,16 @@ input::-ms-clear {
   text-align: left;
   margin-bottom: var(--space-md);
 }
+.about-macos__update-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.about-macos__update-status {
+  font: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  white-space: nowrap;
+}
 .about-macos__done {
   min-width: 120px;
   align-self: center;

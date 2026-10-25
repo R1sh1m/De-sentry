@@ -396,6 +396,8 @@ pub fn run() {
             commands::scan_for_nodes,
             commands::trigger_discovery_scan,
             commands::sync_storage_reservation,
+            commands::node_security,
+            commands::set_node_password,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

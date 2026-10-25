@@ -249,6 +249,9 @@ function openAboutSheet(): void {
   const nodes = store.dataNodes();
   const reachable = nodes.filter((n) => n.reachable).length;
   const port = store.state.supervisorPort;
+  const appInfo = store.state.appInfo;
+  const appVersion = appInfo?.version ?? "unknown";
+  const engineVersion = appInfo?.engine_version ?? "unknown";
 
   // macOS-style About: one centred card, no titlebar/footer bands. The old
   // .wizard titlebar + footer painted darker rectangles behind the title and
@@ -270,6 +273,65 @@ function openAboutSheet(): void {
   };
   window.addEventListener("keydown", onKey);
 
+  // Update check state
+  let checkState: "idle" | "checking" | "up-to-date" | "available" | "error" = "idle";
+  let updateStatusText = "";
+  let checkButton: HTMLButtonElement | null = null;
+  let statusEl: HTMLElement | null = null;
+
+  async function checkForUpdates(): Promise<void> {
+    if (!isTauri() || checkState === "checking") return;
+    checkState = "checking";
+    updateStatusText = "Checking...";
+    renderUpdateStatus();
+
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update === null) {
+        checkState = "up-to-date";
+        updateStatusText = "You're up to date";
+      } else {
+        checkState = "available";
+        updateStatusText = `v${update.version} available — downloads on next start`;
+      }
+    } catch {
+      checkState = "error";
+      updateStatusText = "Could not check (offline or no feed)";
+    }
+    renderUpdateStatus();
+  }
+
+  function renderUpdateStatus(): void {
+    if (!checkButton || !statusEl) return;
+    statusEl.textContent = updateStatusText;
+    if (checkState === "checking") {
+      checkButton.disabled = true;
+      checkButton.textContent = "Checking...";
+    } else if (checkState === "up-to-date") {
+      checkButton.disabled = true;
+      checkButton.textContent = "Check for Updates";
+    } else if (checkState === "available") {
+      checkButton.disabled = false;
+      checkButton.textContent = "Check Again";
+    } else if (checkState === "error") {
+      checkButton.disabled = false;
+      checkButton.textContent = "Retry";
+    } else {
+      checkButton.disabled = false;
+      checkButton.textContent = "Check for Updates";
+    }
+  }
+
+  const checkForUpdatesBtn = el(
+    "button",
+    { class: "btn btn--sm btn--ghost", type: "button", text: "Check for Updates" },
+  );
+  checkButton = checkForUpdatesBtn;
+  on(checkForUpdatesBtn, "click", () => { void checkForUpdates(); });
+
+  statusEl = el("span", { class: "about-macos__update-status", text: "" });
+
   const content = el(
     "div",
     { class: "macos-modal__content about-macos__content" },
@@ -278,7 +340,7 @@ function openAboutSheet(): void {
       "div",
       { class: "about-macos__names" },
       el("h2", { class: "macos-modal__heading", text: "De-Sentry" }),
-      el("span", { class: "brand-badge", text: "v2.0" }),
+      el("span", { class: "brand-badge", text: `v${appVersion}` }),
     ),
     el("p", { class: "about-macos__tagline", text: "Autonomous · Zero-Trust · Airplane-Mode Native" }),
     el(
@@ -296,12 +358,18 @@ function openAboutSheet(): void {
     el(
       "dl",
       { class: "kv about-macos__kv" },
+      el("dt", { text: "App Version" }),
+      el("dd", { class: "mono", text: appVersion }),
+      el("dt", { text: "Engine Version" }),
+      el("dd", { class: "mono", text: engineVersion }),
       el("dt", { text: "Supervisor" }),
       el("dd", { class: "mono", text: port !== null ? `127.0.0.1:${port}` : "offline" }),
       el("dt", { text: "Active Mesh" }),
       el("dd", { text: `${reachable}/${nodes.length} data nodes online` }),
       el("dt", { text: "Shortcuts" }),
       el("dd", { class: "mono", text: "N (new) · 1 (tree) · 2 (mesh) · 3 (ledger) · Ctrl+R" }),
+      el("dt", { text: "Updates" }),
+      el("dd", { class: "about-macos__update-row" }, checkForUpdatesBtn, statusEl),
     ),
     done,
   );

@@ -169,7 +169,6 @@ Detailed documentation is partitioned into focused reference guides:
 | 🛡️ [**Architecture (v2 Supervisors & Router)**](docs/architecture-v2.md) | Storage router, supervisor plane, ledger v2, ACL enforcement, and threat model |
 | 🔬 [**Research Foundation & Literature**](docs/LITERATURE.md) | Academic foundations (Dynamo, ARIES, Lamport, Preguiça, HNSW) and design rationale |
 | 🎨 [**Design System & UI Tokens**](DESIGN.md) | Apple-inspired UI design tokens, typography, surfaces, and control room specs |
-| 📋 [**Agent & Contributor Rules**](AGENTS.md) | Invariants, coding standards, test rules, and repo conventions |
 | 🚦 [**Verification Status**](STATUS.md) | Verified test matrix, execution logs, and open platform ports |
 | ⚠️ [**Known Issues & Acceptance**](ISSUES.md) | Release acceptance checklist, edge cases, and known limitations |
 
