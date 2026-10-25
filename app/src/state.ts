@@ -343,9 +343,13 @@ export function convergenceOf(node: NodeView): Convergence {
   // Brain not yet fetched: node is initializing, don't grade it as lagging yet.
   // Wait until we have actual collection data to compare.
   if (node.brain === null) return "lagging";
-  // A LAN node with no peers is online but cannot replicate yet. Do not label
-  // an empty peer set as converged: that suggests the mesh transfer completed.
-  if (node.peers.length === 0) return "waiting";
+  // Discovery and bootstrap placeholders are not replication peers. They may
+  // exist in the peer table while unreachable or before an authenticated
+  // handshake, so they must not make a node look converged.
+  const livePeers = node.peers.filter(
+    (peer) => peer.handshake_proven && peer.suspicion === "healthy",
+  );
+  if (livePeers.length === 0) return "waiting";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
   for (const peer of store.dataNodes()) {
     if (peer.process.node_id === node.process.node_id || peer.process.mesh_isolated ||

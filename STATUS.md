@@ -42,6 +42,17 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > verification is recorded below; `npm run build` passed and the unsigned DMG
 > has been refreshed and verified.
 
+> **2026-10-25 — adopted LAN nodes now form a local mesh.** When an existing
+> node is adopted while another data node is already running in the desktop
+> app, the adopter now adds the running node's loopback P2P endpoint to its
+> bootstrap list. This repairs the one-sided case where both nodes were on the
+> same machine but one had no bootstrap peers and the other retained a stale
+> LAN address. The UI also exposes whether a peer completed an authenticated
+> handshake and only counts healthy, handshake-proven peers for **In sync**;
+> dead bootstrap placeholders now correctly remain **Waiting for peers**.
+> Quota and on-disk sizes remain physical local allocation metrics, so equal
+> collection checksums do not require identical file sizes.
+
 > **2026-10-25 — CI Rust fallback fix.** The Linux Rust job failed because
 > `argon2::password_hash::rand_core::OsRng` is feature-gated in the resolved
 > dependency graph. Password salt generation now uses the already-declared

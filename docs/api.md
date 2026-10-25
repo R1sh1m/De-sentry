@@ -35,7 +35,7 @@ All data plane endpoints are peer-to-peer. Writes are processed locally, broadca
 |---|---|---|
 | `GET` | `/_status` | Node identity, public key, uptime, peer count, at-rest encryption posture |
 | `GET` | `/_ping` | Storage-independent process liveness probe; returns `{ "ok": true }` |
-| `GET` | `/_peers` | List all discovered and connected P2P peers |
+| `GET` | `/_peers` | List discovered, authenticated, and disconnected P2P peers |
 | `GET` | `/_brain` | Compact health snapshot: signed ledger tip, collection checksums, peers |
 | `GET` | `/_placement/:collection/:key` | Consistent-hash ring replica subset and displaced owner status |
 | `GET` | `/_quota` | Quota allocation and per-engine disk usage metrics |
@@ -65,6 +65,13 @@ itself mark the node offline.
 ```json
 { "ok": true }
 ```
+
+Peer entries include `handshake_proven` and `suspicion`. Discovery records and
+bootstrap placeholders can appear in `/_peers` before an authenticated
+connection exists, or after that address has gone dead. A peer counts as live
+for desktop convergence only when `handshake_proven` is `true` and
+`suspicion` is `healthy`; a non-empty peer list alone does not mean that
+replication is available.
 
 ### Transit Store (Offline Handoff)
 

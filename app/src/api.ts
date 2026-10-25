@@ -135,7 +135,9 @@ export interface Peer {
   api_port: number;
   last_seen_ms: number;
   supervisor: boolean;
+  handshake_proven: boolean;
   state: LifecycleState;
+  suspicion: "healthy" | "suspect" | "dead";
   fitness: PeerFitness;
 }
 

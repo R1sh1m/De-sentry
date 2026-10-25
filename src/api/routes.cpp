@@ -96,6 +96,7 @@ JsonValue PeerToJson(const PeerInfo& p, lsn_t network_max, int64_t now_ms,
   obj.emplace_back("api_port", JsonValue(static_cast<int64_t>(p.api_port)));
   obj.emplace_back("last_seen_ms", JsonValue(static_cast<int64_t>(p.last_seen_ms)));
   obj.emplace_back("supervisor", JsonValue(p.is_supervisor));
+  obj.emplace_back("handshake_proven", JsonValue(p.handshake_proven));
   obj.emplace_back("state", JsonValue(NodeLifecycleStateName(p.state)));
   obj.emplace_back("suspicion",
                    JsonValue(PeerSuspicionName(p.Suspicion(now_ms, liveness_threshold_ms))));
