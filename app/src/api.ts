@@ -240,6 +240,14 @@ export interface DocumentRow {
   document: unknown;
 }
 
+/** A single lookup hit from searchLookup. */
+export interface LookupHit {
+  collection: string;
+  key: string;
+  document: unknown;
+  engine: string;
+}
+
 export interface DocumentPage {
   collection: string;
   engine: string;
@@ -615,6 +623,58 @@ export class NodeApi {
       `/db/${encodeURIComponent(collection)}?${query.toString()}`,
       options,
     );
+  }
+
+  /**
+   * Searches document keys across collections on this node.
+   * @param collection - Collection name filter (undefined = all collections)
+   * @param query - Search query (case-insensitive substring match on keys)
+   * @param limit - Maximum results to return
+   */
+  async searchLookup(
+    collection: string | undefined,
+    query: string,
+    limit: number,
+  ): Promise<LookupHit[]> {
+    const collections = collection !== undefined
+      ? [collection]
+      : await this.collections().catch(() => [] as string[]);
+
+    const q = query.toLowerCase();
+
+    // Build engine map from brain
+    const engineByCollection = new Map<string, string>();
+    try {
+      const brain = await this.brain();
+      for (const c of brain.collections) {
+        engineByCollection.set(c.name, c.engine);
+      }
+    } catch {
+      // Engine info unavailable; hits will have empty engine
+    }
+
+    const hits: LookupHit[] = [];
+    for (const coll of collections) {
+      if (hits.length >= limit) break;
+      try {
+        const page = await this.listDocuments(coll, { limit: Math.min(limit * 3, 300) });
+        for (const row of page.documents) {
+          if (row.key.toLowerCase().includes(q)) {
+            hits.push({
+              collection: coll,
+              key: row.key,
+              document: row.document,
+              engine: engineByCollection.get(coll) ?? "",
+            });
+          }
+          if (hits.length >= limit) break;
+        }
+      } catch {
+        // Skip unreadable collections
+      }
+    }
+
+    return hits;
   }
 
   getDocument(collection: string, key: string, options?: RequestOptions): Promise<unknown> {

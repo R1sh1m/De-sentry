@@ -1004,6 +1004,125 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     resp.body = network->config().ToJson();
     return resp;
   });
+
+  // -- universal lookup: search collection names and document keys -----------
+  server->Get("/_lookup/:collection", [engine](const HttpRequest& req) -> HttpResponse {
+    const std::string& collection = req.params.at("collection");
+    const std::string query = QueryString(req, "query");
+    const int64_t limit_raw = QueryInt(req, "limit", 200);
+    const size_t limit = static_cast<size_t>(std::clamp(limit_raw, int64_t(1), int64_t(1000)));
+    const std::string start = QueryString(req, "start");
+
+    const Requestor who = engine->SelfRequestor();
+
+    // Resolve which collections to search.
+    // If collection is "*" or empty, search across all readable collections,
+    // filtering by collection name match if query is non-empty.
+    std::vector<std::string> collections;
+    if (collection.empty() || collection == "*") {
+      auto all = engine->ReadableCollections(who);
+      if (query.empty()) {
+        collections = std::move(all);
+      } else {
+        // First pass: collections whose names match the query
+        for (const std::string& name : all) {
+          if (name == query || name.rfind(query, 0) == 0 || name.find(query) != std::string::npos) {
+            collections.push_back(name);
+          }
+        }
+        // If no collections matched by name, search all collections for key matches
+        if (collections.empty()) {
+          collections = all;
+        }
+      }
+    } else {
+      if (!engine->CanRead(collection, who)) {
+        return JsonError(404, "collection not found or not readable: " + collection);
+      }
+      collections.push_back(collection);
+    }
+
+    Catalog& catalog = engine->storage().catalog();
+
+    struct Hit {
+      std::string collection;
+      std::string key;
+      std::string preview;
+      std::string engine;
+      std::string last_modified;
+      int tier;        // 0 = exact, 1 = prefix, 2 = substring
+      uint64_t physical_ms;
+    };
+
+    std::vector<Hit> hits;
+    // Per-collection scan cap keeps memory bounded on huge collections.
+    const size_t per_collection_cap = limit * 4 + 64;
+
+    for (const std::string& coll : collections) {
+      const CollectionMeta* meta = catalog.Get(coll);
+      const std::string engine_name =
+          (meta && !meta->engine.empty()) ? meta->engine : engine->storage().router().EngineNameFor(coll);
+
+      const bool coll_name_matches = query.empty() || coll == query || coll.rfind(query, 0) == 0 || coll.find(query) != std::string::npos;
+
+      const size_t fetch_limit = per_collection_cap;
+      for (auto& [key, bytes] : engine->storage().Scan(coll, start, fetch_limit)) {
+        CrdtValue doc = CrdtValue::Decode(bytes);
+        if (doc.IsEmpty()) continue;
+
+        int tier = -1;
+        if (query.empty()) {
+          tier = 2;
+        } else if (key == query) {
+          tier = 0;
+        } else if (key.rfind(query, 0) == 0) {
+          tier = 1;
+        } else if (key.find(query) != std::string::npos) {
+          tier = 2;
+        } else if (coll_name_matches) {
+          // Collection name matched query; include all keys from this collection
+          tier = 2;
+        } else {
+          continue;
+        }
+
+        std::string json = doc.ToJson().Dump();
+        std::string preview = json.size() > 200 ? json.substr(0, 200) : json;
+
+        hits.push_back(Hit{coll, key, preview, engine_name,
+                           doc.ts().ToString(), tier, doc.ts().physical_ms});
+
+        if (hits.size() >= per_collection_cap) break;
+      }
+    }
+
+    // Rank: exact > prefix > substring, then recency (physical_ms descending).
+    std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
+      if (a.tier != b.tier) return a.tier < b.tier;
+      return a.physical_ms > b.physical_ms;
+    });
+
+    if (hits.size() > limit) hits.resize(limit);
+
+    JsonValue::Array arr;
+    for (const auto& h : hits) {
+      JsonValue::Object obj;
+      obj.emplace_back("collection", JsonValue(h.collection));
+      obj.emplace_back("key", JsonValue(h.key));
+      obj.emplace_back("preview", JsonValue(h.preview));
+      obj.emplace_back("engine", JsonValue(h.engine));
+      obj.emplace_back("last_modified", JsonValue(h.last_modified));
+      arr.emplace_back(JsonValue(std::move(obj)));
+    }
+
+    const size_t result_count = arr.size();
+    JsonValue::Object obj;
+    obj.emplace_back("results", JsonValue(std::move(arr)));
+    obj.emplace_back("count", JsonValue(static_cast<int64_t>(result_count)));
+    obj.emplace_back("query", JsonValue(query));
+    obj.emplace_back("collection", JsonValue(collection));
+    return JsonOk(JsonValue(std::move(obj)));
+  });
 }
 
 }  // namespace desentry

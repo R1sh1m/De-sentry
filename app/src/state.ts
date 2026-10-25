@@ -75,7 +75,7 @@ export interface NodeView {
 }
 
 export interface Selection {
-  kind: "none" | "device" | "mount" | "node" | "collection" | "ledger" | "console" | "dropbox";
+  kind: "none" | "device" | "mount" | "node" | "collection" | "ledger" | "console" | "dropbox" | "lookup";
   nodeId?: string;
   mountPath?: string;
   collection?: string;

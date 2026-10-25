@@ -23,6 +23,7 @@ import { createSidebar } from "./views/sidebar.js";
 import { createWizard } from "./views/wizard.js";
 import { createConsole } from "./views/console.js";
 import { createDropbox } from "./views/dropbox.js";
+import { createLookup } from "./views/lookup.js";
 import { openPalette } from "./views/palette.js";
 
 function describeError(error: unknown): string {
@@ -355,6 +356,8 @@ function build(): void {
   const ledger = createLedger();
   const consoleView = createConsole();
   const dropbox = createDropbox();
+  const lookup = createLookup();
+  const lookupMount = el("div", { class: "canvas" }, lookup.element);
   const healthAlerts = createHealthAlerts((nodeId) => {
     store.select({ kind: "node", nodeId });
   });
@@ -414,6 +417,18 @@ function build(): void {
     icon(Icons.search, 14),
   );
   on(paletteButton, "click", openCommandPalette);
+
+  const lookupButton = el(
+    "button",
+    {
+      class: "btn btn--sm btn--ghost btn--icon-only",
+      type: "button",
+      title: "Universal Lookup (Ctrl+L)",
+      "aria-label": "Universal Lookup",
+    },
+    icon(Icons.search, 14),
+  );
+  on(lookupButton, "click", () => store.select({ kind: "lookup" }));
 
   const newButton = el("button", { class: "btn btn--primary btn--sm", type: "button" }, icon(Icons.plus, 13), "New node");
   on(newButton, "click", () => wizard.open());
@@ -504,6 +519,7 @@ function build(): void {
   const headerChildren: HTMLElement[] = [
     title,
     el("span", { class: "header__spacer" }),
+    lookupButton,
     paletteButton,
     pairButton,
     newButton,
@@ -673,6 +689,9 @@ function build(): void {
     } else if (state.selection.kind === "dropbox") {
       dropbox.render();
       mountInCentre(dropbox.element);
+    } else if (state.selection.kind === "lookup") {
+      lookup.render();
+      mountInCentre(lookupMount);
     } else {
       canvas.render();
       mountInCentre(canvas.element);
@@ -706,6 +725,9 @@ function build(): void {
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       openCommandPalette();
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      store.select({ kind: "lookup" });
     } else if (event.key === "n" && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
       wizard.open();
