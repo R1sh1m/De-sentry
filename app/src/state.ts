@@ -32,6 +32,7 @@ import {
   type LedgerTip,
   type NodeStatus,
   type Peer,
+  type PeerSyncSnapshot,
   type QuotaReport,
   type Topology,
   type VerifyResult,
@@ -60,6 +61,7 @@ export interface NodeView {
   tip: LedgerTip | null;
   quota: QuotaReport | null;
   peers: Peer[];
+  peerSyncSummaries: PeerSyncSnapshot[];
   /** Result of the last explicit Verify. Not run automatically -- it is not free. */
   lastVerify: VerifyResult | null;
   lastVerifyMs: number;
@@ -349,9 +351,11 @@ function measuredConvergenceOf(node: NodeView): Convergence {
   const livePeers = node.peers.filter(
     (peer) => peer.handshake_proven && peer.suspicion === "healthy",
   );
-  if (livePeers.length === 0) return "waiting";
+  const liveDataPeers = livePeers.filter((peer) => !peer.supervisor);
+  if (liveDataPeers.length === 0) return "waiting";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
   let comparedManagedPeer = false;
+  const managedIds = new Set(store.dataNodes().map((managed) => managed.process.node_id));
   for (const peer of store.dataNodes()) {
     if (peer.process.node_id === node.process.node_id || peer.process.mesh_isolated ||
         !peer.reachable || peer.brain === null) continue;
@@ -369,11 +373,28 @@ function measuredConvergenceOf(node: NodeView): Convergence {
     }
     if (!comparedCollection && nodeCollections.size > 0 && peerCollections.size > 0) return "lagging";
   }
+  let comparedRemotePeer = false;
+  const remoteSnapshots = new Map(node.peerSyncSummaries.map((snapshot) => [snapshot.node_id, snapshot]));
+  for (const peer of liveDataPeers) {
+    if (managedIds.has(peer.node_id)) continue;
+    const snapshot = remoteSnapshots.get(peer.node_id);
+    if (snapshot === undefined || Date.now() - snapshot.observed_at_ms > 15_000) return "checking";
+    const remoteCollections = new Map(snapshot.collections.map((collection) => [collection.name, collection.checksum]));
+    let comparedCollection = false;
+    for (const [name, checksum] of nodeCollections) {
+      const remoteChecksum = remoteCollections.get(name);
+      if (remoteChecksum === undefined) continue;
+      comparedCollection = true;
+      if (remoteChecksum !== checksum) return "lagging";
+    }
+    if (!comparedCollection && nodeCollections.size > 0 && remoteCollections.size > 0) return "lagging";
+    comparedRemotePeer ||= comparedCollection;
+  }
   // A desktop only has checksums for nodes it manages locally. A healthy
   // remote peer proves connectivity, not that its collections match ours.
   // Keep the status indeterminate instead of claiming "In sync" without a
   // checksum comparison.
-  if (!comparedManagedPeer && nodeCollections.size > 0) return "checking";
+  if (!comparedManagedPeer && !comparedRemotePeer && nodeCollections.size > 0) return "checking";
   // If we have no collections to compare (empty node or no peers with collections),
   // consider it converged as long as it's reachable and running.
   return "converged";
@@ -456,6 +477,7 @@ function blankView(process: SupervisedNode): NodeView {
     tip: null,
     quota: null,
     peers: [],
+    peerSyncSummaries: [],
     lastVerify: null,
     lastVerifyMs: 0,
     reachable: false,
@@ -554,10 +576,15 @@ async function refreshPeerList(nodeId: string): Promise<void> {
       view.process.mesh_isolated || peerRefreshes.has(nodeId)) return;
   peerRefreshes.add(nodeId);
   try {
-    const peers = await apiFor(view.process.api_port).peers({ timeoutMs: 5_000 });
+    const api = apiFor(view.process.api_port);
+    const [peers, syncSummaries] = await Promise.all([
+      api.peers({ timeoutMs: 5_000 }),
+      api.peerSync().catch(() => []),
+    ]);
     const current = store.state.nodes.get(nodeId);
     if (current === view) {
       current.peers = peers;
+      current.peerSyncSummaries = syncSummaries;
       store.notify();
     }
   } catch {

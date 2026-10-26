@@ -27,8 +27,10 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "desentry/common/config.h"
@@ -48,6 +50,12 @@ namespace desentry {
 
 class NetworkManager {
  public:
+  struct PeerSyncSnapshot {
+    std::string node_id;
+    std::vector<std::pair<std::string, std::string>> collections;
+    int64_t observed_at_ms = 0;
+  };
+
   NetworkManager(NodeEngine* engine, const NodeConfig& config) : engine_(engine), config_(config) {}
   ~NetworkManager();
 
@@ -66,6 +74,11 @@ class NetworkManager {
   // Recomputes the placement ring from current membership. Called on
   // membership change rather than per write.
   void RebuildPlacement();
+
+  // Fetches bounded, authenticated collection checksums from current peers.
+  // Results are cached briefly because the desktop refreshes its mesh status
+  // periodically and a full checksum scan is more expensive than a heartbeat.
+  std::vector<PeerSyncSnapshot> PeerSyncSnapshots();
 
   // Asks every known peer whether it is holding transit bytes for us, pulls
   // what it has, applies it, and reports the claims back. This is what a
@@ -131,6 +144,7 @@ class NetworkManager {
   WireMessage HandleTransitClaim(const std::string& peer_node_id, const TransitClaimPayload& claim);
   WireMessage HandleTransitHeld(const std::string& peer_node_id, const TransitHeldPayload& held);
   WireMessage HandleLedgerDigest(const std::string& peer_node_id, const LedgerDigestPayload& digest);
+  WireMessage HandleSyncSummary(const std::string& peer_node_id);
   // Liveness heartbeat (kHeartbeat): folds the requester's figures into its
   // fitness record and answers with this node's own heartbeat, so one round
   // trip updates both sides. The figures are advisory (see PeerFitness);
@@ -188,6 +202,8 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   ReceiptTracker* receipt_tracker_ = nullptr;
   std::unique_ptr<TokenBucketLimiter> limiter_;
   std::unique_ptr<MessageDedup> dedup_;
+  std::mutex peer_sync_cache_mu_;
+  std::unordered_map<std::string, PeerSyncSnapshot> peer_sync_cache_;
   // Cluster-membership secret from DESENTRY_CLUSTER_SECRET (empty = open).
   // Passed to the transport and discovery; never logged, never served.
   std::string cluster_secret_;

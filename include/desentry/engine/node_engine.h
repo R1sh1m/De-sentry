@@ -175,6 +175,7 @@ class NodeEngine {
   bool CanWrite(const std::string& collection, const Requestor& who) const;
 
   CollectionSummary Summarize(const std::string& collection);
+  std::string CollectionChecksum(const std::string& collection);
 
   // -- transit (offline-owner flow) ----------------------------------------
   // Called on a replica when a write lands for a key whose placement targets

@@ -471,6 +471,31 @@ HeartbeatPayload HeartbeatPayload::Decode(const std::string& bytes) {
   return h;
 }
 
+std::string SyncSummaryPayload::Encode() const {
+  ByteWriter w;
+  w.U32(static_cast<uint32_t>(collections.size()));
+  for (const auto& [name, checksum] : collections) {
+    w.Bytes(name);
+    w.Bytes(checksum);
+  }
+  return w.TakeString();
+}
+
+SyncSummaryPayload SyncSummaryPayload::Decode(const std::string& bytes) {
+  ByteReader r(bytes);
+  SyncSummaryPayload summary;
+  const uint32_t count = r.U32();
+  if (count > 1024) throw std::runtime_error("sync summary has too many collections");
+  summary.collections.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    std::string name = r.Bytes();
+    std::string checksum = r.Bytes();
+    summary.collections.emplace_back(std::move(name), std::move(checksum));
+  }
+  if (r.remaining() != 0) throw std::runtime_error("sync summary has trailing bytes");
+  return summary;
+}
+
 const char* MessageTypeName(MessageType type) {
   switch (type) {
     case MessageType::kHello: return "HELLO";
@@ -489,6 +514,7 @@ const char* MessageTypeName(MessageType type) {
     case MessageType::kMergeReceipt: return "MERGE_RECEIPT";
     case MessageType::kTransitHeld: return "TRANSIT_HELD";
     case MessageType::kConfirm: return "CONFIRM";
+    case MessageType::kSyncSummary: return "SYNC_SUMMARY";
   }
   return "UNKNOWN";
 }

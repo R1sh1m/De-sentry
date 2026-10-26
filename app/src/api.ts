@@ -278,6 +278,12 @@ export interface Brain {
   transit_documents_held: number;
 }
 
+export interface PeerSyncSnapshot {
+  node_id: string;
+  observed_at_ms: number;
+  collections: Array<{ name: string; checksum: string }>;
+}
+
 export interface TransitOwner {
   owner_node: string;
   documents: number;
@@ -598,6 +604,10 @@ export class NodeApi {
 
   peers(options?: RequestOptions): Promise<Peer[]> {
     return this.get<Peer[]>("/_peers", options);
+  }
+
+  peerSync(options?: RequestOptions): Promise<PeerSyncSnapshot[]> {
+    return this.get<PeerSyncSnapshot[]>("/_peer_sync", { timeoutMs: 15_000, ...options });
   }
 
   quota(options?: RequestOptions): Promise<QuotaReport> {

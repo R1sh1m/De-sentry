@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "desentry/common/platform.h"
@@ -42,6 +43,7 @@ enum class MessageType : uint8_t {
   kTransitHeld = 15,  // holder confirms it has stored bytes for an offline owner
   // -- handshake key confirmation ---------------------------------------------
   kConfirm = 16,  // transcript signature proving identity binding (H-5 fix)
+  kSyncSummary = 17,  // authenticated peer's readable collection checksums
 };
 
 const char* MessageTypeName(MessageType type);
@@ -306,6 +308,14 @@ struct HeartbeatPayload {
   bool is_supervisor = false;
   std::string Encode() const;
   static HeartbeatPayload Decode(const std::string& bytes);
+};
+
+// A point-in-time collection checksum summary requested over the authenticated
+// P2P channel. The responder filters this to collections the requester may read.
+struct SyncSummaryPayload {
+  std::vector<std::pair<std::string, std::string>> collections;  // name, checksum hex
+  std::string Encode() const;
+  static SyncSummaryPayload Decode(const std::string& bytes);
 };
 
 // -- Framing over a raw fd ------------------------------------------------

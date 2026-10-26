@@ -453,6 +453,10 @@ CollectionSummary NodeEngine::Summarize(const std::string& collection) {
   return summary;
 }
 
+std::string NodeEngine::CollectionChecksum(const std::string& collection) {
+  return storage_->router().Checksum(collection);
+}
+
 // ---------------------------------------------------------------------------
 // Transit
 // ---------------------------------------------------------------------------

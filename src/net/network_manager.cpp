@@ -269,6 +269,50 @@ void NetworkManager::RebuildPlacement() {
   if (placement_) placement_->Rebuild(peer_table_);
 }
 
+std::vector<NetworkManager::PeerSyncSnapshot> NetworkManager::PeerSyncSnapshots() {
+  std::vector<PeerSyncSnapshot> snapshots;
+  if (!transport_) return snapshots;
+
+  const int64_t now_ms = NowMs();
+  constexpr int64_t kCacheTtlMs = 3000;
+  constexpr size_t kMaxSyncPeers = 16;
+  std::lock_guard<std::mutex> cache_lock(peer_sync_cache_mu_);
+
+  size_t queried = 0;
+  for (const PeerInfo& peer : peer_table_.Ranked()) {
+    if (queried >= kMaxSyncPeers) break;
+    if (!peer.handshake_proven || peer.is_supervisor || peer.p2p_port == 0 ||
+        peer.Suspicion(now_ms, config_.liveness_threshold_ms) != PeerSuspicion::kHealthy) {
+      continue;
+    }
+    ++queried;
+
+    auto cached = peer_sync_cache_.find(peer.node_id);
+    if (cached != peer_sync_cache_.end() && now_ms - cached->second.observed_at_ms < kCacheTtlMs) {
+      snapshots.push_back(cached->second);
+      continue;
+    }
+
+    auto response = transport_->SendRequest(peer.host, peer.p2p_port,
+                                            WireMessage{MessageType::kSyncSummary, ""});
+    if (!response.ok() || response.value().type != MessageType::kSyncSummary) {
+      continue;
+    }
+
+    try {
+      PeerSyncSnapshot snapshot;
+      snapshot.node_id = peer.node_id;
+      snapshot.collections = SyncSummaryPayload::Decode(response.value().payload).collections;
+      snapshot.observed_at_ms = NowMs();
+      peer_sync_cache_[peer.node_id] = snapshot;
+      snapshots.push_back(std::move(snapshot));
+    } catch (const std::exception& error) {
+      DSN_LOG_WARN("network", "invalid sync summary from " << peer.node_id << ": " << error.what());
+    }
+  }
+  return snapshots;
+}
+
 // ---------------------------------------------------------------------------
 // Inbound dispatch
 // ---------------------------------------------------------------------------
@@ -308,6 +352,8 @@ WireMessage NetworkManager::HandleRequest(const std::string& peer_node_id,
         return HandleLedgerDigest(peer_node_id, LedgerDigestPayload::Decode(request.payload));
       case MessageType::kHeartbeat:
         return HandleHeartbeat(peer_node_id, HeartbeatPayload::Decode(request.payload));
+      case MessageType::kSyncSummary:
+        return HandleSyncSummary(peer_node_id);
       case MessageType::kTransitHeld:
         // A holder confirms it has stored bytes for an offline owner.
         // The holder is the authenticated peer; we just log it.
@@ -633,6 +679,15 @@ WireMessage NetworkManager::HandleHeartbeat(const std::string& peer_node_id,
     }
   }
   return WireMessage{MessageType::kHeartbeat, OwnHeartbeat().Encode()};
+}
+
+WireMessage NetworkManager::HandleSyncSummary(const std::string& peer_node_id) {
+  SyncSummaryPayload summary;
+  const Requestor requester = Requestor::Peer(peer_node_id);
+  for (const std::string& collection : engine_->ReadableCollections(requester)) {
+    summary.collections.emplace_back(collection, engine_->CollectionChecksum(collection));
+  }
+  return WireMessage{MessageType::kSyncSummary, summary.Encode()};
 }
 
 void NetworkManager::ProbePeer(PeerInfo peer) {

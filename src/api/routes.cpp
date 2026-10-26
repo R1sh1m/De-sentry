@@ -481,6 +481,25 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     return JsonOk(JsonValue(std::move(arr)));
   });
 
+  server->Get("/_peer_sync", [network](const HttpRequest&) -> HttpResponse {
+    JsonValue::Array snapshots;
+    for (const NetworkManager::PeerSyncSnapshot& snapshot : network->PeerSyncSnapshots()) {
+      JsonValue::Object peer;
+      peer.emplace_back("node_id", JsonValue(snapshot.node_id));
+      peer.emplace_back("observed_at_ms", JsonValue(snapshot.observed_at_ms));
+      JsonValue::Array collections;
+      for (const auto& [name, checksum] : snapshot.collections) {
+        JsonValue::Object collection;
+        collection.emplace_back("name", JsonValue(name));
+        collection.emplace_back("checksum", JsonValue(checksum));
+        collections.emplace_back(std::move(collection));
+      }
+      peer.emplace_back("collections", JsonValue(std::move(collections)));
+      snapshots.emplace_back(std::move(peer));
+    }
+    return JsonOk(JsonValue(std::move(snapshots)));
+  });
+
   server->Get("/_status", [engine, network](const HttpRequest&) -> HttpResponse {
     const auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(
                               std::chrono::steady_clock::now() - start_time)
