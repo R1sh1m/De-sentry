@@ -136,7 +136,11 @@ export function createConsole(): ConsoleHandles {
         "div",
         { class: "row", style: "gap: 12px; align-items: center;" },
         meshBadge,
-        el("span", { class: "mono muted", style: "font-size: var(--text-xs);" }, `Ledger #${node.tip?.entry_id ?? 0}`),
+        el("span", {
+          class: "mono muted",
+          style: "font-size: var(--text-xs);",
+          title: "Node-local write-ahead log position; peer nodes can have different ledger heights.",
+        }, `Local ledger #${node.tip?.entry_id ?? 0}`),
       ),
     );
 
