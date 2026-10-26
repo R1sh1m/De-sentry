@@ -347,22 +347,47 @@ function openAboutSheet(): void {
   window.addEventListener("keydown", onKey);
 
   // Update check state
-  let checkState: "idle" | "checking" | "up-to-date" | "available" | "error" = "idle";
+  let checkState: "idle" | "checking" | "up-to-date" | "available" | "installing" | "installed" | "error" = "idle";
   let updateStatusText = "";
+  let pendingUpdate: import("@tauri-apps/plugin-updater").Update | null = null;
   let checkButton: HTMLButtonElement | null = null;
   let statusEl: HTMLElement | null = null;
 
+  async function onUpdateClick(): Promise<void> {
+    if (checkState === "available" && pendingUpdate) {
+      await installUpdate(pendingUpdate);
+    } else {
+      await checkForUpdates();
+    }
+  }
+
+  async function installUpdate(update: import("@tauri-apps/plugin-updater").Update): Promise<void> {
+    checkState = "installing";
+    updateStatusText = "Downloading update...";
+    renderUpdateStatus();
+    try {
+      await update.downloadAndInstall();
+      checkState = "installed";
+      updateStatusText = `v${update.version} installed — restart app`;
+    } catch (err) {
+      console.warn("Update install failed:", err);
+      checkState = "error";
+      updateStatusText = "Install failed";
+    }
+    renderUpdateStatus();
+  }
+
   async function checkForUpdates(): Promise<void> {
-    if (!isTauri() || checkState === "checking") return;
+    if (!isTauri() || checkState === "checking" || checkState === "installing") return;
     checkState = "checking";
-    updateStatusText = "Checking...";
+    updateStatusText = "";
     renderUpdateStatus();
 
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
-      const timeoutMs = 10_000;
+      const timeoutMs = 8_000;
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Update check timed out after 10s")), timeoutMs)
+        setTimeout(() => reject(new Error("Update check timed out")), timeoutMs)
       );
       const update = await Promise.race([
         check({ timeout: timeoutMs }),
@@ -370,15 +395,25 @@ function openAboutSheet(): void {
       ]);
       if (update === null) {
         checkState = "up-to-date";
+        pendingUpdate = null;
         updateStatusText = "You're up to date";
       } else {
         checkState = "available";
-        updateStatusText = `v${update.version} available — downloads on next start`;
+        pendingUpdate = update;
+        updateStatusText = `v${update.version} available`;
       }
     } catch (error) {
       console.warn("Failed to check for updates:", error);
       checkState = "error";
-      updateStatusText = "Could not check (offline, timeout, or no release)";
+      pendingUpdate = null;
+      const errStr = String(error).toLowerCase();
+      if (errStr.includes("target") || errStr.includes("platform")) {
+        updateStatusText = navigator.userAgent.includes("Mac") ? "No macOS build in feed" : "No build for platform";
+      } else if (errStr.includes("time") || errStr.includes("timeout")) {
+        updateStatusText = "Timed out (check internet)";
+      } else {
+        updateStatusText = "Feed unreachable";
+      }
     }
     renderUpdateStatus();
   }
@@ -392,9 +427,15 @@ function openAboutSheet(): void {
     } else if (checkState === "up-to-date") {
       checkButton.disabled = false;
       checkButton.textContent = "Check Again";
-    } else if (checkState === "available") {
+    } else if (checkState === "available" && pendingUpdate) {
       checkButton.disabled = false;
-      checkButton.textContent = "Check Again";
+      checkButton.textContent = `Install v${pendingUpdate.version}`;
+    } else if (checkState === "installing") {
+      checkButton.disabled = true;
+      checkButton.textContent = "Installing...";
+    } else if (checkState === "installed") {
+      checkButton.disabled = true;
+      checkButton.textContent = "Restart Required";
     } else if (checkState === "error") {
       checkButton.disabled = false;
       checkButton.textContent = "Retry";
@@ -409,7 +450,7 @@ function openAboutSheet(): void {
     { class: "btn btn--sm btn--ghost", type: "button", text: "Check for Updates" },
   );
   checkButton = checkForUpdatesBtn;
-  on(checkForUpdatesBtn, "click", () => { void checkForUpdates(); });
+  on(checkForUpdatesBtn, "click", () => { void onUpdateClick(); });
 
   statusEl = el("span", { class: "about-macos__update-status", text: "" });
 
