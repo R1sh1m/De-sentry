@@ -2,10 +2,12 @@
   <img src="docs/assets/banner.svg" width="100%" alt="De-Sentry — decentralized peer-to-peer database engine">
 </p>
 
+<!-- CI rebuild trigger -->
+
 <p align="center">
   <a href="https://github.com/R1sh1m/De-sentry/releases"><img src="https://img.shields.io/badge/Release-v2.0.0-2997ff?style=for-the-badge&logo=tag&logoColor=white" alt="Release"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=for-the-badge&logo=c%2B%2B&logoColor=white" alt="C++17">
-  <img src="https://img.shields.io/badge/P2P-Encrypted%20Mesh-orange?style=for-the-badge" alt="P2P Mesh">
+  <img src="https://img.shields.io/badge/P2P-Encrypted%20Mesh-orange?style=for-the-badge&logoColor=white" alt="P2P Mesh">
   <img src="https://img.shields.io/badge/CRDT-Conflict--Free-green?style=for-the-badge" alt="CRDT">
   <img src="https://img.shields.io/badge/Runtime%20Deps-Zero%20(OpenSSL%20only)-purple?style=for-the-badge" alt="Zero Runtime Deps">
   <a href="STATUS.md"><img src="https://img.shields.io/badge/Tests-13%2F13%20C%2B%2B%20%E2%9C%93-brightgreen?style=for-the-badge" alt="Tests"></a>
@@ -182,3 +184,43 @@ De-Sentry rejects synthetic or mocking-heavy test suites:
 - **Cryptographic ledger audit** verifies hash chains and Ed25519 signatures end-to-end.
 
 See [`STATUS.md`](STATUS.md) for the verified test log.
+
+---
+
+## PowerShell Quoting
+
+When using the De-Sentry CLI or REST API from PowerShell, you may encounter issues with JSON quoting due to PowerShell's different quote handling compared to bash.
+
+### The Problem
+
+PowerShell interprets quotes differently than bash. For example:
+
+```powershell
+# This may not work as expected in PowerShell:
+curl -X PUT http://127.0.0.1:7701/db/users/u1 -d '{"name":"Asha"}'
+```
+
+### Workarounds
+
+1. **Use the Python client** (recommended):
+   ```powershell
+   python -c "import sys; sys.path.insert(0, 'clients/python'); from desentry_client import DesentryClient; c = DesentryClient('http://127.0.0.1:7701'); c.put('users', 'u1', {'name': 'Asha'})"
+   ```
+
+2. **Use PowerShell's native Invoke-RestMethod**:
+   ```powershell
+   $body = @{ name = "Asha"; role = "admin" } | ConvertTo-Json
+   Invoke-RestMethod -Uri "http://127.0.0.1:7701/db/users/u1" -Method PUT -Body $body -ContentType "application/json"
+   ```
+
+3. **Escape inner quotes** (for simple cases):
+   ```powershell
+   curl -X PUT http://127.0.0.1:7701/db/users/u1 -d '{\"name\":\"Asha\"}'
+   ```
+
+4. **Use double quotes with escaped variables**:
+   ```powershell
+   curl -X PUT http://127.0.0.1:7701/db/users/u1 -d "{`"name`":`"Asha`"}"
+   ```
+
+For complex JSON payloads, the Python client or `Invoke-RestMethod` are the most reliable approaches.
