@@ -50,7 +50,7 @@
     "shortDescription": "Peer-to-peer database control room",
     "longDescription": "De-Sentry manages a mesh of peer-to-peer database nodes across the machines and drives you own. It works with no internet connection at all.",
     "copyright": "© 2026 De-Sentry Project",
-    "externalBin": ["binaries/desentryd"],
+    "externalBin": ["binaries/desentryd", "binaries/desentryd-universal-apple-darwin"],
     "resources": {
       "../resources/prototypes.json": "resources/prototypes.json",
       "../resources/facets.json": "resources/facets.json",
@@ -78,7 +78,7 @@
         "bundleMediaFramework": false
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "shell": {

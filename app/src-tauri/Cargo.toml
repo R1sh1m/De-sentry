@@ -1,6 +1,6 @@
 [package]
 name = "de-sentry-app"
-version = "2.0.0"
+version = "1.0.0"
 description = "De-Sentry control room"
 authors = ["De-Sentry"]
 edition = "2021"

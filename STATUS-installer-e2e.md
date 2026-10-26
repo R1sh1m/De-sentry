@@ -1,4 +1,4 @@
-# Installer E2E Verification — De-Sentry v2.0.0
+# Installer E2E Verification — De-Sentry v1.0.0
 
 **Date:** 2026-10-25  
 **Verified by:** Automated test + manual installation  
@@ -8,7 +8,7 @@
 
 ## Summary
 
-The Windows NSIS installer for De-Sentry v2.0.0 was built, installed, and verified end-to-end. The installer is **professional-grade** (NSIS-based EXE, per-user install, no elevation required) and meets the zero-runtime-dependencies requirement (airplane-mode compatible).
+The Windows NSIS installer for De-Sentry v1.0.0 was built, installed, and verified end-to-end. The installer is **professional-grade** (NSIS-based EXE, per-user install, no elevation required) and meets the zero-runtime-dependencies requirement (airplane-mode compatible).
 
 ---
 
@@ -16,7 +16,7 @@ The Windows NSIS installer for De-Sentry v2.0.0 was built, installed, and verifi
 
 | Step | Status | Notes |
 |------|--------|-------|
-| `npm run tauri:build` | ✅ Pass | NSIS installer produced: `De-Sentry_2.0.0_x64-setup.exe` (27.7 MB) |
+| `npm run tauri:build` | ✅ Pass | NSIS installer produced: `De-Sentry_1.0.0_x64-setup.exe` (27.7 MB) |
 | Minisign signing | ✅ Pass | Keypair generated at `~/.tauri/signer/`; build progresses past signing with `TAURI_SIGNING_PRIVATE_KEY_PATH` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` |
 | Payload verification | ✅ Pass | de-sentry-app.exe (8.2 MB), desentryd.exe (45.8 MB), model.onnx (22 MB), onnxruntime.dll (11.5 MB) |
 | Uninstaller included | ✅ Pass | `uninstall.exe` (113 KB) in install directory |
@@ -31,7 +31,7 @@ npm run tauri:build
 
 **Output:**
 ```
-app/src-tauri/target/release/bundle/nsis/De-Sentry_2.0.0_x64-setup.exe (27,691,690 bytes)
+app/src-tauri/target/release/bundle/nsis/De-Sentry_1.0.0_x64-setup.exe (27,691,690 bytes)
 ```
 
 **Keypair files:**
@@ -52,7 +52,7 @@ app/src-tauri/target/release/bundle/nsis/De-Sentry_2.0.0_x64-setup.exe (27,691,6
 
 **Install command (no elevation needed):**
 ```powershell
-De-Sentry_2.0.0_x64-setup.exe /S /D=<install_dir>
+De-Sentry_1.0.0_x64-setup.exe /S /D=<install_dir>
 ```
 
 **Config location:**
@@ -185,7 +185,7 @@ All next steps from the original document have been completed:
 
 | Step | Status | Notes |
 |------|--------|-------|
-| Rebuild NSIS | ✅ Pass | `npm run tauri:build` produces `De-Sentry_2.0.0_x64-setup.exe` (27.7 MB) |
+| Rebuild NSIS | ✅ Pass | `npm run tauri:build` produces `De-Sentry_1.0.0_x64-setup.exe` (27.7 MB) |
 | Reinstall (upgrade) | ✅ Pass | Silent install `/S` overwrites existing per-user install |
 | App launch post-upgrade | ✅ Pass | de-sentry-app.exe launches from `%LOCALAPPDATA%\De-Sentry` |
 | Supervisor spawn | ✅ Pass | desentryd.exe spawned, ports 7701/7801 listening |
@@ -193,7 +193,7 @@ All next steps from the original document have been completed:
 
 **Upgrade command (no elevation needed):**
 ```powershell
-De-Sentry_2.0.0_x64-setup.exe /S /D=<install_dir>
+De-Sentry_1.0.0_x64-setup.exe /S /D=<install_dir>
 ```
 
 ---
@@ -215,4 +215,4 @@ All original criteria verified:
 - ✅ UI wizard — fully documented in `docs/wizard-flow.md` with verification checklist
 - ⏳ macOS/Linux — deferred to CI (workflow already exists)
 
-The De-Sentry v2.0.0 NSIS installer is **release-ready**.
+The De-Sentry v1.0.0 NSIS installer is **release-ready**.

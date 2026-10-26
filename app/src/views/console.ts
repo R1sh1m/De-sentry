@@ -92,8 +92,7 @@ export function createConsole(): ConsoleHandles {
     });
 
     const nodeSelector = el("select", {
-      class: "input",
-      style: "font: var(--text-sm); font-weight: 600; padding: 4px 8px; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); color: var(--color-ink);",
+      class: "select-rounded",
     }) as HTMLSelectElement;
 
     for (const d of store.dataNodes()) {
@@ -268,7 +267,7 @@ export function createConsole(): ConsoleHandles {
 
   // -- 1. Documents Tab -------------------------------------------------------
   function renderDocumentsTab(node: NodeView, colNames: string[]): HTMLElement {
-    const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
+    const colSelect = el("select", { class: "select-rounded" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
       if (name === docCollection) opt.selected = true;
@@ -400,7 +399,7 @@ export function createConsole(): ConsoleHandles {
         body: "This node has no collection bound to vector_hnsw_lite. Drop embeddings through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"vector_hnsw_lite\"}.",
       });
     }
-    const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
+    const colSelect = el("select", { class: "select-rounded" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
       if (name === vecCollection) opt.selected = true;
@@ -500,7 +499,7 @@ export function createConsole(): ConsoleHandles {
         body: "This node has no collection bound to ts_rollup. Drop metric logs through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"ts_rollup\"}.",
       });
     }
-    const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
+    const colSelect = el("select", { class: "select-rounded" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
       if (name === tsCollection) opt.selected = true;
@@ -586,7 +585,7 @@ export function createConsole(): ConsoleHandles {
         body: "This node has no collection bound to graph_adj. Drop edge lists through the Dropbox (it binds the engine automatically), or bind one by hand: PUT /_collection/<name>/engine {\"engine\": \"graph_adj\"}.",
       });
     }
-    const colSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);" }) as HTMLSelectElement;
+    const colSelect = el("select", { class: "select-rounded" }) as HTMLSelectElement;
     for (const name of colNames) {
       const opt = el("option", { value: name, text: name }) as HTMLOptionElement;
       if (name === graphCollection) opt.selected = true;
@@ -645,7 +644,7 @@ export function createConsole(): ConsoleHandles {
 
   // -- 5. Direct API Playground ----------------------------------------------
   function renderApiTab(node: NodeView): HTMLElement {
-    const methodSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm); font-weight: bold;" }) as HTMLSelectElement;
+    const methodSelect = el("select", { class: "select-rounded" }) as HTMLSelectElement;
     for (const m of ["GET", "POST", "PUT", "DELETE"]) {
       const opt = el("option", { value: m, text: m }) as HTMLOptionElement;
       if (m === apiMethod) opt.selected = true;

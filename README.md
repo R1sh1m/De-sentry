@@ -5,7 +5,6 @@
 <!-- CI rebuild trigger -->
 
 <p align="center">
-  <a href="https://github.com/R1sh1m/De-sentry/releases"><img src="https://img.shields.io/badge/Release-v2.0.0-2997ff?style=for-the-badge&logo=tag&logoColor=white" alt="Release"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=for-the-badge&logo=c%2B%2B&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/P2P-Encrypted%20Mesh-orange?style=for-the-badge&logoColor=white" alt="P2P Mesh">
   <img src="https://img.shields.io/badge/CRDT-Conflict--Free-green?style=for-the-badge" alt="CRDT">
@@ -21,7 +20,7 @@
 
 Built in **C++17** from first principles — the way real database engines are forged. A hand-written paged storage layer with WAL and disk-backed B+Tree (not a wrapper around SQLite or RocksDB), a **CRDT document model** for conflict-free multi-writer replication, and a from-scratch encrypted P2P transport. The only third-party dependency is **OpenSSL** for cryptographic primitives.
 
-**v2** introduces an Apple-inspired **desktop control room** built with Tauri v2. It provisions nodes, supervises `desentryd` processes, executes offline semantic sizing, and keeps the mesh synchronized in the system tray. Everything works **offline-first** — verified by real airplane-mode integration suites.
+De-Sentry includes an Apple-inspired **desktop control room** built with Tauri v2. It provisions nodes, supervises `desentryd` processes, executes offline semantic sizing, and keeps the mesh synchronized in the system tray. Everything works **offline-first** — verified by real airplane-mode integration suites.
 
 ---
 

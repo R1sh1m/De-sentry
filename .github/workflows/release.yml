@@ -1,6 +1,6 @@
 # De-Sentry release builds: engine + desktop app + installers, on every tag.
 #
-# Push a tag (`git tag v2.0.1 && git push origin v2.0.1`) and this produces a
+# Push a tag (`git tag v1.0.0 && git push origin v1.0.0`) and this produces a
 # draft GitHub Release with the installers attached: MSI (Windows), .dmg
 # (macOS), AppImage/.deb (Linux). No toolchain needed on the user's machine.
 #

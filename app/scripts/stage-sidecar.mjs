@@ -109,6 +109,20 @@ async function main() {
       `staged ${source}\n     -> ${destination} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
     );
   }
+
+  // macOS universal build: also stage the universal binary if present
+  if (process.platform === "darwin") {
+    const universalSource = join(REPO, "build", "desentryd-universal-apple-darwin");
+    if (await exists(universalSource)) {
+      const dest = join(OUT, "desentryd-universal-apple-darwin");
+      await copyFile(universalSource, dest);
+      await chmod(dest, 0o755);
+      const info = await stat(dest);
+      process.stdout.write(
+        `staged ${universalSource}\n     -> ${dest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
+      );
+    }
+  }
 }
 
 main().catch((error) => {

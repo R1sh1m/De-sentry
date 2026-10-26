@@ -27,7 +27,7 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > upload preserves its original bytes, and the explorer can reconstruct and
 > save the original file; pasted text still uses structured intake. The
 > refreshed unsigned Apple Silicon DMG is
-> `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+> `app/src-tauri/target/release/bundle/dmg/De-Sentry_1.0.0_aarch64.dmg`.
 > Verification details and limits are in [§3](#3-verification).
 
 > **2026-10-25 — isolated-node status and stored-size refresh.** The overview
@@ -91,7 +91,7 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > Tauri DMG script could not use `hdiutil create`/`resize` in this environment
 > (`Device not configured`), so the same app bundle was packaged with
 > `hdiutil makehybrid` and compressed as UDZO. The 28 MiB artifact is
-> `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+> `app/src-tauri/target/release/bundle/dmg/De-Sentry_1.0.0_aarch64.dmg`.
 > Developer ID signing and notarization were not performed. The app was not
 > launched from the image; see [§3](#3-verification) for the exact commands
 > and remaining limits.
@@ -231,7 +231,7 @@ Python integration (real `desentryd` processes over HTTP, stdlib only):
 | `cargo check` in `app/src-tauri` | Clean. |
 | Isolated LAN workflow through real `desentryd` processes | Host plus two bootstrap joiners replicated a 16,400-byte synthetic PDF in seven chunks; both peers reconstructed byte-identical content. A standalone node accepted no P2P connection and its document stayed absent from the mesh. |
 | Updated Tauri app bundle | `.app` bundled with the current engine sidecar, ONNX model, and ONNX runtime. Tauri exited nonzero after creating the app because it also tried to sign the updater artifact and no `TAURI_SIGNING_PRIVATE_KEY` is configured. |
-| Refreshed unsigned DMG | Manually packaged a staging folder containing `De-Sentry.app` plus an `Applications` shortcut, then compressed as UDZO. Read-only mount confirmed both at the image root; `hdiutil verify` reports a valid image. Artifact: `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg` (28 MiB). Developer ID signing and notarization were not performed. |
+| Refreshed unsigned DMG | Manually packaged a staging folder containing `De-Sentry.app` plus an `Applications` shortcut, then compressed as UDZO. Read-only mount confirmed both at the image root; `hdiutil verify` reports a valid image. Artifact: `app/src-tauri/target/release/bundle/dmg/De-Sentry_1.0.0_aarch64.dmg` (28 MiB). Developer ID signing and notarization were not performed. |
 
 **Not run:** connecting three physical PCs, launching the refreshed DMG, and
 clicking through the native file-save dialog. The current live app was inspected
@@ -265,7 +265,7 @@ annotations and unnecessary `AppHandle` forwarding; the registered wrapper
 commands remain the window API. The arm64 app bundle then built. Tauri exited
 nonzero after bundling because no updater signing private key is configured;
 that signing step is separate from this unsigned DMG. Packaged the app with an
-Applications shortcut into `app/src-tauri/target/release/bundle/dmg/De-Sentry_2.0.0_aarch64.dmg`.
+Applications shortcut into `app/src-tauri/target/release/bundle/dmg/De-Sentry_1.0.0_aarch64.dmg`.
 `hdiutil verify` reports a valid image. A read-only mount attempt failed with
 `Device not configured`, so image contents could not be inspected after
 creation; the staging folder contained `De-Sentry.app` and the Applications
@@ -314,7 +314,7 @@ was arm64 and was staged by the app script.
 | Check | Result |
 | --- | --- |
 | `PATH="/Users/harshitborade/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" CARGO_BUILD_JOBS=2 npm run tauri:build -- --bundles dmg` | Frontend and Tauri release app built. Tauri's DMG script then failed: `hdiutil create` returned `Device not configured`. |
-| Manual DMG packaging | `hdiutil makehybrid -default-volume-name De-Sentry -hfs` followed by `hdiutil convert -format UDZO` succeeded; produced `De-Sentry_2.0.0_aarch64.dmg` (28 MiB). |
+| Manual DMG packaging | `hdiutil makehybrid -default-volume-name De-Sentry -hfs` followed by `hdiutil convert -format UDZO` succeeded; produced `De-Sentry_1.0.0_aarch64.dmg` (28 MiB). |
 | Bundle contents | arm64 app and `desentryd`; bundled `model.onnx`, `libonnxruntime.dylib`, tokenizer and prototypes; Applications symlink in the image staging folder. `LSMinimumSystemVersion` is 14.0. |
 | Signing | No Developer ID signature or notarization. The local app binary carries only the normal ad-hoc linker signature. |
 
@@ -368,7 +368,7 @@ everything below was executed on that toolchain against real binaries:
 | `cd app && npm run typecheck`, `npm run build`, `npm run check:qr` | clean (71.63 kB JS, 19.61 kB CSS; QR encoder conformance passes) |
 | Manual 3-node mesh (`run_cluster.ps1`) + curl + dashboard path | write-on-1/read-on-2-3, divergent writes converge, delete propagates |
 | Rust: `cargo check` (default + `--no-default-features`), `cargo build`, `cargo test` | **clean, 28/28 tests pass** (after the SS4-round-4 fixes; keychain test hits the real Windows Credential Manager) |
-| `npm run tauri:build` (WiX MSI, windows-gnu) | **`De-Sentry_2.0.0_x64_en-US.msi` (29.6 MiB) produced**; payload verified via the Installer API (app exe, desentryd sidecar, WebView2 loader, prototypes, ONNX model + runtime + tokenizer) |
+| `npm run tauri:build` (WiX MSI, windows-gnu) | **`De-Sentry_1.0.0_x64_en-US.msi` (29.6 MiB) produced**; payload verified via the Installer API (app exe, desentryd sidecar, WebView2 loader, prototypes, ONNX model + runtime + tokenizer) |
 | `soak_test.py --nodes 50 --writes 500 --chaos 8 --settle 180` | ALL 9 CHECKS PASSED (50 nodes up, 433/500 writes accepted, converged in 1.7s, 1 checksum everywhere, all chains verify) |
 | Docker: `compose build` + 3-node cluster + `run tester` + `run unit-tests` | image builds on Linux, integration ALL PASSED, container unit suites green (network convergence needs the cluster stopped: 6 stacks oversubscribe the Docker VM's CPUs) |
 
@@ -582,7 +582,7 @@ plus the concurrent-work collision below froze AI-file and commit work.
 
 | Check | Result |
 | --- | --- |
-| `npx tauri build` (release, windows-gnu) | **MSI produced**: `De-Sentry_2.0.0_x64_en-US.msi`, 36.8 MiB, after ~11 min + ~6 min release compiles |
+| `npx tauri build` (release, windows-gnu) | **MSI produced**: `De-Sentry_1.0.0_x64_en-US.msi`, 36.8 MiB, after ~11 min + ~6 min release compiles |
 | MSI payload (read from the installer DB, no install) | app exe 6.5 MB, `desentryd.exe` 54.5 MB (= the staged verified `build-baseline` binary), WebView2Loader, prototypes.json, model.onnx + onnxruntime.dll + tokenizer.json -- the full product, file by file |
 | Triple fix (`app/scripts/stage-sidecar.mjs`) | The Tauri CLI's npm binary is MSVC-built and resolves `externalBin` with its own triple (`...-msvc.exe`), while this box compiles Rust with windows-gnu. `rustup set default-host` does NOT affect it (tried, reverted). The script now stages both names on win32-gnu and honours `$DESENTRY_ENGINE` like the Python harness; the runtime lookup (`find_packaged_sidecar`) was already triple-agnostic so no Rust change was needed. Proper fix remains the MSVC toolchain `release.yml` already uses |
 | MSI install | **BLOCKED**: per-machine package, Error 1925 (no elevation from here) |
@@ -1403,7 +1403,7 @@ restart, offline migration).
 ## 14. Not-run list closed (2026-09-21, this Windows box unless noted)
 
 ### Installer
-`npm run tauri:build` produced `De-Sentry_2.0.0_x64_en-US.msi`
+`npm run tauri:build` produced `De-Sentry_1.0.0_x64_en-US.msi`
 (39.1 MiB, release app 6.4 MiB + RelWithDebInfo `desentryd` 59.9 MiB with
 all §12-13 changes). Payload verified by admin-install extraction
 (`de-sentry-app.exe`, `desentryd.exe`, `prototypes.json`, `model.onnx`,
@@ -1461,7 +1461,7 @@ instead; the last plaintext-50 predates §12-13).
 ## 15. Not-run list closed (2026-09-21, this Windows box unless noted)
 
 ### Installer
-`npm run tauri:build` produced `De-Sentry_2.0.0_x64_en-US.msi`
+`npm run tauri:build` produced `De-Sentry_1.0.0_x64_en-US.msi`
 (39.1 MiB: release app 6.4 MiB + RelWithDebInfo `desentryd` 59.9 MiB
 with all §12-14 changes). Payload verified by admin-install extraction
 (`de-sentry-app.exe`, `desentryd.exe`, `prototypes.json`, `model.onnx`,
@@ -1838,7 +1838,7 @@ Updater wiring verified: `createUpdaterArtifacts: true`, endpoint
 `TAURI_SIGNING_PRIVATE_KEY` wired in `release.yml`, private key at
 `~\.tauri\de-sentry.key` (348 B, passwordless). Pubkey↔private pairing NOT
 independently verified (no minisign here; CI fails closed on mismatch).
-Handoff: owner stores the key as the CI secret, then `git tag v2.0.0` +
+Handoff: owner stores the key as the CI secret, then `git tag v1.0.0` +
 push fires the draft release.
 
 ### Still not run

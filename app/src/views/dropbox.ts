@@ -442,7 +442,7 @@ export function createDropbox(): DropboxHandles {
   function stagedCard(item: StagedItem, nodes: NodeView[]): HTMLElement {
     const payload = item.payload;
 
-    const nodeSelect = el("select", { class: "input", style: "padding: 6px 10px; font-size: var(--text-sm);", "aria-label": `Destination node for ${item.sourceName || payload.title}` }) as HTMLSelectElement;
+    const nodeSelect = el("select", { class: "select-rounded", "aria-label": `Destination node for ${item.sourceName || payload.title}` }) as HTMLSelectElement;
     nodeSelect.disabled = item.isIngesting || item.ingestionComplete;
     for (const n of nodes) {
       const quota = n.status?.quota;

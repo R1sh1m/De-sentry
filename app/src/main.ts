@@ -502,7 +502,7 @@ function build(): void {
     "div",
     { class: "brand-cluster__row" },
     el("p", { class: "header__title", text: "De-Sentry" }),
-    el("span", { class: "brand-badge", text: "v2.0" }),
+    el("span", { class: "brand-badge", text: "v1.0" }),
   );
   const title = el(
     "button",

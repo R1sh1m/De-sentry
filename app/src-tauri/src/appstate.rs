@@ -89,6 +89,20 @@ pub struct AppState {
     pub on_battery: AtomicBool,
     /// Set when the app is shutting down, so the watchdog stops restarting.
     pub shutting_down: AtomicBool,
+    /// Pending actions proposed by the assistant, keyed by conversation id.
+    pending_actions: Mutex<HashMap<String, Vec<AssistantPendingAction>>>,
+}
+
+/// A pending action proposed by the assistant for confirmation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantPendingAction {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+    pub destructive: bool,
+    pub auto: bool,
+    pub params: serde_json::Value,
 }
 
 impl AppState {
@@ -106,6 +120,7 @@ impl AppState {
             background_mode: AtomicBool::new(false),
             on_battery: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
+            pending_actions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -253,6 +268,31 @@ impl AppState {
 
     pub fn has_unexported_keys(&self) -> bool {
         !self.pending_keys.lock().expect("key mutex").is_empty()
+    }
+
+    // Assistant pending actions management
+    pub fn add_pending_actions(&self, conversation_id: &str, actions: Vec<AssistantPendingAction>) {
+        let mut map = self.pending_actions.lock().expect("pending actions mutex");
+        map.insert(conversation_id.to_string(), actions);
+    }
+
+    pub fn take_pending_action(&self, conversation_id: &str, action_id: &str) -> Option<AssistantPendingAction> {
+        let mut map = self.pending_actions.lock().expect("pending actions mutex");
+        if let Some(vec) = map.get_mut(conversation_id) {
+            if let Some(pos) = vec.iter().position(|a| a.id == action_id) {
+                let action = vec.remove(pos);
+                if vec.is_empty() {
+                    map.remove(conversation_id);
+                }
+                return Some(action);
+            }
+        }
+        None
+    }
+
+    pub fn get_pending_actions(&self, conversation_id: &str) -> Vec<AssistantPendingAction> {
+        let map = self.pending_actions.lock().expect("pending actions mutex");
+        map.get(conversation_id).cloned().unwrap_or_default()
     }
 }
 

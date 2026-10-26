@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(desentry VERSION 2.0.0 LANGUAGES CXX C)
+project(desentry VERSION 1.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
