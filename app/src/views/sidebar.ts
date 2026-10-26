@@ -358,7 +358,7 @@ function statusLabel(status: Convergence): string {
     case "converged": return "In sync";
     case "lagging": return "Catching up";
     case "waiting": return "Waiting for peers";
-    case "checking": return "Checking connection";
+    case "checking": return "Verifying sync";
     case "offline": return "Offline";
     case "supervisor": return "Supervisor";
     case "isolated": return "Local only";

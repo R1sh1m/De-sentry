@@ -97,7 +97,7 @@ const STATUS_TEXT: Record<Convergence, string> = {
   converged: "In sync",
   lagging: "Catching up",
   waiting: "Waiting for peers",
-  checking: "Checking connection",
+  checking: "Verifying sync",
   offline: "Offline",
   supervisor: "Supervisor",
   isolated: "Local only",

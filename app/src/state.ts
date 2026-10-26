@@ -319,7 +319,7 @@ const INITIAL_REACHABILITY_GRACE_MS = 20_000;
  * has diverged. A checksum mismatch means the node is still catching up;
  * matching checksums mean the live collection contents agree.
  */
-export function convergenceOf(node: NodeView): Convergence {
+function measuredConvergenceOf(node: NodeView): Convergence {
   if (node.process.supervisor) return "supervisor";
   if (node.process.process === "stopped" || node.process.process === "failed") return "offline";
   if (!node.reachable) {
@@ -351,9 +351,11 @@ export function convergenceOf(node: NodeView): Convergence {
   );
   if (livePeers.length === 0) return "waiting";
   const nodeCollections = new Map(node.brain.collections.map((collection) => [collection.name, collection.checksum]));
+  let comparedManagedPeer = false;
   for (const peer of store.dataNodes()) {
     if (peer.process.node_id === node.process.node_id || peer.process.mesh_isolated ||
         !peer.reachable || peer.brain === null) continue;
+    comparedManagedPeer = true;
     const peerCollections = new Map(peer.brain.collections.map((collection) => [collection.name, collection.checksum]));
     let comparedCollection = false;
     for (const [name, checksum] of nodeCollections) {
@@ -367,9 +369,61 @@ export function convergenceOf(node: NodeView): Convergence {
     }
     if (!comparedCollection && nodeCollections.size > 0 && peerCollections.size > 0) return "lagging";
   }
+  // A desktop only has checksums for nodes it manages locally. A healthy
+  // remote peer proves connectivity, not that its collections match ours.
+  // Keep the status indeterminate instead of claiming "In sync" without a
+  // checksum comparison.
+  if (!comparedManagedPeer && nodeCollections.size > 0) return "checking";
   // If we have no collections to compare (empty node or no peers with collections),
   // consider it converged as long as it's reachable and running.
   return "converged";
+}
+
+const CONVERGENCE_STABILITY_MS = 1_500;
+interface StableConvergence {
+  visible: Convergence;
+  candidate: Convergence;
+  candidateSinceMs: number;
+}
+const convergenceStability = new Map<string, StableConvergence>();
+
+/** Suppress short checksum mismatches while both replicas are exchanging a batch. */
+export function convergenceOf(node: NodeView): Convergence {
+  const measured = measuredConvergenceOf(node);
+  const nodeId = node.process.node_id;
+  let stable = convergenceStability.get(nodeId);
+  if (stable === undefined) {
+    stable = { visible: measured, candidate: measured, candidateSinceMs: Date.now() };
+    convergenceStability.set(nodeId, stable);
+    return measured;
+  }
+
+  const isSettledStatus = measured === "converged" || measured === "lagging";
+  const wasSettledStatus = stable.visible === "converged" || stable.visible === "lagging";
+  if (!isSettledStatus || !wasSettledStatus) {
+    stable.visible = measured;
+    stable.candidate = measured;
+    stable.candidateSinceMs = Date.now();
+    return measured;
+  }
+  if (measured === stable.visible) {
+    stable.candidate = measured;
+    stable.candidateSinceMs = Date.now();
+    return measured;
+  }
+  if (measured !== stable.candidate) {
+    stable.candidate = measured;
+    stable.candidateSinceMs = Date.now();
+    window.setTimeout(() => {
+      const current = convergenceStability.get(nodeId);
+      if (current !== stable || current.candidate !== measured ||
+          Date.now() - current.candidateSinceMs < CONVERGENCE_STABILITY_MS) return;
+      current.visible = measured;
+      current.candidateSinceMs = Date.now();
+      store.notify();
+    }, CONVERGENCE_STABILITY_MS);
+  }
+  return stable.visible;
 }
 
 /** One shared count label for the app header and topology view. */
