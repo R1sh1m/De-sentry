@@ -1,6 +1,6 @@
 {
   "name": "de-sentry-app",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "De-Sentry control room — the single point of access to a peer-to-peer database mesh.",
   "type": "module",
