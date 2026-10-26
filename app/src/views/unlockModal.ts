@@ -33,7 +33,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
   const title = el("h3", { class: "modal-box__title", text: `Unlock ${node.node_name || node.node_id.slice(0, 8)}` });
   const lead = el("p", {
     class: "modal-box__body",
-    text: "This node is encrypted at rest. Enter its passphrase or recovery key to decrypt the database and start the node.",
+    text: "This node is locked. Enter its password, passphrase, or recovery key to unlock and start the node.",
   });
 
   const input = el("input", {

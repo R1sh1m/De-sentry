@@ -60,8 +60,9 @@ def test_collection_crud():
     log("=== Testing Collection CRUD ===")
     base = BASE_URLS['node0']
     
-    # Create collection
-    res = request('PUT', f"{base}/_schema/test_users")
+    # Create collection with simple JSON schema
+    schema_body = {"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}
+    res = request('PUT', f"{base}/_schema/test_users", schema_body)
     record("Create collection schema", 'error' not in res)
     
     # Insert document

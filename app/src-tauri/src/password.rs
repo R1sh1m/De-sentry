@@ -29,8 +29,9 @@ use argon2::{
     password_hash::{PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use getrandom;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::appstate::AppState;
 
@@ -198,6 +199,7 @@ pub fn node_security(state: State<'_, Arc<AppState>>, node_id: String) -> Result
 ///
 /// `remember` stores (or clears) the new password in the OS keychain.
 pub fn set_node_password(
+    _app: AppHandle,
     state: State<'_, Arc<AppState>>,
     node_id: String,
     current_secret: Option<String>,

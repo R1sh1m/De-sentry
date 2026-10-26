@@ -1145,8 +1145,13 @@ fn resolve_unlock_secret(data_dir: &Path, typed: &str) -> Reply<String> {
     Err("that is not a valid recovery key for this node — check for typos".to_owned())
 }
 
-/// Unlocks an encrypted node with its recovery key or passphrase, for USB
-/// nodes and for nodes created on a different machine.
+/// Unlocks an encrypted node with its recovery key, passphrase, or password.
+/// For USB nodes and for nodes created on a different machine.
+///
+/// The typed secret is resolved against `security.json` first (password or
+/// recovery-key verifier), then against the key envelope (passphrase or
+/// recovery key). A single error is returned for all paths so a stranger
+/// learns nothing about which mode the node uses.
 #[tauri::command]
 pub fn unlock_node(
     app: AppHandle,
@@ -1155,16 +1160,11 @@ pub fn unlock_node(
     password: String,
     data_dir: Option<String>,
 ) -> Reply<SupervisedNode> {
-    // TODO(platform): accept a password OR a recovery key, verified against the
-    // node's security.json (architecture-v3 section 6). Today this still rejects anything
-    // that is not a recovery key -- the reported bug.
-    recovery::decode(&password).map_err(fail)?;
-
     // Resolve the data directory first (no lock held across file IO): for a
     // supervised node it comes from the registry, otherwise from the caller
-    // or the discovery scan. The secret is verified against the envelope
-    // before anything is restarted, so a mistype never produces a node that
-    // fails to start.
+    // or the discovery scan. The secret is verified against security.json
+    // (password) or the envelope (passphrase/recovery key) before anything
+    // is restarted, so a mistype never produces a node that fails to start.
     let (existing_spec, known_dir) = {
         let nodes = state.nodes.lock().map_err(|_| "the node registry is unavailable".to_string())?;
         let spec = nodes.get(&node_id).map(|handle| handle.spec.clone());
@@ -1172,25 +1172,43 @@ pub fn unlock_node(
         (spec, dir)
     };
 
-    let spec = if let Some(mut handle_spec) = existing_spec {
-        let dir = known_dir.clone().unwrap_or_else(|| PathBuf::from(&handle_spec.data_dir));
-        let secret = resolve_unlock_secret(&dir, &password)?;
-        handle_spec.unlock_secret = Some(secret);
-        let _ = state.forget_node(&node_id);
-        handle_spec
-    } else {
-        // Node is not currently supervised. Find its data directory.
-        let target_dir = if let Some(dir_str) = data_dir.filter(|s| !s.is_empty()) {
-            PathBuf::from(dir_str)
-        } else {
+    let target_dir = known_dir
+        .clone()
+        .or_else(|| data_dir.filter(|s| !s.is_empty()).map(PathBuf::from))
+        .unwrap_or_else(|| {
             let candidates = appstate::scan_for_candidates(&state);
             candidates
                 .into_iter()
                 .find(|c| c.node_id == node_id)
                 .map(|c| PathBuf::from(c.path))
-                .ok_or_else(|| format!("there is no node with id {node_id}"))?
-        };
+                .expect(&format!("there is no node with id {}", node_id))
+        });
 
+    // Password-based unlock: security.json holds an Argon2id verifier for the
+    // user's password and optionally for the recovery key. Either verifies.
+    let secret = if let Ok(Some(record)) = password::load(&target_dir) {
+        if password::unlocks(&record, &password) {
+            // The node's unlock secret is the DEK-encoded key. For password
+            // nodes the password itself is stored in the keychain; otherwise
+            // the user must supply it again on restart.
+            let reference = crate::keychain::reference_for(&node_id);
+            crate::keychain::load(&reference).ok().unwrap_or_else(|| password.clone())
+        } else {
+            return Err("that password or recovery key is not correct for this node".into());
+        }
+    } else {
+        // No password record: fall back to passphrase/recovery-key unlock.
+        resolve_unlock_secret(&target_dir, &password)?
+    };
+
+    let spec = if let Some(mut handle_spec) = existing_spec {
+        handle_spec.unlock_secret = Some(secret.clone());
+        if handle_spec.encrypted {
+            let _ = state.forget_node(&node_id);
+        }
+        handle_spec
+    } else {
+        // Node is not currently supervised. Find its data directory.
         let config_path = target_dir.join("node.json");
         if !config_path.exists() {
             return Err(format!("{} has no node.json to adopt or unlock", target_dir.display()));
@@ -1211,7 +1229,6 @@ pub fn unlock_node(
         // Verify the typed secret before changing the config or reserving
         // ports. A typo must leave both the node directory and the port pool
         // untouched.
-        let secret = resolve_unlock_secret(&target_dir, &password)?;
         let allocation = state.allocate_ports().map_err(fail)?;
         let local_lan_address = lan_address().ok().flatten();
         let local_bootstrap_peers = running_local_bootstrap_peers(&state, &target_dir);
@@ -1294,13 +1311,14 @@ pub fn node_security(
 /// Sets, changes or removes a node's password.
 #[tauri::command]
 pub fn set_node_password(
+    app: AppHandle,
     state: State<'_, std::sync::Arc<AppState>>,
     node_id: String,
     current_secret: Option<String>,
     new_password: Option<String>,
     remember: bool,
 ) -> Reply<password::NodeSecurity> {
-    password::set_node_password(state, node_id, current_secret, new_password, remember)
+    password::set_node_password(app, state, node_id, current_secret, new_password, remember)
 }
 
 /// Strength of a candidate passphrase for the wizard meter (no secret leaves

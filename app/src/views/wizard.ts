@@ -109,6 +109,8 @@ interface Draft {
   sizingError: string;
   /** Monotonic run id so a timed-out sizing promise cannot overwrite a newer run. */
   sizingGeneration?: number;
+  /** Debounce timer id for auto-triggered sizing (optional). */
+  sizingDebounce?: number;
   manualEngines: Set<string>;
   engines: EngineInfo[];
   // 5 -- creation
@@ -705,6 +707,13 @@ export function createWizard(): WizardHandles {
     (descriptionInput as HTMLTextAreaElement).value = draft.description;
     on(descriptionInput, "input", () => {
       draft.description = (descriptionInput as HTMLTextAreaElement).value;
+      // Debounce auto-sizing to avoid firing on every keystroke.
+      window.clearTimeout(draft.sizingDebounce);
+      draft.sizingDebounce = window.setTimeout(() => {
+        if (draft.step === 3 && draft.description.trim() !== "" && !draft.sizing && draft.spec === null) {
+          void runSizing();
+        }
+      }, 300);
     });
     const suggestions = el(
       "details",
@@ -1872,7 +1881,9 @@ export function createWizard(): WizardHandles {
           draft.sizingError = "";
         }
         go(draft.step + 1);
-        if (draft.step === 3 && draft.description.trim() !== "") void runSizing();
+        // Auto-sizing is now debounced via the description input handler.
+        // (Previously triggered immediately on step change, which could be
+        // surprising.)
       }
     });
 

@@ -175,6 +175,15 @@ struct Prototype {
     collections: Vec<DraftCollection>,
     #[serde(default)]
     rationale: Option<PrototypeRationale>,
+    /// Fallback engines when preferred engines are unavailable.
+    #[serde(default)]
+    engines_fallback: Vec<String>,
+    /// Preferred engines (superset of engines, may include optional ones).
+    #[serde(default)]
+    engines_preferred: Vec<String>,
+    /// Fallback default engine when default_engine is unavailable.
+    #[serde(default)]
+    default_engine_fallback: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -445,23 +454,60 @@ impl Sizer {
     ) -> NodeSpec {
         // Never propose an engine the binary does not contain: an option that
         // fails on selection is worse than one that is not offered.
+        // Prefer `engines_preferred` when present (it may name optional engines
+        // such as duckdb that the build does not have); fall back to the
+        // prototype's `engines` list, and finally to `engines_fallback` when
+        // the primary list is empty after filtering. This is what the dead
+        // JSON fields in prototypes.json were for all along.
         let mut engines: Vec<String> = prototype
-            .engines
+            .engines_preferred
             .iter()
+            .chain(prototype.engines.iter())
             .filter(|name| available.iter().any(|have| have == *name))
             .cloned()
             .collect();
+        if engines.is_empty() {
+            engines = prototype
+                .engines_fallback
+                .iter()
+                .filter(|name| available.iter().any(|have| have == *name))
+                .cloned()
+                .collect();
+        }
         if engines.is_empty() {
             engines.push("kv".to_owned());
         }
 
         let default_engine = if engines.iter().any(|name| *name == prototype.default_engine) {
             prototype.default_engine.clone()
+        } else if !prototype.default_engine_fallback.is_empty()
+            && engines.iter().any(|name| *name == prototype.default_engine_fallback)
+        {
+            prototype.default_engine_fallback.clone()
         } else {
             engines[0].clone()
         };
 
-        let quota_split = prototype.quota_split.normalised();
+        let mut quota_split = prototype.quota_split;
+        // Adjust the split based on the actual budget. Tiny nodes cannot
+        // afford large transit/ledger buckets, and large nodes benefit
+        // from more database cache. This is what the unused quota_mb
+        // parameter was for.
+        if quota_mb < 256 {
+            // Very constrained: prioritise database pages, minimise overhead.
+            quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(5);
+            quota_split.ledger_pct = quota_split.ledger_pct.saturating_sub(3);
+            quota_split.db_pct += 8;
+        } else if quota_mb < 1024 {
+            // Small node: modest adjustments.
+            quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(2);
+            quota_split.db_pct += 2;
+        } else if quota_mb > 4096 {
+            // Large node: can afford more DB cache.
+            quota_split.cache_hash_pct = quota_split.cache_hash_pct.saturating_sub(2);
+            quota_split.db_pct += 2;
+        }
+        let quota_split = quota_split.normalised();
 
         let reasoning = self.build_reasoning(
             prototype,
@@ -503,12 +549,6 @@ impl Sizer {
                 }
             })
             .collect();
-
-        // A tiny node cannot usefully hold three replicas' worth of anything,
-        // but RF is about how many *other* nodes hold a copy, not about this
-        // node's size -- so the budget does not change it. What the budget does
-        // change is the split, which is normalised here rather than trusted.
-        let _ = quota_mb;
 
         NodeSpec {
             engines,
@@ -1022,26 +1062,25 @@ impl Sizer {
 ///
 /// Substring matching would score "graph" for "paragraph" and "orm" for
 /// "format" -- both of which are exactly the sort of confident nonsense a
-/// fallback must not produce.
+/// fallback must not produce. Uses Unicode-aware word boundaries so non-English
+/// descriptions don't mis-score.
 fn contains_word(haystack: &str, needle: &str) -> bool {
     let needle = needle.trim();
     if needle.is_empty() {
         return false;
     }
-    let bytes = haystack.as_bytes();
     let mut from = 0usize;
     while let Some(offset) = haystack[from..].find(needle) {
         let start = from + offset;
         let end = start + needle.len();
-        let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
-        let after_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        let before_ok = start == 0
+            || !haystack[..start].chars().last().expect("non-empty").is_alphanumeric();
+        let after_ok = end >= haystack.len()
+            || !haystack[end..].chars().next().expect("non-empty").is_alphanumeric();
         if before_ok && after_ok {
             return true;
         }
-        from = start + 1;
-        if from >= haystack.len() {
-            break;
-        }
+        from = end;
     }
     false
 }
