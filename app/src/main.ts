@@ -360,7 +360,14 @@ function openAboutSheet(): void {
 
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
+      const timeoutMs = 10_000;
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Update check timed out after 10s")), timeoutMs)
+      );
+      const update = await Promise.race([
+        check({ timeout: timeoutMs }),
+        timeoutPromise,
+      ]);
       if (update === null) {
         checkState = "up-to-date";
         updateStatusText = "You're up to date";
@@ -368,9 +375,10 @@ function openAboutSheet(): void {
         checkState = "available";
         updateStatusText = `v${update.version} available — downloads on next start`;
       }
-    } catch {
+    } catch (error) {
+      console.warn("Failed to check for updates:", error);
       checkState = "error";
-      updateStatusText = "Could not check (offline or no feed)";
+      updateStatusText = "Could not check (offline, timeout, or no release)";
     }
     renderUpdateStatus();
   }
@@ -382,8 +390,8 @@ function openAboutSheet(): void {
       checkButton.disabled = true;
       checkButton.textContent = "Checking...";
     } else if (checkState === "up-to-date") {
-      checkButton.disabled = true;
-      checkButton.textContent = "Check for Updates";
+      checkButton.disabled = false;
+      checkButton.textContent = "Check Again";
     } else if (checkState === "available") {
       checkButton.disabled = false;
       checkButton.textContent = "Check Again";

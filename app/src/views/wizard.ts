@@ -1280,7 +1280,6 @@ export function createWizard(): WizardHandles {
     const row = el("div", { class: "row", style: "flex-wrap: wrap; gap: 8px;" });
 
     for (const engine of available) {
-      const enabled = engine.compiled_in;
       const chosen = draft.manualEngines.has(engine.name);
       // All engines are presented as available; opt-in engines are included automatically
       // to give users the full range of database capabilities without manual selection.

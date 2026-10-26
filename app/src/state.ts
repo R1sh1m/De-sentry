@@ -1043,7 +1043,14 @@ async function checkForUpdates(): Promise<void> {
     const { isTauri } = await import("./bridge.js");
     if (!isTauri()) return;
     const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await check();
+    const timeoutMs = 10_000;
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), timeoutMs)
+    );
+    const update = await Promise.race([
+      check({ timeout: timeoutMs }),
+      timeoutPromise,
+    ]);
     if (update === null) return;
     store.toast("info", "Update available", `De-Sentry ${update.version} is downloading; it applies on your next start.`);
     await update.downloadAndInstall();
