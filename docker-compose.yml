@@ -80,12 +80,13 @@ services:
       NODE_A_URL: "http://node-a:7701"
       NODE_B_URL: "http://node-b:7702"
       NODE_C_URL: "http://node-c:7703"
+    working_dir: /opt/desentry/tests/integration
     command:
-      - /opt/desentry/tests/integration/cluster_integration_test.py
+      - cluster_integration_test.py
     entrypoint:
       - python3
     volumes:
-      - ./tests/integration/cluster_integration_test.py:/opt/desentry/tests/integration/cluster_integration_test.py:ro
+      - ./tests/integration:/opt/desentry/tests/integration:ro
     networks:
       - desentry
     # Keep the cluster up afterwards; the tester exits with the test result.

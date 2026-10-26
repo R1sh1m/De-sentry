@@ -9,7 +9,7 @@ matter for a decentralized database:
   3. Tamper-evident ledger   -- every node's hash-chained audit ledger
                                verifies cleanly.
   4. Peer membership         -- each node is aware of its siblings.
-  5. Tombstone propagation    -- a delete replicates and is observed everywhere.
+  5. Tombstone propagation    -- a delete on A is observed on B and C.
 
 Run it standalone:
     python3 tests/integration/cluster_integration_test.py
@@ -20,6 +20,7 @@ Requires a built `desentryd` (see harness.find_engine for where it looks).
 from __future__ import annotations
 
 import sys
+import time
 
 from harness import Cluster, Report  # noqa: E402
 
@@ -55,9 +56,15 @@ def main() -> int:
         c.client.put(COLLECTION, "u1", {"name": "Asha Khan", "role": "admin"})
 
         cluster.wait_converged()
+        # Allow a brief settling period for CRDT merges to propagate after checksum convergence
+        time.sleep(2.0)
         va = a.client.get(COLLECTION, "u1")
         vb = b.client.get(COLLECTION, "u1")
         vc = c.client.get(COLLECTION, "u1")
+        if not (va == vb == vc):
+            print(f"  A: {va}")
+            print(f"  B: {vb}")
+            print(f"  C: {vc}")
         report.check(va == vb == vc, "all nodes converged to the same document")
         print(f"  converged document: {va}")
 
