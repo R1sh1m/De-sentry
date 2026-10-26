@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <sstream>
+
+#include <openssl/evp.h>
 
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
@@ -124,6 +128,60 @@ JsonValue AclToJson(const CollectionAcl& acl) {
   return JsonValue(std::move(obj));
 }
 
+// Decode base64 (padded, as produced by FileReader.readAsDataURL) to binary.
+// Returns empty vector on failure.
+std::vector<uint8_t> DecodeBase64(const std::string& input) {
+  if (input.empty()) return {};
+  if (input.size() % 4 != 0) return {};  // invalid padding
+
+  std::vector<uint8_t> output((input.size() * 3) / 4);
+  int decoded = EVP_DecodeBlock(output.data(),
+                                 reinterpret_cast<const unsigned char*>(input.c_str()),
+                                 static_cast<int>(input.size()));
+  if (decoded < 0) return {};
+
+  // Adjust for padding
+  if (input.size() >= 2 && input[input.size() - 1] == '=') decoded--;
+  if (input.size() >= 3 && input[input.size() - 2] == '=') decoded--;
+
+  output.resize(static_cast<size_t>(decoded));
+  return output;
+}
+
+// Reassemble a chunked file's base64 content from its parts.
+StatusOr<std::string> ReassembleChunkedFile(NodeEngine* engine,
+                                             const std::string& collection,
+                                             const std::string& key,
+                                             const JsonValue& manifest,
+                                             const Requestor& self) {
+  const JsonValue* v_ct = manifest.Find("chunk_total");
+  const int64_t chunk_total = (v_ct && v_ct->is_number()) ? v_ct->AsInt() : 0;
+  if (chunk_total <= 0) {
+    return Status::InvalidArgument("chunked manifest missing chunk_total");
+  }
+  const JsonValue* v_cf = manifest.Find("chunk_field");
+  const std::string chunk_field = (v_cf && v_cf->is_string()) ? v_cf->AsString() : "base64";
+
+  std::string result;
+  result.reserve(static_cast<size_t>(chunk_total) * 4000);  // rough estimate
+
+  for (int64_t i = 0; i < chunk_total; ++i) {
+    std::string part_key = key + "#" + std::to_string(i);
+    auto part_or = engine->GetDocument(collection, part_key, self);
+    if (!part_or.ok()) {
+      return Status::NotFound("missing chunk " + std::to_string(i) + " for " + key);
+    }
+    const JsonValue& part = part_or.value();
+    const JsonValue* v_cd = part.Find(chunk_field);
+    const std::string chunk_data = (v_cd && v_cd->is_string()) ? v_cd->AsString() : "";
+    if (chunk_data.empty()) {
+      return Status::InvalidArgument("chunk " + std::to_string(i) + " missing field " + chunk_field);
+    }
+    result += chunk_data;
+  }
+  return result;
+}
+
 }  // namespace
 
 Status ValidateAgainstSchema(const JsonValue& doc, const JsonValue& schema) {
@@ -157,6 +215,9 @@ Status ValidateAgainstSchema(const JsonValue& doc, const JsonValue& schema) {
   }
   return Status::OK();
 }
+
+// Forward declaration for file routes
+void RegisterFileRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* network, std::function<Requestor()> self);
 
 void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* network) {
   static auto start_time = std::chrono::steady_clock::now();
@@ -1191,6 +1252,407 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("query", JsonValue(query));
     obj.emplace_back("collection", JsonValue(collection));
     return JsonOk(JsonValue(std::move(obj)));
+  });
+  // Register additional file browsing routes
+  RegisterFileRoutes(server, engine, network, self);
+}
+
+// -- universal file lookup / access ------------------------------------------
+void RegisterFileRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* network,
+                         std::function<Requestor()> self) {
+  // GET /_files - list files across collections
+  server->Get("/_files", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const std::string collection_filter = QueryString(req, "collection");
+    const std::string mime_filter = QueryString(req, "mime");
+    const int64_t min_size = QueryInt(req, "min_size", 0);
+    const int64_t max_size = QueryInt(req, "max_size", -1);
+    const int64_t before_ms = QueryInt(req, "before_ms", 0);
+    const int64_t after_ms = QueryInt(req, "after_ms", 0);
+    const int64_t limit = std::max<int64_t>(1, QueryInt(req, "limit", 100));
+    const int64_t offset = std::max<int64_t>(0, QueryInt(req, "offset", 0));
+    const std::string sort = QueryString(req, "sort", "created_ms");
+
+    std::vector<std::string> collections;
+    if (collection_filter.empty()) {
+      collections = engine->ListCollections();
+    } else {
+      if (engine->CanRead(collection_filter, self())) {
+        collections.push_back(collection_filter);
+      }
+    }
+
+    struct FileInfo {
+      std::string collection;
+      std::string key;
+      std::string filename;
+      std::string mime;
+      uint64_t size_bytes;
+      std::string sha256;
+      int64_t created_ms;
+      bool chunked;
+      int64_t chunk_total;
+    };
+
+    std::vector<FileInfo> files;
+    for (const std::string& coll : collections) {
+      if (!engine->CanRead(coll, self())) continue;
+
+      const size_t fetch_limit = static_cast<size_t>(limit * 2 + 256);  // over-fetch for filtering
+      auto docs = engine->ListDocuments(coll, "", fetch_limit, self());
+
+      for (auto& [key, doc] : docs) {
+        if (!doc.is_object()) continue;
+
+        // Check if it's a file asset (has filename field)
+        const JsonValue* _fn = doc.Find("filename");
+        const std::string filename = (_fn && _fn->is_string()) ? _fn->AsString() : "";
+        if (filename.empty()) continue;
+
+        const JsonValue* _mi = doc.Find("mime");
+        const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
+        const JsonValue* _sz = doc.Find("size_bytes");
+        const int64_t size_bytes = (_sz && _sz->is_number()) ? _sz->AsInt() : 0;
+        const JsonValue* _sh = doc.Find("sha256");
+        const std::string sha256 = (_sh && _sh->is_string()) ? _sh->AsString() : "";
+        const JsonValue* _cm = doc.Find("created_ms");
+        const int64_t created_ms = (_cm && _cm->is_number()) ? _cm->AsInt() : 0;
+        const JsonValue* _ch = doc.Find("chunked");
+        const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+        const JsonValue* _ct = doc.Find("chunk_total");
+        const int64_t chunk_total = (_ct && _ct->is_number()) ? _ct->AsInt() : 0;
+
+        // Apply filters
+        if (!mime_filter.empty() && mime.find(mime_filter) != 0) continue;
+        if (min_size > 0 && static_cast<int64_t>(size_bytes) < min_size) continue;
+        if (max_size > 0 && static_cast<int64_t>(size_bytes) > max_size) continue;
+        if (before_ms > 0 && created_ms >= before_ms) continue;
+        if (after_ms > 0 && created_ms <= after_ms) continue;
+
+        files.push_back(FileInfo{coll, key, filename, mime, static_cast<uint64_t>(size_bytes),
+                                  sha256, created_ms, chunked, chunk_total});
+      }
+    }
+
+    // Sort
+    if (sort == "size_bytes" || sort == "-size_bytes") {
+      std::sort(files.begin(), files.end(), [sort](const FileInfo& a, const FileInfo& b) {
+        return sort[0] == '-' ? (a.size_bytes > b.size_bytes) : (a.size_bytes < b.size_bytes);
+      });
+    } else if (sort == "filename" || sort == "-filename") {
+      std::sort(files.begin(), files.end(), [sort](const FileInfo& a, const FileInfo& b) {
+        return sort[0] == '-' ? (a.filename > b.filename) : (a.filename < b.filename);
+      });
+    } else {
+      // Default: created_ms desc
+      std::sort(files.begin(), files.end(), [](const FileInfo& a, const FileInfo& b) {
+        return a.created_ms > b.created_ms;
+      });
+    }
+
+    // Paginate
+    const int64_t total = static_cast<int64_t>(files.size());
+    const int64_t start = std::min(offset, total);
+    const int64_t end = std::min(start + limit, total);
+
+    JsonValue::Array arr;
+    for (int64_t i = start; i < end; ++i) {
+      const auto& f = files[i];
+      JsonValue::Object obj;
+      obj.emplace_back("collection", JsonValue(f.collection));
+      obj.emplace_back("key", JsonValue(f.key));
+      obj.emplace_back("filename", JsonValue(f.filename));
+      obj.emplace_back("mime", JsonValue(f.mime));
+      obj.emplace_back("size_bytes", JsonValue(static_cast<int64_t>(f.size_bytes)));
+      obj.emplace_back("sha256", JsonValue(f.sha256));
+      obj.emplace_back("created_ms", JsonValue(f.created_ms));
+      obj.emplace_back("chunked", JsonValue(f.chunked));
+      if (f.chunked) {
+        obj.emplace_back("chunk_total", JsonValue(f.chunk_total));
+      }
+      arr.emplace_back(JsonValue(std::move(obj)));
+    }
+
+    JsonValue::Object result;
+    result.emplace_back("files", JsonValue(std::move(arr)));
+    result.emplace_back("total", JsonValue(total));
+    result.emplace_back("has_more", JsonValue(end < total));
+    return JsonOk(JsonValue(std::move(result)));
+  });
+
+  // GET /_files/search - search files by filename/content
+  server->Get("/_files/search", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const std::string query = QueryString(req, "q");
+    if (query.empty()) {
+      return JsonError(400, "missing required query parameter 'q'");
+    }
+
+    const std::string collection_filter = QueryString(req, "collection");
+    const std::string mime_filter = QueryString(req, "mime");
+    const int64_t limit = std::max<int64_t>(1, QueryInt(req, "limit", 100));
+    const int64_t offset = std::max<int64_t>(0, QueryInt(req, "offset", 0));
+
+    std::vector<std::string> collections;
+    if (collection_filter.empty()) {
+      collections = engine->ListCollections();
+    } else {
+      if (engine->CanRead(collection_filter, self())) {
+        collections.push_back(collection_filter);
+      }
+    }
+
+    struct SearchResult {
+      std::string collection;
+      std::string key;
+      std::string filename;
+      std::string mime;
+      uint64_t size_bytes;
+      std::string sha256;
+      int64_t created_ms;
+      bool chunked;
+      int64_t chunk_total;
+      float score;
+      bool filename_match;
+    };
+
+    std::vector<SearchResult> results;
+    const std::string query_lower = query;
+    for (const std::string& coll : collections) {
+      if (!engine->CanRead(coll, self())) continue;
+
+      const size_t fetch_limit = static_cast<size_t>(limit * 4 + 256);
+      auto docs = engine->ListDocuments(coll, "", fetch_limit, self());
+
+      for (auto& [key, doc] : docs) {
+        if (!doc.is_object()) continue;
+
+        const JsonValue* _fn = doc.Find("filename");
+        const std::string filename = (_fn && _fn->is_string()) ? _fn->AsString() : "";
+        if (filename.empty()) continue;
+
+        const JsonValue* _mi = doc.Find("mime");
+        const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
+        const JsonValue* _sz = doc.Find("size_bytes");
+        const int64_t size_bytes = (_sz && _sz->is_number()) ? _sz->AsInt() : 0;
+        const JsonValue* _sh = doc.Find("sha256");
+        const std::string sha256 = (_sh && _sh->is_string()) ? _sh->AsString() : "";
+        const JsonValue* _cm = doc.Find("created_ms");
+        const int64_t created_ms = (_cm && _cm->is_number()) ? _cm->AsInt() : 0;
+        const JsonValue* _ch = doc.Find("chunked");
+        const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+        const JsonValue* _ct = doc.Find("chunk_total");
+        const int64_t chunk_total = (_ct && _ct->is_number()) ? _ct->AsInt() : 0;
+
+        if (!mime_filter.empty() && mime.find(mime_filter) != 0) continue;
+
+        // Search in filename (case-insensitive)
+        bool filename_match = false;
+        bool content_match = false;
+
+        if (!query.empty()) {
+          std::string filename_lower = filename;
+          std::transform(filename_lower.begin(), filename_lower.end(), filename_lower.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+          if (filename_lower.find(query_lower) != std::string::npos) {
+            filename_match = true;
+          }
+        }
+
+        // Optional: search in text_excerpt if present
+        const JsonValue* _te = doc.Find("text_excerpt");
+        const std::string text_excerpt = (_te && _te->is_string()) ? _te->AsString() : "";
+        if (!text_excerpt.empty()) {
+          std::string excerpt_lower = text_excerpt;
+          std::transform(excerpt_lower.begin(), excerpt_lower.end(), excerpt_lower.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+          if (excerpt_lower.find(query_lower) != std::string::npos) {
+            content_match = true;
+          }
+        }
+
+        if (!filename_match && !content_match) continue;
+
+        float score = 0.0f;
+        if (filename_match) score += 10.0f;
+        if (content_match) score += 1.0f;
+
+        results.push_back(SearchResult{coll, key, filename, mime, static_cast<uint64_t>(size_bytes),
+                                        sha256, created_ms, chunked, chunk_total, score, filename_match});
+      }
+    }
+
+    // Sort by score desc, then by created_ms desc
+    std::sort(results.begin(), results.end(), [](const SearchResult& a, const SearchResult& b) {
+      if (a.score != b.score) return a.score > b.score;
+      return a.created_ms > b.created_ms;
+    });
+
+    // Paginate
+    const int64_t total = static_cast<int64_t>(results.size());
+    const int64_t start = std::min(offset, total);
+    const int64_t end = std::min(start + limit, total);
+
+    JsonValue::Array arr;
+    for (int64_t i = start; i < end; ++i) {
+      const auto& r = results[i];
+      JsonValue::Object obj;
+      obj.emplace_back("collection", JsonValue(r.collection));
+      obj.emplace_back("key", JsonValue(r.key));
+      obj.emplace_back("filename", JsonValue(r.filename));
+      obj.emplace_back("mime", JsonValue(r.mime));
+      obj.emplace_back("size_bytes", JsonValue(static_cast<int64_t>(r.size_bytes)));
+      obj.emplace_back("sha256", JsonValue(r.sha256));
+      obj.emplace_back("created_ms", JsonValue(r.created_ms));
+      obj.emplace_back("chunked", JsonValue(r.chunked));
+      if (r.chunked) {
+        obj.emplace_back("chunk_total", JsonValue(r.chunk_total));
+      }
+      obj.emplace_back("score", JsonValue(r.score));
+      obj.emplace_back("filename_match", JsonValue(r.filename_match));
+      arr.emplace_back(JsonValue(std::move(obj)));
+    }
+
+    JsonValue::Object result;
+    result.emplace_back("results", JsonValue(std::move(arr)));
+    result.emplace_back("total", JsonValue(total));
+    result.emplace_back("query", JsonValue(query));
+    return JsonOk(JsonValue(std::move(result)));
+  });
+
+  // GET /_files/recent - recently created files
+  server->Get("/_files/recent", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const int64_t limit = std::max<int64_t>(1, QueryInt(req, "limit", 20));
+    const std::string collection_filter = QueryString(req, "collection");
+
+    std::vector<std::string> collections;
+    if (collection_filter.empty()) {
+      collections = engine->ListCollections();
+    } else {
+      if (engine->CanRead(collection_filter, self())) {
+        collections.push_back(collection_filter);
+      }
+    }
+
+    struct FileInfo {
+      std::string collection;
+      std::string key;
+      std::string filename;
+      std::string mime;
+      uint64_t size_bytes;
+      std::string sha256;
+      int64_t created_ms;
+      bool chunked;
+    };
+
+    std::vector<FileInfo> files;
+    for (const std::string& coll : collections) {
+      if (!engine->CanRead(coll, self())) continue;
+
+      const size_t fetch_limit = static_cast<size_t>(limit * 2 + 64);
+      auto docs = engine->ListDocuments(coll, "", fetch_limit, self());
+
+      for (auto& [key, doc] : docs) {
+        if (!doc.is_object()) continue;
+
+        const JsonValue* _fn = doc.Find("filename");
+        const std::string filename = (_fn && _fn->is_string()) ? _fn->AsString() : "";
+        if (filename.empty()) continue;
+
+        const JsonValue* _mi = doc.Find("mime");
+        const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
+        const JsonValue* _sz = doc.Find("size_bytes");
+        const int64_t size_bytes = (_sz && _sz->is_number()) ? _sz->AsInt() : 0;
+        const JsonValue* _sh = doc.Find("sha256");
+        const std::string sha256 = (_sh && _sh->is_string()) ? _sh->AsString() : "";
+        const JsonValue* _cm = doc.Find("created_ms");
+        const int64_t created_ms = (_cm && _cm->is_number()) ? _cm->AsInt() : 0;
+        const JsonValue* _ch = doc.Find("chunked");
+        const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+
+        files.push_back(FileInfo{coll, key, filename, mime, static_cast<uint64_t>(size_bytes),
+                                  sha256, created_ms, chunked});
+      }
+    }
+
+    // Sort by created_ms desc
+    std::sort(files.begin(), files.end(), [](const FileInfo& a, const FileInfo& b) {
+      return a.created_ms > b.created_ms;
+    });
+
+    // Take top N
+    if (static_cast<int64_t>(files.size()) > limit) {
+      files.resize(static_cast<size_t>(limit));
+    }
+
+    JsonValue::Array arr;
+    for (const auto& f : files) {
+      JsonValue::Object obj;
+      obj.emplace_back("collection", JsonValue(f.collection));
+      obj.emplace_back("key", JsonValue(f.key));
+      obj.emplace_back("filename", JsonValue(f.filename));
+      obj.emplace_back("mime", JsonValue(f.mime));
+      obj.emplace_back("size_bytes", JsonValue(static_cast<int64_t>(f.size_bytes)));
+      obj.emplace_back("sha256", JsonValue(f.sha256));
+      obj.emplace_back("created_ms", JsonValue(f.created_ms));
+      obj.emplace_back("chunked", JsonValue(f.chunked));
+      arr.emplace_back(JsonValue(std::move(obj)));
+    }
+
+    return JsonOk(JsonValue(std::move(arr)));
+  });
+
+  // GET /_files/:collection/:key/stream - stream file content
+  server->Get("/_files/:collection/:key/stream", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const std::string& collection = req.params.at("collection");
+    const std::string& key = req.params.at("key");
+
+    if (!engine->CanRead(collection, self())) {
+      return JsonError(404, "file not found or not accessible");
+    }
+
+    auto doc_or = engine->GetDocument(collection, key, self());
+    if (!doc_or.ok()) {
+      return StatusError(doc_or.status());
+    }
+
+    const JsonValue& doc = doc_or.value();
+    if (!doc.is_object()) {
+      return JsonError(500, "document is not a valid file object");
+    }
+
+    const JsonValue* _fn2 = doc.Find("filename");
+    const std::string filename = (_fn2 && _fn2->is_string()) ? _fn2->AsString() : "file.bin";
+    const JsonValue* _mi = doc.Find("mime");
+        const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
+    const JsonValue* _ch = doc.Find("chunked");
+        const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+
+    std::string base64_data;
+    if (chunked) {
+      auto reassembled = ReassembleChunkedFile(engine, collection, key, doc, self());
+      if (!reassembled.ok()) {
+        return StatusError(reassembled.status());
+      }
+      base64_data = std::move(reassembled.value());
+    } else {
+      const JsonValue* _b64 = doc.Find("base64");
+      base64_data = (_b64 && _b64->is_string()) ? _b64->AsString() : "";
+    }
+
+    if (base64_data.empty()) {
+      return JsonError(404, "file content not found");
+    }
+
+    // Decode base64 to binary
+    std::vector<uint8_t> binary = DecodeBase64(base64_data);
+    if (binary.empty()) {
+      return JsonError(500, "failed to decode file content");
+    }
+
+    HttpResponse resp;
+    resp.status = 200;
+    resp.content_type = mime;
+    resp.body.assign(reinterpret_cast<const char*>(binary.data()), binary.size());
+    return resp;
   });
 }
 
