@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Generates the application icon set from the De-Sentry Aegis brand mark.
+"""Generates platform icon files from the canonical 1024px PNG artwork.
 
-The mark is the Sentry Aegis: a faceted cryptographic shield enclosing a
-tri-vector peer mesh constellation linked to an illuminated central sentinel
-aperture. This matches the vector mark in the header, boot loader, and About
-sheet.
-
-Everything is drawn here rather than checked in as a binary blob so the icon
-can be regenerated at any size without hunting for a source file, and so the
-repository holds no opaque artwork nobody can edit.
+The source is app/src-tauri/icons/icon-source.png. The generated ICNS, ICO,
+and platform PNG sizes all come from this image so every bundle uses the same
+icon artwork and background.
 
     python app/scripts/make-icons.py
     # or
@@ -29,15 +24,21 @@ except ImportError:  # pragma: no cover - a developer-tools script
     sys.exit("Pillow is required: pip install Pillow")
 
 OUT = Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
+SOURCE_ICON = OUT / "icon-source.png"
 
-SHIELD_TOP = (0, 113, 227, 255)
-SHIELD_BOTTOM = (0, 64, 133, 255)
-SHIELD_STROKE = (41, 151, 255, 255)
-SHIELD_FACET = (41, 151, 255, 80)
 
-WHITE = (255, 255, 255, 255)
-WHITE_SOFT = (255, 255, 255, 190)
-CYAN_GLOW = (100, 210, 255, 255)
+def load_master_icon() -> Image.Image:
+    """Loads the supplied 1024px square iOS icon export."""
+    try:
+        with Image.open(SOURCE_ICON) as source:
+            if source.size != (1024, 1024):
+                sys.exit(f"Canonical app icon must be 1024x1024: {SOURCE_ICON}")
+            return source.convert("RGBA")
+    except OSError as exc:
+        sys.exit(f"Could not read Icon Composer source {SOURCE_ICON}: {exc}")
+
+
+MASTER_ICON = load_master_icon()
 
 
 def cubic(
@@ -81,97 +82,10 @@ def shield_path(s: float) -> list[tuple[float, float]]:
 
 
 def render(size: int) -> Image.Image:
-    """Draws at 4x and downsamples with Lanczos antialiasing."""
-    scale = 4
-    s = size * scale
-    image = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-
-    # The app icon uses the same transparent Aegis mark as the homepage.
-    # Platform launchers provide their own background treatment.
-    # 1. Sentry Shield Body
-    shield_pts = shield_path(s)
-    cx, cy = s * 0.50, s * 0.50
-
-    # Shield fill: the same diagonal light-blue-to-sapphire gradient as the
-    # homepage SVG's sentry-grad-shield.
-    shield_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    shield_gradient = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    gradient_pixels = shield_gradient.load()
-    for y in range(s):
-        for x in range(s):
-            t = (x + y) / max(1, 2 * (s - 1))
-            gradient_pixels[x, y] = tuple(
-                round(SHIELD_TOP[channel] + (SHIELD_BOTTOM[channel] - SHIELD_TOP[channel]) * t)
-                for channel in range(4)
-            )
-    shield_mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(shield_mask).polygon(shield_pts, fill=255)
-    shield_img.paste(shield_gradient, (0, 0), shield_mask)
-    sdraw = ImageDraw.Draw(shield_img)
-
-    # Left facet highlight (light reflection)
-    left_facet = (
-        [(cx, s * 0.08), (s * 0.15, s * 0.225)]
-        + cubic(
-            (s * 0.15, s * 0.225),
-            (s * 0.15, s * 0.55),
-            (s * 0.30, s * 0.78),
-            (cx, s * 0.92),
-        )[1:]
-        + [(cx, cy)]
-    )
-    sdraw.polygon(left_facet, fill=SHIELD_FACET)
-
-    # Shield outline stroke
-    stroke_w = max(2, int(s * 0.022))
-    sdraw.line(shield_pts + [shield_pts[0]], fill=SHIELD_STROKE, width=stroke_w, joint="curve")
-
-    image = Image.alpha_composite(image, shield_img)
-    draw = ImageDraw.Draw(image)
-
-    # 2. Constellation Nodes & Mesh Lines
-    # Equilateral-like constellation inside shield: Top, Bottom-Right, Bottom-Left
-    node_top = (cx, s * 0.28)
-    node_br = (s * 0.70, s * 0.60)
-    node_bl = (s * 0.30, s * 0.60)
-    center_core = (cx, s * 0.49)
-
-    mesh_stroke = max(1, int(s * 0.018))
-    # Triangle interconnects
-    draw.line([node_top, node_br], fill=WHITE_SOFT, width=mesh_stroke)
-    draw.line([node_br, node_bl], fill=WHITE_SOFT, width=mesh_stroke)
-    draw.line([node_bl, node_top], fill=WHITE_SOFT, width=mesh_stroke)
-    # Spokes to central sentinel core
-    draw.line([node_top, center_core], fill=WHITE_SOFT, width=mesh_stroke)
-    draw.line([node_br, center_core], fill=WHITE_SOFT, width=mesh_stroke)
-    draw.line([node_bl, center_core], fill=WHITE_SOFT, width=mesh_stroke)
-
-    # 3. Central Sentinel Core (Aura glow + Diamond spark)
-    aura_r = s * 0.12
-    aura_box = [center_core[0] - aura_r, center_core[1] - aura_r, center_core[0] + aura_r, center_core[1] + aura_r]
-    aura_img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    adraw = ImageDraw.Draw(aura_img)
-    adraw.ellipse(aura_box, fill=(100, 210, 255, 80))
-    image = Image.alpha_composite(image, aura_img)
-    draw = ImageDraw.Draw(image)
-
-    spark_r = s * 0.07
-    spark = [
-        (center_core[0], center_core[1] - spark_r),
-        (center_core[0] + spark_r * 0.85, center_core[1]),
-        (center_core[0], center_core[1] + spark_r),
-        (center_core[0] - spark_r * 0.85, center_core[1]),
-    ]
-    draw.polygon(spark, fill=WHITE)
-
-    # 4. Satellite Nodes
-    sat_r = s * 0.045
-    for pt in (node_top, node_br, node_bl):
-        box = [pt[0] - sat_r, pt[1] - sat_r, pt[0] + sat_r, pt[1] + sat_r]
-        draw.ellipse(box, fill=WHITE)
-
-    return image.resize((size, size), Image.LANCZOS)
+    """Resizes the canonical artwork for the platform's legacy icon formats."""
+    if size == MASTER_ICON.width:
+        return MASTER_ICON.copy()
+    return MASTER_ICON.resize((size, size), Image.LANCZOS)
 
 
 def render_tray(size: int = 64) -> Image.Image:
@@ -271,6 +185,7 @@ def main() -> None:
             "ic07": render(128),
             "ic08": render(256),
             "ic09": render(512),
+            "ic10": render(1024),
             "ic11": render(32),
             "ic12": render(64),
             "ic13": render(256),
