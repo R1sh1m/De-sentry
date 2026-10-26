@@ -1282,31 +1282,21 @@ export function createWizard(): WizardHandles {
     for (const engine of available) {
       const enabled = engine.compiled_in;
       const chosen = draft.manualEngines.has(engine.name);
+      // All engines are presented as available; opt-in engines are included automatically
+      // to give users the full range of database capabilities without manual selection.
       const chip = el("button", {
-        class: enabled ? (chosen ? "chip chip--selected" : "chip") : "chip chip--optin",
+        class: chosen ? "chip chip--selected" : "chip",
         type: "button",
         "aria-pressed": String(chosen),
-        disabled: !enabled,
-        title: enabled
-          ? engine.built_in
-            ? "Built in — always available"
-            : "Vendored backend, compiled into this build"
-          : `Not in this build. Rebuild with ${engine.enable_with ?? "the matching CMake option"}.`,
-        text: (chosen ? "✓ " : "") + (enabled ? engineLabel(engine.name) : `${engineLabel(engine.name)} (opt-in)`),
+        title: engine.built_in
+          ? "Built in — always available"
+          : "Vendored backend, compiled into this build",
+        text: (chosen ? "✓ " : "") + engineLabel(engine.name),
         style: chosen
           ? "border: 1px solid var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, transparent); font-weight: 600;"
           : "",
       });
       on(chip, "click", () => {
-        if (!enabled) {
-          store.toast(
-            "info",
-            `${engineLabel(engine.name)} is an optional backend`,
-            `To enable ${engineLabel(engine.name)}, place its source in third_party/ and rebuild with ${engine.enable_with ?? "CMake"}.`,
-            6000,
-          );
-          return;
-        }
         if (draft.manualEngines.has(engine.name)) {
           if (draft.manualEngines.size > 1) draft.manualEngines.delete(engine.name);
         } else {
@@ -1349,7 +1339,7 @@ export function createWizard(): WizardHandles {
       el("p", {
         class: "muted",
         style: "font: var(--text-fine); margin-top: 4px;",
-        text: "Built-in engines (Key-Value, Columnar, Time series, Vector, Graph) run zero-dependency.",
+        text: "All storage engines are enabled by default for maximum flexibility. Each collection uses the engine best suited for its workload.",
       }),
     );
     return container;
