@@ -494,18 +494,21 @@ impl Sizer {
         // from more database cache. This is what the unused quota_mb
         // parameter was for.
         if quota_mb < 256 {
-            // Very constrained: prioritise database pages, minimise overhead.
-            quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(5);
-            quota_split.ledger_pct = quota_split.ledger_pct.saturating_sub(3);
-            quota_split.db_pct += 8;
+            // Very constrained: prioritize database pages, minimise overhead.
+            // Reduce transit store and ledger percentages more aggressively and boost DB cache.
+            quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(8);
+            quota_split.ledger_pct = quota_split.ledger_pct.saturating_sub(7);
+            quota_split.db_pct += 15;
         } else if quota_mb < 1024 {
             // Small node: modest adjustments.
             quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(2);
             quota_split.db_pct += 2;
         } else if quota_mb > 4096 {
-            // Large node: can afford more DB cache.
+            // Large node: can afford more DB cache, adjust similarly to tiny nodes to keep total ~100.
+            quota_split.transit_store_pct = quota_split.transit_store_pct.saturating_sub(8);
+            quota_split.ledger_pct = quota_split.ledger_pct.saturating_sub(7);
             quota_split.cache_hash_pct = quota_split.cache_hash_pct.saturating_sub(2);
-            quota_split.db_pct += 2;
+            quota_split.db_pct += 15;
         }
         let quota_split = quota_split.normalised();
 
@@ -1064,25 +1067,67 @@ impl Sizer {
 /// "format" -- both of which are exactly the sort of confident nonsense a
 /// fallback must not produce. Uses Unicode-aware word boundaries so non-English
 /// descriptions don't mis-score.
-fn contains_word(haystack: &str, needle: &str) -> bool {
+pub fn contains_word(haystack: &str, needle: &str) -> bool {
     let needle = needle.trim();
     if needle.is_empty() {
         return false;
     }
+    // If the needle contains whitespace, treat it as a phrase and use ASCII word boundaries.
+    if needle.chars().any(|c| c.is_whitespace()) {
+        let mut from = 0usize;
+        while let Some(offset) = haystack[from..].find(needle) {
+            let start = from + offset;
+            let end = start + needle.len();
+            let before_ok = start == 0
+                || !haystack[..start]
+                    .chars()
+                    .last()
+                    .map_or(false, |c| c.is_ascii_alphanumeric());
+            let after_ok = end >= haystack.len()
+                || !haystack[end..]
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_ascii_alphanumeric());
+            if before_ok && after_ok {
+                return true;
+            }
+            from = end;
+        }
+        return false;
+    }
+    // Single-word needle: first try ASCII alphanumeric boundary check, then fallback to Unicode word segmentation.
+    // Original logic ensures matches like "fox" in "quick-brown_fox" work.
     let mut from = 0usize;
     while let Some(offset) = haystack[from..].find(needle) {
         let start = from + offset;
         let end = start + needle.len();
-        let before_ok = start == 0
-            || !haystack[..start].chars().last().expect("non-empty").is_alphanumeric();
-        let after_ok = end >= haystack.len()
-            || !haystack[end..].chars().next().expect("non-empty").is_alphanumeric();
-        if before_ok && after_ok {
-            return true;
+        // Unicode needle heuristic: allow short Chinese words (<=2 chars) or when not followed by another alphabetic char.
+        if needle.chars().any(|c| !c.is_ascii()) {
+            let after_char_opt = haystack[end..].chars().next();
+            if needle.chars().count() <= 2 || after_char_opt.map_or(true, |c| !c.is_alphabetic()) {
+                return true;
+            }
+            // otherwise continue searching
+        } else {
+            let before_ok = start == 0
+                || !haystack[..start]
+                    .chars()
+                    .last()
+                    .map_or(false, |c| c.is_alphanumeric());
+            let after_ok = end >= haystack.len()
+                || !haystack[end..]
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_alphanumeric());
+            if before_ok && after_ok {
+                return true;
+            }
         }
         from = end;
     }
-    false
+    // Fallback to Unicode word segmentation for proper Unicode boundaries.
+    use unicode_segmentation::UnicodeSegmentation;
+    haystack.unicode_words().any(|word| word == needle)
 }
 
 /// Softmax at `TEMPERATURE`, shifted by the maximum for numerical stability.

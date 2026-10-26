@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use de_sentry_app::ai::{Sizer, Resources, NodeSpec};
-use de_sentry_app::configgen::QuotaSplit;
 
 #[test]
 fn test_sizing_engine_selection_and_quota_adjustments() {
