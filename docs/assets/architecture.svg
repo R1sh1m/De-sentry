@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 540" width="1080" height="540" role="img" aria-label="De-Sentry System Architecture">
+  <title>De-Sentry System Architecture</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#080a11"/>
+      <stop offset="50%" stop-color="#0c101d"/>
+      <stop offset="100%" stop-color="#080a12"/>
+    </linearGradient>
+
+    <linearGradient id="nodeBorder" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2997ff" stop-opacity="0.45"/>
+      <stop offset="50%" stop-color="#00f0ff" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#bd00ff" stop-opacity="0.35"/>
+    </linearGradient>
+
+    <linearGradient id="cardGrad1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141a29"/>
+      <stop offset="100%" stop-color="#0e1320"/>
+    </linearGradient>
+
+    <linearGradient id="cardGrad2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#171e30"/>
+      <stop offset="100%" stop-color="#101524"/>
+    </linearGradient>
+
+    <linearGradient id="accentCyan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="100%" stop-color="#2997ff"/>
+    </linearGradient>
+
+    <linearGradient id="accentPurple" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+
+    <linearGradient id="accentGreen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+
+    <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.75" fill="#ffffff" fill-opacity="0.04"/>
+    </pattern>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#00f0ff" opacity="0.8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#c084fc" opacity="0.8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1080" height="540" rx="16" fill="url(#bg)"/>
+  <rect width="1080" height="540" rx="16" fill="url(#grid)"/>
+  <rect width="1080" height="540" rx="16" fill="none" stroke="#222b40" stroke-width="1.5"/>
+
+  <!-- Top Title / Scope Badge -->
+  <g transform="translate(40, 36)">
+    <rect x="0" y="0" width="148" height="24" rx="12" fill="#00f0ff" fill-opacity="0.1" stroke="#00f0ff" stroke-opacity="0.3"/>
+    <text x="74" y="16" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#00f0ff" text-anchor="middle" letter-spacing="1">SYMMETRIC NODE</text>
+    <text x="164" y="17" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="700" fill="#f1f5f9" letter-spacing="-0.3">Autonomous Peer Architecture (desentryd)</text>
+  </g>
+
+  <!-- Client Layer (Left Column) -->
+  <g transform="translate(40, 84)">
+    <rect width="190" height="416" rx="12" fill="url(#cardGrad1)" stroke="#222d42" stroke-width="1.5"/>
+    <rect x="0" y="0" width="190" height="36" rx="12" fill="#1b2336" opacity="0.7"/>
+    <text x="95" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#94a3b8" text-anchor="middle" letter-spacing="0.8">CLIENT INTERFACES</text>
+
+    <!-- Client components -->
+    <g transform="translate(15, 52)">
+      <!-- Desktop Control Room -->
+      <rect width="160" height="68" rx="8" fill="#171f30" stroke="#2e3c57" stroke-width="1"/>
+      <circle cx="22" cy="22" r="5" fill="#38bdf8"/>
+      <text x="36" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="600" fill="#f1f5f9">Desktop App</text>
+      <text x="16" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#64748b">Tauri v2 + Rust Sidecar</text>
+      <text x="16" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#0284c7">System Tray &amp; Offline Sizing</text>
+    </g>
+
+    <g transform="translate(15, 134)">
+      <!-- SDKs -->
+      <rect width="160" height="68" rx="8" fill="#171f30" stroke="#2e3c57" stroke-width="1"/>
+      <circle cx="22" cy="22" r="5" fill="#10b981"/>
+      <text x="36" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="600" fill="#f1f5f9">Native Clients</text>
+      <text x="16" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#64748b">Python (Zero-Dep stdlib)</text>
+      <text x="16" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#059669">Embedded CLI (desentry_cli)</text>
+    </g>
+
+    <g transform="translate(15, 216)">
+      <!-- HTTP / REST -->
+      <rect width="160" height="68" rx="8" fill="#171f30" stroke="#2e3c57" stroke-width="1"/>
+      <circle cx="22" cy="22" r="5" fill="#a855f7"/>
+      <text x="36" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="600" fill="#f1f5f9">Standard HTTP</text>
+      <text x="16" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#64748b">JSON REST Endpoints</text>
+      <text x="16" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#9333ea">Port 7701 (Configurable)</text>
+    </g>
+
+    <g transform="translate(15, 298)">
+      <!-- Supervisor Plane -->
+      <rect width="160" height="98" rx="8" fill="#141a29" stroke="#3b2d54" stroke-width="1"/>
+      <rect x="12" y="10" width="76" height="16" rx="8" fill="#a855f7" fill-opacity="0.15"/>
+      <text x="50" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="700" fill="#c084fc" text-anchor="middle">SUPERVISOR</text>
+      <text x="14" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#e2e8f0">Local Management</text>
+      <text x="14" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Loopback only (:7700)</text>
+      <text x="14" y="76" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Hardware Sizing &amp; Health</text>
+      <text x="14" y="90" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#f43f5e">Never on data path</text>
+    </g>
+  </g>
+
+  <!-- Ingress Flow Arrows -->
+  <path d="M 230 220 L 272 220" stroke="#00f0ff" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="251" y="208" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#00f0ff" text-anchor="middle">REST</text>
+
+  <!-- Core desentryd Container (Center/Right) -->
+  <g transform="translate(280, 84)">
+    <!-- Container Outline -->
+    <rect width="760" height="416" rx="12" fill="url(#cardGrad2)" stroke="url(#nodeBorder)" stroke-width="1.8"/>
+
+    <!-- Header bar -->
+    <rect width="760" height="38" rx="12" fill="#161c2d"/>
+    <text x="24" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" fill="#f8fafc">DESENTRYD CORE ENGINE</text>
+    <text x="235" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" fill="#64748b">Single-Binary Daemon • Zero Runtime External Dependencies</text>
+
+    <!-- Status pill -->
+    <rect x="640" y="10" width="102" height="20" rx="10" fill="#10b981" fill-opacity="0.15" stroke="#10b981" stroke-opacity="0.3"/>
+    <circle cx="652" cy="20" r="3.5" fill="#10b981"/>
+    <text x="662" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#34d399">C++17 Native</text>
+
+    <!-- Sub-Block 1: API Router & Coordination -->
+    <g transform="translate(24, 52)">
+      <rect width="712" height="66" rx="8" fill="#121724" stroke="#253248" stroke-width="1"/>
+      <rect x="14" y="10" width="130" height="20" rx="4" fill="#0284c7" fill-opacity="0.2"/>
+      <text x="79" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" font-weight="700" fill="#38bdf8" text-anchor="middle">ROUTING &amp; CRDT</text>
+
+      <g transform="translate(160, 14)">
+        <text x="0" y="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#f1f5f9">State-Based CRDT Core + Hybrid Logical Clock (HLC)</text>
+        <text x="0" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#94a3b8">Causal order tracking, deterministic conflict resolution, catalog ACL verification</text>
+      </g>
+
+      <rect x="580" y="16" width="118" height="34" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <text x="639" y="30" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="600" fill="#94a3b8" text-anchor="middle">CONVERGENCE</text>
+      <text x="639" y="43" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="700" fill="#38bdf8" text-anchor="middle">Deterministic LWW</text>
+    </g>
+
+    <!-- Sub-Block 2: Storage Router & Engines -->
+    <g transform="translate(24, 130)">
+      <rect width="712" height="110" rx="8" fill="#121724" stroke="#253248" stroke-width="1"/>
+      <rect x="14" y="10" width="144" height="20" rx="4" fill="#10b981" fill-opacity="0.2"/>
+      <text x="86" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" font-weight="700" fill="#34d399" text-anchor="middle">STORAGE ROUTER</text>
+      <text x="172" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#64748b">Slotted-Page Pager • Write-Ahead Log (WAL) • LRU Buffer Pool</text>
+
+      <!-- 5 Engine Badges -->
+      <g transform="translate(14, 42)">
+        <!-- KV -->
+        <g transform="translate(0, 0)">
+          <rect width="130" height="56" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Key-Value (kv)</text>
+          <text x="12" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">B+Tree indexed</text>
+          <text x="12" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#38bdf8">Slotted disk pages</text>
+        </g>
+        <!-- Columnar -->
+        <g transform="translate(138, 0)">
+          <rect width="130" height="56" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Columnar (col)</text>
+          <text x="12" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Run-Length Encoded</text>
+          <text x="12" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#34d399">Fast vectorized scans</text>
+        </g>
+        <!-- TS -->
+        <g transform="translate(276, 0)">
+          <rect width="130" height="56" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Time-Series (ts)</text>
+          <text x="12" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Bucket downsampling</text>
+          <text x="12" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#fbbf24">Automated rollups</text>
+        </g>
+        <!-- Vector -->
+        <g transform="translate(414, 0)">
+          <rect width="130" height="56" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Vector (hnsw)</text>
+          <text x="12" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Approx. Nearest Neighbor</text>
+          <text x="12" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#f472b6">Embedded HNSW-Lite</text>
+        </g>
+        <!-- Graph -->
+        <g transform="translate(552, 0)">
+          <rect width="132" height="56" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#f8fafc">Graph (adj)</text>
+          <text x="12" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Adjacency &amp; edges</text>
+          <text x="12" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="8.5" fill="#c084fc">Breadth-first search</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Sub-Block 3: Audit Ledger & P2P Mesh (Side-by-Side) -->
+    <g transform="translate(24, 252)">
+      <!-- Left: Audit Ledger -->
+      <g transform="translate(0, 0)">
+        <rect width="250" height="146" rx="8" fill="#121724" stroke="#253248" stroke-width="1"/>
+        <rect x="14" y="12" width="130" height="20" rx="4" fill="#a855f7" fill-opacity="0.2"/>
+        <text x="79" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" font-weight="700" fill="#c084fc" text-anchor="middle">AUDIT LEDGER</text>
+        <g transform="translate(14, 44)">
+          <circle cx="6" cy="10" r="3" fill="#a855f7"/>
+          <text x="16" y="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f1f5f9">SHA-256 Hash Chained</text>
+          <text x="16" y="28" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Every mutation is signed &amp; sealed</text>
+
+          <circle cx="6" cy="46" r="3" fill="#a855f7"/>
+          <text x="16" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f1f5f9">Ed25519 Cryptographic Proof</text>
+          <text x="16" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Tamper-evident log verification</text>
+
+          <circle cx="6" cy="82" r="3" fill="#a855f7"/>
+          <text x="16" y="86" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f1f5f9">Transit Store &amp; Checkpoint</text>
+          <text x="16" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#94a3b8">Safe quorum GC reclamation</text>
+        </g>
+      </g>
+
+      <!-- Right: P2P Network Mesh -->
+      <g transform="translate(262, 0)">
+        <rect width="450" height="146" rx="8" fill="#121724" stroke="#253248" stroke-width="1"/>
+        <rect x="14" y="12" width="168" height="20" rx="4" fill="#00f0ff" fill-opacity="0.15"/>
+        <text x="98" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" font-weight="700" fill="#00f0ff" text-anchor="middle">ENCRYPTED P2P MESH</text>
+
+        <!-- Network components -->
+        <g transform="translate(14, 42)">
+          <rect width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Zero-Trust Framing</text>
+          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#00f0ff">X25519 + AES-256-GCM</text>
+
+          <rect x="216" y="0" width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">LAN Auto-Discovery</text>
+          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#38bdf8">UDP Broadcast (Port 7901)</text>
+
+          <rect x="0" y="48" width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Consistent Hashing</text>
+          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#10b981">Partition Placement (RF=3)</text>
+
+          <rect x="216" y="48" width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Gossip Anti-Entropy</text>
+          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#c084fc">Decentralized synchronization</text>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
