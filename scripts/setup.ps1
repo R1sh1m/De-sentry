@@ -89,7 +89,16 @@ if ($missing.Count -gt 0) {
 Write-Host "2/5 engine (CMake configure + build)" -ForegroundColor Cyan
 $generatorArgs = @()
 if (Test-Command "ninja") { $generatorArgs = @("-G", "Ninja") }
-& cmake -S $projectRoot -B "$projectRoot\build" @generatorArgs -DCMAKE_BUILD_TYPE=RelWithDebInfo
+# Keep the compiler ABI aligned with the UCRT64 OpenSSL headers/libraries
+# checked above. PATH also contains C:\msys64\usr\bin for utilities, so a
+# stale CMake cache (or PATH lookup) can otherwise select the Cygwin compiler.
+$toolchainArgs = @()
+$ucrtGcc = "C:\msys64\ucrt64\bin\gcc.exe"
+$ucrtGxx = "C:\msys64\ucrt64\bin\g++.exe"
+if ((Test-Path $ucrtGcc) -and (Test-Path $ucrtGxx)) {
+    $toolchainArgs = @("-DCMAKE_C_COMPILER=$ucrtGcc", "-DCMAKE_CXX_COMPILER=$ucrtGxx")
+}
+& cmake -S $projectRoot -B "$projectRoot\build" @generatorArgs @toolchainArgs -DCMAKE_BUILD_TYPE=RelWithDebInfo
 if ($LASTEXITCODE -ne 0) {
     # A stale cache (e.g. configured once with a different generator or
     # toolchain) fails exactly like this; wiping it and retrying once is
@@ -97,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  configure failed -- clearing a possibly stale CMake cache and retrying once" -ForegroundColor Yellow
     Remove-Item "$projectRoot\build\CMakeCache.txt" -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force "$projectRoot\build\CMakeFiles" -ErrorAction SilentlyContinue
-    & cmake -S $projectRoot -B "$projectRoot\build" @generatorArgs -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    & cmake -S $projectRoot -B "$projectRoot\build" @generatorArgs @toolchainArgs -DCMAKE_BUILD_TYPE=RelWithDebInfo
 }
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
 & cmake --build "$projectRoot\build" -j

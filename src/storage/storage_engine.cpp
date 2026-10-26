@@ -1,6 +1,9 @@
 #include "desentry/storage/storage_engine.h"
 
 #include <algorithm>
+#include <functional>
+#include <string_view>
+#include <unordered_set>
 
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
@@ -16,6 +19,17 @@ Status EnsureDir(const std::string& path) {
   if (!MakeDirs(path)) return Status::IOError("cannot create directory: " + path);
   return Status::OK();
 }
+
+using ReplayKey = std::pair<std::string_view, std::string_view>;
+
+struct ReplayKeyHash {
+  size_t operator()(const ReplayKey& key) const noexcept {
+    const size_t collection_hash = std::hash<std::string_view>{}(key.first);
+    const size_t key_hash = std::hash<std::string_view>{}(key.second);
+    return collection_hash ^ (key_hash + static_cast<size_t>(0x9e3779b9) +
+                              (collection_hash << 6) + (collection_hash >> 2));
+  }
+};
 }  // namespace
 
 StatusOr<std::unique_ptr<StorageEngine>> StorageEngine::Open(const Options& options) {
@@ -80,13 +94,28 @@ Status StorageEngine::ReplayLedger() {
   const std::vector<WalRecord>& records = records_or.value();
   if (records.empty()) return Status::OK();
 
-  DSN_LOG_INFO("storage", "replaying " << records.size() << " ledger record(s)...");
-  size_t applied = 0;
+  // The ledger is an audit history, while each backend stores the latest
+  // value for a (collection, key). Replaying every historical PUT through
+  // append-oriented backends (notably kv) writes old versions into the data
+  // file again on every open. Keep only the last PUT per key for
+  // materialization; the encoded document is already the fully merged CRDT
+  // state that should be visible after recovery.
+  std::unordered_set<ReplayKey, ReplayKeyHash> seen_keys;
+  std::vector<const WalRecord*> latest_puts;
+  for (auto it = records.rbegin(); it != records.rend(); ++it) {
+    if (it->type != WalRecordType::kPut) continue;
+    ReplayKey key{it->collection, it->key};
+    if (seen_keys.insert(key).second) latest_puts.push_back(&*it);
+  }
+  std::reverse(latest_puts.begin(), latest_puts.end());
+
+  DSN_LOG_INFO("storage", "recovering latest materialized state from " << records.size()
+                                                                        << " ledger record(s), "
+                                                                        << latest_puts.size()
+                                                                        << " document key(s)...");
   for (const WalRecord& rec : records) {
-    // Only document mutations rebuild state. Transit, checkpoint and ABORT
-    // entries are ledger bookkeeping -- replaying a TRANSIT_INTENT as a
-    // document write would materialise an envelope as if it were user data,
-    // and an ABORT explicitly attests that its PUT never materialised.
+    // ACL changes are materialized in the catalog. Transit, checkpoint and
+    // ABORT entries are ledger bookkeeping, not document writes.
     if (rec.type == WalRecordType::kAcl) {
       // Replicated ACL (H-1): no signature re-check at boot -- the record
       // was attested when received live, and the chain's own integrity is
@@ -120,9 +149,27 @@ Status StorageEngine::ReplayLedger() {
       } catch (const std::exception& e) {
         DSN_LOG_WARN("storage", "replay: malformed kAcl at LSN " << rec.lsn << ": " << e.what());
       }
+    }
+  }
+
+  size_t applied = 0;
+  size_t already_current = 0;
+  for (const WalRecord* rec : latest_puts) {
+    // Most nodes already have the latest value on disk. Avoid touching the
+    // backend in that case: KV pages and the cross-engine index are both
+    // append-oriented, so even an identical upsert consumes more disk space.
+    auto existing_or = router_->Get(rec->collection, rec->key);
+    if (existing_or.ok() && existing_or.value() == rec->document_bytes) {
+      ++already_current;
       continue;
     }
-    if (rec.type != WalRecordType::kPut) continue;
+    if (!existing_or.ok() && existing_or.status().code() != StatusCode::kNotFound) {
+      DSN_LOG_WARN("storage", "replay: could not read current value for " << rec->collection << "/"
+                                                                           << rec->key << ": "
+                                                                           << existing_or.status().message()
+                                                                           << "; trying ledger value");
+    }
+
     // Replay goes through the router, not the ledger: appending again would
     // duplicate the entry and break the chain's relationship to history.
     // Recovery runs inside a MergeScope so the bounded replication overdraft
@@ -132,14 +179,14 @@ Status StorageEngine::ReplayLedger() {
     // would widen the ledger/materialised gap instead of closing it.
     // Invalid records (undecodable, oversize) are still skipped loudly below.
     MergeScope replay_scope;
-    Status st = router_->Put(rec.collection, rec.key, rec.document_bytes);
+    Status st = router_->Put(rec->collection, rec->key, rec->document_bytes);
     if (!st.ok()) {
       // One unreplayable record must not abort recovery of everything after
       // it -- that would turn a single bad row into total data loss. It is
       // logged loudly and skipped, and VerifyAll() will report the resulting
       // gap between the ledger and the materialised state.
-      DSN_LOG_ERROR("storage", "ledger replay skipped entry " << rec.lsn << " (" << rec.collection
-                                                               << "/" << rec.key
+      DSN_LOG_ERROR("storage", "ledger replay skipped entry " << rec->lsn << " (" << rec->collection
+                                                               << "/" << rec->key
                                                                << "): " << st.message());
       continue;
     }
@@ -147,7 +194,8 @@ Status StorageEngine::ReplayLedger() {
   }
   Status flush_st = router_->Flush();
   if (!flush_st.ok()) return flush_st;
-  DSN_LOG_INFO("storage", "ledger replay complete (" << applied << " document write(s) applied)");
+  DSN_LOG_INFO("storage", "ledger recovery complete (" << applied << " document write(s) applied, "
+                                                         << already_current << " already current)");
   return Status::OK();
 }
 

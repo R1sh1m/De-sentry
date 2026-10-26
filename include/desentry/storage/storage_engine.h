@@ -26,14 +26,15 @@
 // independently of the distributed-systems layer above it, the same way
 // InnoDB does not know what SQL is.
 //
-// Crash recovery: on Open(), the ledger is replayed from the beginning
-// through the router's Put path (idempotent -- every mutation is a CRDT
-// merge). Known limitation, stated rather than glossed over: this protects
-// documents that were logged but not yet flushed; it does not use physical
-// page checksums to repair a page torn mid-write during a B+Tree structural
-// split. The segment-based backends do checksum every page they write
-// (storage/segment_store.h), so that gap is now specific to the `kv`
-// backend's B+Tree rather than engine-wide.
+// Crash recovery: on Open(), each key's latest WAL value is compared with
+// materialized storage and only missing/different values are applied. This
+// recovers a logged write that did not reach storage without replaying every
+// historical version into append-oriented backends. Known limitation, stated
+// rather than glossed over: this does not use physical page checksums to
+// repair a page torn mid-write during a B+Tree structural split. The
+// segment-based backends do checksum every page they write
+// (storage/segment_store.h), so that gap is specific to the `kv` backend's
+// B+Tree rather than engine-wide.
 
 #include <memory>
 #include <mutex>
