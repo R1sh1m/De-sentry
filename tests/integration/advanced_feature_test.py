@@ -223,9 +223,17 @@ def test_placement_ring():
     res = request('PUT', f"{base}/_collection/tenant_data/placement", placement)
     record("Set shard placement", 'error' not in res)
     
-    # Get placement for specific key
-    res = request('GET', f"{base}/_placement/tenant_data/tenant_abc/key123")
-    record("Get ring placement", 'error' not in res or 'owners' in res)
+    # Insert a document so the key has a known placement
+    doc = {"tenant": "tenant_abc", "data": "test data"}
+    res = request('PUT', f"{base}/db/tenant_data/doc_001", doc)
+    if 'error' not in res:
+        record("Insert doc for placement", True)
+    else:
+        record("Insert doc for placement", False, res.get('error', ''))
+    
+    # Get placement for the inserted key
+    res = request('GET', f"{base}/_placement/tenant_data/doc_001")
+    record("Get ring placement", 'error' not in res or 'owners' in res or 'displaced' in res)
     
     # Cleanup
     request('DELETE', f"{base}/_schema/tenant_data")

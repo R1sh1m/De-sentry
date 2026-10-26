@@ -188,15 +188,17 @@ Start a multi-node mesh for development and testing:
 
 ```bash
 # Linux / macOS: 3 data nodes + supervisor
-./scripts/run_cluster.sh 3 --supervisor --engines kv,ts_rollup
+./scripts/run_cluster.sh 3 --supervisor --engines kv,ts_rollup  # NOTE: quote the engine list if it contains commas, e.g. "kv,ts_rollup,vector_hnsw_lite"
 ./scripts/stop_cluster.sh
 ```
 
 ```powershell
 # Windows PowerShell
-.\scripts\run_cluster.ps1 -Nodes 3 -Supervisor -Engines kv,ts_rollup
+.\scripts\run_cluster.ps1 -Nodes 3 -Supervisor -Engines "kv,ts_rollup"  # NOTE: quote the engine list if it contains commas
 .\scripts\stop_cluster.ps1
 ```
+
+> **Important**: The `-Engines` argument accepts a **comma-separated list** of engine names. On Windows PowerShell, **always quote the list** (e.g. `"kv,ts_rollup,vector_hnsw_lite"`). Unquoted lists are split incorrectly and cause a config error (`unknown default_engine: kv ts_rollup ...`).
 
 Default port scheme:
 - Supervisor: API `7700`, P2P `7800`
