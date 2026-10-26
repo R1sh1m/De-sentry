@@ -720,6 +720,7 @@ function emptyMountRow(): HTMLElement {
 
 const PINNED_NAV = [
   { id: "view",    label: "View",        iconName: "mesh"     as keyof typeof Icons },
+  { id: "files",   label: "Files",       iconName: "folder"   as keyof typeof Icons },
   { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons },
   { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons },
   { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons },
@@ -1027,6 +1028,7 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
     const sel = store.state.selection;
     switch (id) {
       case "view":    return sel.kind === "none" || sel.kind === "node";
+      case "files":   return sel.kind === "files";
       case "dropbox": return sel.kind === "dropbox";
       case "console": return sel.kind === "console";
       case "ledger":  return sel.kind === "ledger";
@@ -1048,6 +1050,9 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
         render();
         break;
       }
+      case "files":
+        store.select({ kind: "files" });
+        break;
       case "dropbox":
         store.select({ kind: "dropbox" });
         break;

@@ -262,12 +262,12 @@ input::-ms-clear {
   background: color-mix(in srgb, var(--color-ink) 14%, transparent);
 }
 .header__win-btn--close:hover {
-  background: #c42b1c !important;
-  color: #ffffff !important;
+  background: var(--color-status-offline) !important;
+  color: var(--color-on-primary) !important;
 }
 .header__win-btn--close:active {
-  background: #b12517 !important;
-  color: #ffffff !important;
+  background: var(--color-status-offline) !important;
+  color: var(--color-on-primary) !important;
 }
 .header > * {
   -webkit-app-region: no-drag;
@@ -962,7 +962,7 @@ svg.mesh {
 }
 .toggle__input:checked + .toggle__track::after {
   transform: translateX(11px);
-  background: #fff;
+  background: var(--color-on-primary);
 }
 .toggle__label {
   font: var(--text-caption);
@@ -1179,8 +1179,8 @@ svg.mesh {
 }
 .btn--primary {
   background: var(--color-primary);
-  color: #ffffff;
-  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+  color: var(--color-ink);
+  border: 1px solid color-mix(in srgb, var(--color-ink) 14%, transparent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15), var(--glow-brand-strong);
   transition: filter var(--motion-quick), box-shadow var(--motion-quick), transform var(--motion-quick);
 }
@@ -1195,13 +1195,13 @@ svg.mesh {
   box-shadow: var(--glow-action-active), inset 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 /* Uniform system: default (.btn) / primary / secondary / outline / ghost /
- * destructive (.btn--danger). The old text-style .btn--danger duplicate is
- * gone: destructive is solid red everywhere it is used (delete flows). */
+ * destructive (.btn--danger). Per DESIGN.md §4, destructive is transparent
+ * with status-offline text and a hairline border. */
 .btn--danger {
-  background: #e0352b;
-  color: #ffffff;
-  border: 1px solid #c92a20;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: var(--color-status-offline);
+  border: 1px solid var(--color-status-offline);
+  box-shadow: var(--elev-hairline);
 }
 .btn--danger:hover {
   filter: brightness(1.08);
@@ -1976,14 +1976,14 @@ svg.mesh {
 .sheet-close:focus-visible {
   background: rgba(239, 68, 68, 0.15);
   border-color: rgba(239, 68, 68, 0.45);
-  color: #ef4444;
+  color: var(--color-status-offline);
   outline: none;
   box-shadow: 0 0 10px rgba(239, 68, 68, 0.22);
 }
 .sheet-close:active {
   background: rgba(239, 68, 68, 0.28);
   border-color: rgba(239, 68, 68, 0.7);
-  color: #f87171;
+  color: var(--color-status-offline);
   transform: scale(0.93);
 }
 .wizard__body {
@@ -2104,7 +2104,7 @@ svg.mesh {
   text-transform: uppercase;
   letter-spacing: var(--tracking-label);
   background: var(--color-primary);
-  color: #ffffff;
+  color: var(--color-ink);
   padding: 2px 8px;
   border-radius: var(--radius-pill);
 }
@@ -2237,7 +2237,7 @@ svg.mesh {
   font: var(--text-caption);
   color: var(--color-ink-muted-80);
   background: rgba(255, 193, 7, 0.08);
-  border-left: 3px solid #ffc107;
+  border-left: 3px solid var(--color-status-lagging);
   padding: var(--space-xs) var(--space-sm);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   margin: 0;
@@ -2597,6 +2597,8 @@ svg.mesh {
   width: 100%;
 }
 .ledger__filter-card {
+  position: relative;
+  z-index: 1;
   background: var(--color-surface);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
@@ -2962,7 +2964,7 @@ select.ledger__filter-control option {
 }
 .macos-modal__icon-wrap--danger {
   background: rgba(255, 69, 58, 0.15);
-  color: #ff453a;
+  color: var(--color-status-offline);
 }
 .macos-modal__heading {
   font: var(--text-display-md);
@@ -3004,7 +3006,7 @@ select.ledger__filter-control option {
   background: var(--color-surface-sunken);
 }
 .text-danger {
-  color: #ff453a !important;
+  color: var(--color-status-offline) !important;
 }
 .tree__row-action {
   opacity: 0;
@@ -3293,7 +3295,7 @@ select.ledger__filter-control option {
   opacity: 1;
   background: rgba(239, 68, 68, 0.18);
   border-color: rgba(239, 68, 68, 0.45);
-  color: #ef4444;
+  color: var(--color-status-offline);
 }
 .toast--expanded {
   max-width: min(560px, calc(100vw - 32px));
@@ -3343,7 +3345,7 @@ select.ledger__filter-control option {
 .qr {
   display: inline-block;
   image-rendering: pixelated;
-  background: #ffffff;
+  background: var(--color-ink);
   padding: var(--space-sm);
   border-radius: 0;
 }
@@ -3432,20 +3434,10 @@ select.ledger__filter-control option {
     display: none !important;
   }
 
-  :root,
-  :root[data-theme="dark"] {
-    --color-canvas: #ffffff;
-    --color-surface: #ffffff;
-    --color-ink: #000000;
-    --color-ink-muted-48: #444444;
-    --color-hairline: #999999;
-  }
-
   body,
   .app-shell {
     display: block;
-    background: #ffffff;
-    color: #000000;
+    background: var(--color-canvas);
   }
 
   .sheet {
@@ -3601,7 +3593,7 @@ select.ledger__filter-control option {
   opacity: 1;
   background: rgba(239, 68, 68, 0.18);
   border-color: rgba(239, 68, 68, 0.45);
-  color: #ef4444;
+  color: var(--color-status-offline);
 }
 
 /* ---------------------------------------------------------------------------

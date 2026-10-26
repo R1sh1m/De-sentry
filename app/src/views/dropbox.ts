@@ -554,9 +554,9 @@ export function createDropbox(): DropboxHandles {
         ? el("p", { class: "error-note", text: `${failures} record${failures === 1 ? "" : "s"} failed — see the log below.` })
         : null,
       item.logs.length > 0
-        ? el("div", { class: "stack", style: "margin-top: 16px; padding: 12px; background: var(--color-surface-pearl); border-radius: var(--radius-sm); font-size: var(--text-xs);" },
+        ? el("div", { class: "stack", style: "margin-top: 16px; padding: 12px; background: var(--color-surface-pearl); border-radius: var(--radius-sm); font-size: var(--text-xs); max-height: 300px; overflow-y: auto;" },
             el("strong", { text: "Ingestion Log:" }),
-            ...item.logs.map((l) => el("div", { class: "mono", text: l })),
+            ...item.logs.map((l) => el("div", { class: "mono", text: l, style: "white-space: pre-wrap; word-break: break-word;" })),
           )
         : null,
     );
@@ -725,7 +725,10 @@ export function createDropbox(): DropboxHandles {
 
       const total = outgoing.length;
       const label = item.sourceName || item.targetCollection;
+      
+      // Add a summary line to the log for clarity
       if (failCount === 0) {
+        item.logs.push(`✓ Ingestion complete: ${successCount}/${total} records successfully ingested into '${label}'.`);
         item.ingestionComplete = !item.cancelled;
         store.toast(
           "success",
@@ -734,8 +737,10 @@ export function createDropbox(): DropboxHandles {
           4000,
         );
       } else if (successCount === 0) {
+        item.logs.push(`✗ Ingestion failed: ${failCount}/${total} records failed. See errors above.`);
         store.toast("error", `Ingestion failed for '${label}'`, `${failCount}/${total} records failed. See the log on its card.`, 6000);
       } else {
+        item.logs.push(`⚠ Ingestion partially complete: ${successCount}/${total} records ingested, ${failCount} failed.`);
         store.toast("warning", `Ingestion partially failed for '${label}'`, `Ingested ${successCount}/${total}; ${failCount} failed. See the log on its card.`, 6000);
       }
 

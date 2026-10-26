@@ -144,6 +144,8 @@ interface EdgeData {
 let panX = 0;
 let panY = 0;
 let zoomScale = 1.0;
+/** Remember previous node count so we can auto-fit when nodes are added. */
+let prevNodeCount = 0;
 
 /**
  * User-arranged node displacements in layout coordinates, keyed by node id.
@@ -152,6 +154,10 @@ let zoomScale = 1.0;
  * persisted, never synced — positions are presentation, not mesh state.
  */
 const nodeOffsets = new Map<string, { x: number; y: number }>();
+
+/** Node ids we have already rendered at least once in this session. Used to
+ *  animate newly appearing nodes from the canvas centre to their slot. */
+const seenNodeIds = new Set<string>();
 
 /** Fold user displacements into a fresh layout. */
 function withOffsets(placed: Placed[]): Placed[] {
@@ -201,7 +207,7 @@ function armPopoverOutsideClick(): void {
 let meshPlacementMode: "concentric" | "hierarchical" = "concentric";
 let meshResizeObserver: ResizeObserver | null = null;
 
-function layout(nodes: NodeView[], width: number, height: number): Placed[] {
+export function layout(nodes: NodeView[], width: number, height: number): Placed[] {
   const cx = width / 2;
   const cy = height / 2;
   const maxRadius = Math.min(width, height) / 2 - 90;
@@ -252,6 +258,25 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
       });
     });
 
+    // Simple overlap resolution: if two nodes are too close, nudge them apart.
+    const MIN_DIST = 40;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i];
+        const b = placed[j];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < MIN_DIST * MIN_DIST) {
+          const angle = Math.atan2(dy, dx);
+          const offset = (MIN_DIST - Math.sqrt(distSq)) / 2;
+          a.x += Math.cos(angle) * offset;
+          a.y += Math.sin(angle) * offset;
+          b.x -= Math.cos(angle) * offset;
+          b.y -= Math.sin(angle) * offset;
+        }
+      }
+    }
     return withOffsets(placed);
   }
 
@@ -278,10 +303,29 @@ function layout(nodes: NodeView[], width: number, height: number): Placed[] {
       });
     });
   });
+  // Simple overlap resolution: if two nodes are too close, nudge them apart.
+  const MIN_DIST = 40;
+  for (let i = 0; i < placed.length; i++) {
+    for (let j = i + 1; j < placed.length; j++) {
+      const a = placed[i];
+      const b = placed[j];
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < MIN_DIST * MIN_DIST) {
+        const angle = Math.atan2(dy, dx);
+        const offset = (MIN_DIST - Math.sqrt(distSq)) / 2;
+        a.x += Math.cos(angle) * offset;
+        a.y += Math.sin(angle) * offset;
+        b.x -= Math.cos(angle) * offset;
+        b.y -= Math.sin(angle) * offset;
+      }
+    }
+  }
   return withOffsets(placed);
 }
 
-function edgesOf(placed: Placed[]): EdgeData[] {
+export function edgesOf(placed: Placed[]): EdgeData[] {
   const byId = new Map(placed.map((p) => [p.node.process.node_id, p]));
   const seen = new Set<string>();
   const edges: EdgeData[] = [];
@@ -329,10 +373,16 @@ function edgesOf(placed: Placed[]): EdgeData[] {
 const CARD_W = 200;
 const CARD_H = 60;
 
-function meshView(nodes: NodeView[], width: number, height: number, _container: HTMLElement): HTMLElement {
+export function meshView(nodes: NodeView[], width: number, height: number, _container: HTMLElement): HTMLElement {
   const placed = layout(nodes, width, height);
   const edges = edgesOf(placed);
   const selectedId = store.state.selection.nodeId;
+
+  // Nodes that haven't been rendered yet in this session: animate them from center.
+  const isNewNodeIds = new Set<string>();
+  for (const p of placed) {
+    if (!seenNodeIds.has(p.node.process.node_id)) isNewNodeIds.add(p.node.process.node_id);
+  }
 
   const wrapper = el("div", {
     class: zoomScale < 0.6 ? "mesh-zoom-host mesh-canvas--compact" : "mesh-zoom-host",
@@ -409,6 +459,32 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
           line.setAttribute("x2", String(attr("x2") + dx));
           line.setAttribute("y2", String(attr("y2") + dy));
         }
+        // Keep minimap edge in sync (same data-edge key).
+        const edgeKey = line.getAttribute("data-edge");
+        if (edgeKey) {
+          const miniLine = mmSvg?.querySelector(`line[data-edge="${edgeKey}"]`);
+          if (miniLine) {
+            const mx1 = parseFloat(miniLine.getAttribute("x1") || "0");
+            const my1 = parseFloat(miniLine.getAttribute("y1") || "0");
+            const mx2 = parseFloat(miniLine.getAttribute("x2") || "0");
+            const my2 = parseFloat(miniLine.getAttribute("y2") || "0");
+            if (first) {
+              miniLine.setAttribute("x1", String(mx1 + dx));
+              miniLine.setAttribute("y1", String(my1 + dy));
+            } else {
+              miniLine.setAttribute("x2", String(mx2 + dx));
+              miniLine.setAttribute("y2", String(my2 + dy));
+            }
+          }
+        }
+      }
+      // Keep minimap dot in sync.
+      const miniDot = mmSvg?.querySelector(`circle[data-node-id="${nodeId}"]`);
+      if (miniDot) {
+        const cx = parseFloat(miniDot.getAttribute("cx") || "0");
+        const cy = parseFloat(miniDot.getAttribute("cy") || "0");
+        miniDot.setAttribute("cx", String(cx + dx));
+        miniDot.setAttribute("cy", String(cy + dy));
       }
       const o = nodeOffsets.get(nodeId) || { x: 0, y: 0 };
       nodeOffsets.set(nodeId, { x: o.x + dx, y: o.y + dy });
@@ -518,25 +594,31 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     "aria-hidden": "true",
   });
   for (const edge of edges) {
+    const edgeKey = [edge.a.node.process.node_id, edge.b.node.process.node_id].sort().join("|");
     mmSvg.appendChild(
       svg("line", {
         x1: edge.a.x,
         y1: edge.a.y,
         x2: edge.b.x,
         y2: edge.b.y,
+        "data-edge": edgeKey,
         class: edge.live ? "mesh-minimap__edge" : "mesh-minimap__edge--stale",
       }),
     );
   }
   for (const p of placed) {
+    const isSupervisor = p.node.process.supervisor;
     const isSelected = selectedId === p.node.process.node_id;
+    const dotR = isSupervisor ? 10 : (isSelected ? 11 : 8);
     mmSvg.appendChild(
       svg("circle", {
         cx: p.x,
         cy: p.y,
-        r: isSelected ? 11 : 8,
+        r: dotR,
         fill: STATUS_VAR[p.status],
         class: isSelected ? "mesh-minimap__dot--selected" : "mesh-minimap__dot",
+        "data-node-id": p.node.process.node_id,
+        ...(isSupervisor ? { stroke: "#ffffff", "stroke-width": "2", filter: "drop-shadow(0 0 2px #ffffff)" } : {}),
       }),
     );
   }
@@ -554,9 +636,26 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
     { class: "mesh-minimap", type: "button", title: "Starmap — click to center", "aria-label": "Starmap overview. Activate, then use arrow keys to pan." },
     mmSvg as unknown as HTMLElement,
   );
-  // Click-to-center: clicking a point centers it in the main view.
+  // Click-to-center: clicking a point centers it in the main view; clicking a
+  // node dot also selects that node (game-style minimap behaviour).
   mmSvg.addEventListener("click", (e: MouseEvent) => {
     try {
+      const target = e.target as HTMLElement;
+      const nodeId =
+        target?.closest(".mesh-minimap__dot, .mesh-minimap__dot--selected")
+          ?.getAttribute("data-node-id") || null;
+      if (nodeId) {
+        store.select({ kind: "node", nodeId });
+        const dot = mmSvg.querySelector(`circle[data-node-id="${nodeId}"]`);
+        if (dot) {
+          const cx = parseFloat(dot.getAttribute("cx") || "0");
+          const cy = parseFloat(dot.getAttribute("cy") || "0");
+          panX = width / 2 - cx * zoomScale;
+          panY = height / 2 - cy * zoomScale;
+          updateTransform();
+        }
+        return;
+      }
       const r = (mmSvg as unknown as SVGSVGElement).getBoundingClientRect();
       const lx = ((e.clientX - r.left) / Math.max(1, r.width)) * width;
       const ly = ((e.clientY - r.top) / Math.max(1, r.height)) * height;
@@ -860,6 +959,16 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       "stroke-dasharray": edge.live && !supervised ? null : "4 4",
       opacity: supervised ? 0.5 : edge.live ? edge.fitness : 0.35,
     });
+    // Fade in edges connected to brand-new nodes so they appear together with the node.
+    const eitherNodeIsNew = isNewNodeIds.has(edge.a.node.process.node_id) || isNewNodeIds.has(edge.b.node.process.node_id);
+    if (eitherNodeIsNew) {
+      edgeLine.style.transition = "opacity 350ms ease-out";
+      edgeLine.style.opacity = "0";
+      requestAnimationFrame(() => {
+        try { edgeLine.style.opacity = String(supervised ? 0.5 : edge.live ? edge.fitness : 0.35); } catch { /* ignore */ }
+      });
+      window.setTimeout(() => { try { edgeLine.style.transition = ""; } catch { /* ignore */ } }, 400);
+    }
 
     edgeLine.addEventListener("mouseenter", (e: MouseEvent) => {
       const rect = wrapper.getBoundingClientRect();
@@ -896,6 +1005,9 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
         ? `#${tipId}`
         : `#${tipId} · ${shortHash(hash, 6, 0)}`;
 
+    const isNewNode = !seenNodeIds.has(p.node.process.node_id);
+    seenNodeIds.add(p.node.process.node_id);
+
     const group = svg("g", {
       class: "mesh__node",
       "data-selected": String(selectedId === p.node.process.node_id),
@@ -903,8 +1015,27 @@ function meshView(nodes: NodeView[], width: number, height: number, _container: 
       role: "button",
       tabindex: "0",
       "aria-label": `${rawName}, ${STATUS_TEXT[p.status]}, ledger entry ${tipId}`,
-      transform: `translate(${p.x - CARD_W / 2} ${p.y - CARD_H / 2})`,
+      transform: isNewNode
+        ? `translate(${width / 2 - CARD_W / 2} ${height / 2 - CARD_H / 2})`
+        : `translate(${p.x - CARD_W / 2} ${p.y - CARD_H / 2})`,
+      style: isNewNode ? "transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 420ms ease-out; opacity: 0;" : null,
     });
+
+    if (isNewNode) {
+      // Kick the transition on next frame so the browser registers the
+      // initial (center) transform before moving to the slot.
+      requestAnimationFrame(() => {
+        try {
+          group.setAttribute("transform", `translate(${p.x - CARD_W / 2} ${p.y - CARD_H / 2})`);
+          group.style.opacity = "1";
+        } catch {
+          // Ignore; next render fixes positions.
+        }
+      });
+      window.setTimeout(() => {
+        try { group.style.transition = ""; } catch { /* ignore */ }
+      }, 460);
+    }
 
     group.appendChild(svg("title", {}, hoverName));
 
@@ -1501,6 +1632,11 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
 
   function render(): void {
     const nodes = store.dataNodes();
+    if (nodes.length > prevNodeCount) {
+      // New nodes added – reset view to fit everything.
+      canvasZoomFit();
+    }
+    prevNodeCount = nodes.length;
     const mode = store.state.canvasMode;
     const candidates = store.state.discoveredCandidates;
 

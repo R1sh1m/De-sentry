@@ -22,6 +22,7 @@ import { createSidebar } from "./views/sidebar.js";
 import { createWizard } from "./views/wizard.js";
 import { createConsole } from "./views/console.js";
 import { createDropbox } from "./views/dropbox.js";
+import { createFiles } from "./views/files.js";
 import { createLookup } from "./views/lookup.js";
 import { openPalette } from "./views/palette.js";
 
@@ -532,6 +533,8 @@ function build(): void {
   const ledger = createLedger();
   const consoleView = createConsole();
   const dropbox = createDropbox();
+  const files = createFiles();
+  const filesMain = el("main", { class: "canvas" }, files.element);
   const lookup = createLookup();
   const lookupMount = el("div", { class: "canvas" }, lookup.element);
   const healthAlerts = createHealthAlerts((nodeId) => {
@@ -863,6 +866,9 @@ function build(): void {
     } else if (state.selection.kind === "dropbox") {
       dropbox.render();
       mountInCentre(dropbox.element);
+    } else if (state.selection.kind === "files") {
+      files.render();
+      mountInCentre(filesMain);
     } else if (state.selection.kind === "lookup") {
       lookup.render();
       mountInCentre(lookupMount);
