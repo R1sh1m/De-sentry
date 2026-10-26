@@ -12,6 +12,15 @@ the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
+> **2026-10-27 — v1.1.0 release verification.** All 14 C++ test suites passed
+> green (100% pass rate, including newly introduced `ledger_feed_test`).
+> Frontend checks passed: `tsc --noEmit`, `check:qr`, `check:css`, Vitest
+> test suite (12/12 passed), and Vite production build clean. Rust sidecar
+> `cargo check` clean. Added files explorer with binary streaming & preview
+> handlers, starmap minimap interactive selection & node spawn animations,
+> and modernized architecture diagrams in README. Physical LAN multi-machine
+> verification remains unverified.
+
 > **Read this first — what has actually been run.** The 2026-10-22 Windows
 > snapshot passes all 13 C++ tests, frontend checks, airplane-mode,
 > transit-replay, USB-node, and 8-node chaos suites. On 2026-10-25, macOS
