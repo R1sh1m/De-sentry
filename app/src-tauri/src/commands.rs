@@ -55,6 +55,27 @@ fn bootstrap_points_to_self(peer: &str, local_lan_address: Option<&str>, own_p2p
         .is_some_and(|local_ip| local_ip == host_ip)
 }
 
+fn bootstrap_is_loopback(peer: &str) -> bool {
+    let Some((host, _port)) = peer.rsplit_once(':') else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback())
+}
+
+fn has_non_loopback_bootstrap_peers(config: &serde_json::Value) -> bool {
+    config
+        .get("bootstrap_peers")
+        .and_then(|peers| peers.as_array())
+        .is_some_and(|peers| {
+            peers
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|peer| !bootstrap_is_loopback(peer))
+        })
+}
+
 fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -299,8 +320,6 @@ pub fn start_existing_node(
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    let local_bootstrap_peers = running_local_bootstrap_peers(&state, &dir);
-
     let encrypted = existing
         .get("encrypt_at_rest")
         .and_then(|v| v.as_bool())
@@ -310,12 +329,17 @@ pub fn start_existing_node(
         .get("discovery_enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(!supervisor);
-    let has_bootstrap_peers = existing
-        .get("bootstrap_peers")
-        .and_then(|peers| peers.as_array())
-        .map(|peers| !peers.is_empty())
-        .unwrap_or(false)
-        || !local_bootstrap_peers.is_empty();
+    let has_configured_mesh_peers = has_non_loopback_bootstrap_peers(&existing);
+    // An explicit local-only config is a separate replication domain. Do not
+    // inject loopback peers merely because another mesh node is already
+    // running in this desktop app.
+    let keep_isolated = !supervisor && !discovery_enabled && !has_configured_mesh_peers;
+    let local_bootstrap_peers = if keep_isolated {
+        Vec::new()
+    } else {
+        running_local_bootstrap_peers(&state, &dir)
+    };
+    let has_bootstrap_peers = has_configured_mesh_peers || !local_bootstrap_peers.is_empty();
     let mesh_isolated = !supervisor && !discovery_enabled && !has_bootstrap_peers;
     let keychain_ref = existing
         .get("keychain_ref")
@@ -346,6 +370,7 @@ pub fn start_existing_node(
         &allocation,
         local_lan_address.as_deref(),
         &local_bootstrap_peers,
+        keep_isolated,
     ) {
         state.release_ports(allocation);
         return Err(error);
@@ -381,6 +406,7 @@ fn rewrite_ports(
     allocation: &PortAllocation,
     local_lan_address: Option<&str>,
     additional_bootstrap_peers: &[String],
+    clear_loopback_bootstrap_peers: bool,
 ) -> Reply<()> {
     let text = std::fs::read_to_string(config_path).map_err(fail)?;
     let mut value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
@@ -401,6 +427,13 @@ fn rewrite_ports(
                     let Some(address) = peer.as_str() else {
                         return true;
                     };
+                    if clear_loopback_bootstrap_peers && bootstrap_is_loopback(address) {
+                        log::info!(
+                            "removed loopback bootstrap peer {address} while restoring local-only node {}",
+                            config_path.display()
+                        );
+                        return false;
+                    }
                     if bootstrap_points_to_self(address, local_lan_address, old_p2p_port) {
                         log::warn!(
                             "removed self-referential bootstrap peer {address} while adopting {}",
@@ -446,6 +479,7 @@ fn running_local_bootstrap_peers(state: &AppState, data_dir: &Path) -> Vec<Strin
         .values()
         .filter(|node| {
             !node.spec.supervisor
+                && !node.spec.mesh_isolated
                 && node.spec.data_dir != data_dir
                 && node.state == ProcessState::Running
         })
@@ -1231,28 +1265,30 @@ pub fn unlock_node(
         // untouched.
         let allocation = state.allocate_ports().map_err(fail)?;
         let local_lan_address = lan_address().ok().flatten();
-        let local_bootstrap_peers = running_local_bootstrap_peers(&state, &target_dir);
-        if let Err(error) = rewrite_ports(
-            &config_path,
-            &allocation,
-            local_lan_address.as_deref(),
-            &local_bootstrap_peers,
-        ) {
-            state.release_ports(allocation);
-            return Err(error);
-        }
-
         let supervisor = existing.get("supervisor").and_then(|v| v.as_bool()).unwrap_or(false);
         let discovery_enabled = existing
             .get("discovery_enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(!supervisor);
-        let has_bootstrap_peers = existing
-            .get("bootstrap_peers")
-            .and_then(|peers| peers.as_array())
-            .map(|peers| !peers.is_empty())
-            .unwrap_or(false)
-            || !local_bootstrap_peers.is_empty();
+        let has_configured_mesh_peers = has_non_loopback_bootstrap_peers(&existing);
+        let keep_isolated = !supervisor && !discovery_enabled && !has_configured_mesh_peers;
+        let local_bootstrap_peers = if keep_isolated {
+            Vec::new()
+        } else {
+            running_local_bootstrap_peers(&state, &target_dir)
+        };
+        if let Err(error) = rewrite_ports(
+            &config_path,
+            &allocation,
+            local_lan_address.as_deref(),
+            &local_bootstrap_peers,
+            keep_isolated,
+        ) {
+            state.release_ports(allocation);
+            return Err(error);
+        }
+
+        let has_bootstrap_peers = has_configured_mesh_peers || !local_bootstrap_peers.is_empty();
         let mesh_isolated = !supervisor && !discovery_enabled && !has_bootstrap_peers;
 
         LaunchSpec {

@@ -488,6 +488,32 @@ export async function refreshNode(nodeId: string, options: { quota?: boolean } =
   store.notify();
 }
 
+/** Refreshes the lightweight peer table independently of ledger changes.
+ * Peer membership and liveness can change while a node's own ledger is idle,
+ * so deriving the UI's "Waiting for peers" state only from brain snapshots
+ * leaves that label stale until the next write. */
+const peerRefreshes = new Set<string>();
+
+async function refreshPeerList(nodeId: string): Promise<void> {
+  const view = store.state.nodes.get(nodeId);
+  if (view === undefined || !view.reachable || view.process.process !== "running" ||
+      view.process.mesh_isolated || peerRefreshes.has(nodeId)) return;
+  peerRefreshes.add(nodeId);
+  try {
+    const peers = await apiFor(view.process.api_port).peers({ timeoutMs: 5_000 });
+    const current = store.state.nodes.get(nodeId);
+    if (current === view) {
+      current.peers = peers;
+      store.notify();
+    }
+  } catch {
+    // Peer telemetry is supplementary. Keep the last snapshot; a failed
+    // lightweight refresh must not mark a node offline.
+  } finally {
+    peerRefreshes.delete(nodeId);
+  }
+}
+
 /** Reconciles the node map with what the sidecar currently supervises. */
 export async function refreshNodeList(): Promise<void> {
   const processes = await sidecar.listNodes();
@@ -922,6 +948,12 @@ export async function boot(): Promise<void> {
   window.setInterval(() => {
     void refreshDiscovered();
   }, 30_000);
+
+  // Peer membership/liveness is independent of local ledger changes. Refresh
+  // it directly so a LAN join is reflected without waiting for another write.
+  window.setInterval(() => {
+    for (const node of store.dataNodes()) void refreshPeerList(node.process.node_id);
+  }, 5_000);
 }
 
 /** Signed update check: see the call in boot() for the policy. */
