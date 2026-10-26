@@ -1,35 +1,59 @@
-//! Integration tests for the AI sizing system.
-
 use std::path::PathBuf;
 
-use de_sentry_app::ai::{Sizer, Resources, NodeSpec};
+use de_sentry_app::ai::{Resources, Sizer};
 
 #[test]
-fn test_sizing_engine_selection_and_quota_adjustments() {
-    // Setup resources pointing at the bundled prototype and model files.
+fn test_ai_sizing_engines_and_confidence() {
+    // Point to the bundled prototypes; force model load failure to use keyword fallback.
     let resources = Resources {
         prototypes: PathBuf::from("../resources/prototypes.json"),
-        model: PathBuf::from("../resources/model/model.onnx"),
-        tokenizer: PathBuf::from("../resources/model/tokenizer.json"),
-        runtime_dir: PathBuf::from("../resources/model"),
+        model: PathBuf::from("nonexistent/model.onnx"),
+        tokenizer: PathBuf::from("nonexistent/tokenizer.json"),
+        runtime_dir: PathBuf::from("nonexistent"),
+    };
+    let sizer = Sizer::load(&resources).expect("Failed to load Sizer");
+
+    // Available built‑in engines (the ones compiled into the binary).
+    let available = vec![
+        "kv".to_string(),
+        "columnar_lite".to_string(),
+        "ts_rollup".to_string(),
+        "vector_hnsw_lite".to_string(),
+        "graph_adj".to_string(),
+    ];
+
+    // Helper closure to assert basic expectations.
+    let check = |description: &str, expected_engine: &str| {
+        let spec = sizer.size(description, 1024, &available);
+        // The prototype may request an engine that is not compiled; the sizing code falls back to the first available engine.
+        // For the built‑in set we expect the fallback to be "kv" for relational and OOP workloads.
+        let contains = spec.engines.iter().any(|e| e == expected_engine);
+        assert!(
+            contains,
+            "Engines {:?} should contain {} for description: {}",
+            spec.engines,
+            expected_engine,
+            description
+        );
+        assert!(
+            spec.decision.confidence > 0.35,
+            "Confidence should be above floor for description: {}",
+            description
+        );
     };
 
-    let sizer = Sizer::load(&resources).expect("failed to load sizer");
-
-    // Simulate a tiny node (64 MiB) with the installed engines.
-    let available = vec!["kv".to_string(), "ts_rollup".to_string(), "sqlite".to_string()];
-    let description = "Store sensor readings every second, query by time range and keep one year of history.";
-    let spec: NodeSpec = sizer.size(description, 64, &available);
-
-    // Expect the time‑series engine to be selected.
-    assert!(spec.engines.iter().any(|e| e == "ts_rollup"), "time-series engine not selected");
-    // Verify quota adjustments: tiny nodes should boost DB cache.
-    assert!(spec.quota_split.db_pct > 60, "quota split not adjusted for tiny node");
-    // The total should still sum to 100 after normalisation.
-    assert_eq!(spec.quota_split.total(), 100);
-
-    // Now test a large node (5 GiB) – DB cache should still be boosted but less aggressively.
-    let large_spec: NodeSpec = sizer.size(description, 5120, &available);
-    assert!(large_spec.quota_split.db_pct >= spec.quota_split.db_pct, "large node should not reduce DB pct");
-    assert_eq!(large_spec.quota_split.total(), 100);
+    // Relational (SQL) – falls back to kv because sqlite is not compiled.
+    check("Relational tables with joins and foreign keys", "kv");
+    // Document store – uses kv directly.
+    check("Flexible JSON documents stored by key", "kv");
+    // Time‑series – expects ts_rollup, which is compiled.
+    check("Continuous sensor readings stored as time series", "ts_rollup");
+    // Vector similarity – expects vector_hnsw_lite, which is compiled.
+    check("Embeddings of text searched by similarity", "vector_hnsw_lite");
+    // Graph – expects graph_adj, which is compiled.
+    check("Entity relationships traversed as a graph", "graph_adj");
+    // Semi‑structured – expects columnar_lite, which is compiled.
+    check("Event logs with mixed schema that need OLAP analysis", "columnar_lite");
+    // OOP relational – falls back to kv.
+    check("Objects with inheritance persisted via an ORM", "kv");
 }

@@ -529,7 +529,7 @@ export function createDropbox(): DropboxHandles {
 
     return el(
       "div",
-      { class: "card", style: "margin-top: 16px; padding: 20px; border: 1px solid var(--color-primary);" },
+      { class: "card", style: "margin-top: 16px; padding: 20px;" },
       el("div", { class: "row row--between", style: "align-items: center; margin-bottom: 12px;" },
         el("div", {},
           el("span", { class: "badge", text: payload.workload.toUpperCase(), style: "margin-right: 8px;" }),

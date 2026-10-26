@@ -744,14 +744,25 @@ export function createExplorer(): ExplorerHandles {
       current.rows.length > 0
         ? `${truncate(current.rows[0].key, 18)} → ${truncate(current.rows[current.rows.length - 1].key, 18)}`
         : "empty page";
+
     // Explicit retention run: applies the collection's configured
     // retention_days immediately. The engine also performs periodic sweeps;
     // this button is useful when an operator wants no waiting period.
+    // Only shown for ts_rollup collections with retention_days configured.
+    const node = store.node(current.nodeId);
+    const detail = store.state.collectionDetails.get(`${current.nodeId}::${current.collection}`);
+    const engine = detail?.engine ?? node?.brain?.collections.find((c) => c.name === current.collection)?.engine;
+    const hasRetention = engine === "ts_rollup" && (detail?.retention_days ?? 0) > 0;
+
     const retain = el("button", {
       class: "btn btn--sm btn--ghost",
       type: "button",
       text: "Run retention",
-      title: "Apply this collection's retention_days now (ts_rollup only)",
+      title: hasRetention
+        ? "Apply this collection's retention_days now (ts_rollup only)"
+        : "Retention is only available for ts_rollup collections with retention_days configured",
+      disabled: hasRetention ? undefined : "true",
+      style: hasRetention ? undefined : "opacity: 0.5; cursor: not-allowed;",
     });
     on(retain, "click", () => {
       const node = store.node(current.nodeId);
@@ -764,7 +775,11 @@ export function createExplorer(): ExplorerHandles {
           store.toast("success", "Retention", `Dropped ${result.chunks_dropped} chunk(s) in ${current.collection}.`, 4000);
         })
         .catch((error: unknown) => {
-          store.toast("error", "Retention", describeError(error), 5000);
+          const msg = describeError(error);
+          const toastMsg = msg.includes("retention_days configured")
+            ? `Collection '${current.collection}' is not a time-series collection, or has no retention_days configured. Configure it via Collection > Placement > retention_days first.`
+            : msg;
+          store.toast("error", "Retention", toastMsg, 5000);
         })
         .finally(() => {
           retain.textContent = "Run retention";
