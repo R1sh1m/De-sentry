@@ -230,6 +230,14 @@ class StorageRouter {
   Status MergeRemote(const std::string& collection, const std::string& key,
                       const std::string& remote_encoded_doc);
 
+  // -- secondary index query (equality only, lazy build, no persistence) ---
+  // Scans collection, extracts indexed field, returns matching keys.
+  // Index is NOT cached between calls in this minimal implementation.
+  StatusOr<std::vector<std::string>> QueryIndex(const std::string& collection,
+                                                 const std::string& index_field,
+                                                 const std::string& value,
+                                                 size_t limit = 1000);
+
   std::string Checksum(const std::string& collection);
   uint64_t QuotaUse() const;
   uint64_t QuotaLimit() const { return quota_bytes_; }

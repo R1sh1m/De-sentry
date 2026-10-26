@@ -37,11 +37,13 @@ def parse_args():
     p.add_argument("--durability", type=int, default=3, help="Durability level (default 3)")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     p.add_argument("--verbose", action="store_true", help="Verbose output")
+    p.add_argument("--timeout", type=int, default=300,
+                    help="Overall test timeout in seconds (default: 300)")
     return p.parse_args()
 
 
 class Node:
-    def __init__(self, idx, base_port, data_dir, desentryd_path, verbose=False):
+    def __init__(self, idx, base_port, data_dir, desentryd_path, timeout_ms=5000, verbose=False):
         self.idx = idx
         self.api_port = base_port + idx
         self.p2p_port = base_port + 1000 + idx
@@ -51,6 +53,7 @@ class Node:
         self.node_id = None
         self.verbose = verbose
         self.lock = threading.Lock()
+        self.timeout_ms = timeout_ms
 
     def start(self):
         os.makedirs(self.data_dir, exist_ok=True)
@@ -108,7 +111,7 @@ class Node:
         """Write with durability=3, return (success, report)"""
         url = f"http://127.0.0.1:{self.api_port}/db/{collection}/{key}"
         body = json.dumps(value).encode()
-        full_url = f"{url}?durability=3&timeout_ms=5000"
+        full_url = f"{url}?durability=3&timeout_ms={self.timeout_ms}"
         req = urllib.request.Request(
             full_url,
             data=body,
@@ -149,6 +152,22 @@ class Node:
 
 
 def run_soak_test(args):
+    start_time = time.time()
+    def elapsed():
+        return time.time() - start_time
+    def ensure_not_timed_out(stage: str):
+        if elapsed() > args.timeout:
+            raise TimeoutError(f"Test exceeded timeout of {args.timeout}s during {stage}")
+    def wait_seconds(seconds: float, stage: str):
+        # Wait in small increments while respecting overall timeout
+        end = time.time() + seconds
+        while time.time() < end:
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            # Sleep up to 0.5s chunks
+            time.sleep(min(0.5, remaining))
+            ensure_not_timed_out(stage)
     random.seed(args.seed)
     base_port = 17700 + (args.seed % 1000) * 10  # Avoid port conflicts
     temp_dir = tempfile.mkdtemp(prefix="desentry_durability_soak_")
@@ -156,7 +175,7 @@ def run_soak_test(args):
 
     nodes = []
     for i in range(args.nodes):
-        node = Node(i, base_port, temp_dir, args.desentryd, args.verbose)
+        node = Node(i, base_port, temp_dir, args.desentryd, timeout_ms=args.timeout_ms, verbose=args.verbose)
         nodes.append(node)
 
     try:
@@ -167,7 +186,7 @@ def run_soak_test(args):
         print("All nodes started")
 
         # Wait for mesh to form
-        time.sleep(3)
+        wait_seconds(3, "mesh formation")
 
         # Verify mesh connectivity
         for node in nodes:
@@ -183,6 +202,7 @@ def run_soak_test(args):
         write_errors = 0
         achieved_counts = {3: 0, 2: 0, 1: 0}
         for w in range(args.writes):
+            ensure_not_timed_out("write phase")
             key = f"key_{w:06d}"
             value = {"seq": w, "data": random.randint(0, 1000000), "node": args.seed}
             # Pick a random node to write from
@@ -205,6 +225,7 @@ def run_soak_test(args):
         # Restart cycles
         print(f"\nPhase 2: {args.restarts} restart cycles...")
         for cycle in range(args.restarts):
+            ensure_not_timed_out("restart cycles")
             print(f"  Cycle {cycle + 1}/{args.restarts}")
             # Restart random subset of nodes
             restart_nodes = random.sample(nodes, max(1, args.nodes // 2))
@@ -213,7 +234,7 @@ def run_soak_test(args):
                     print(f"    Restarting node {node.idx}...")
                 node.restart()
             # Wait for mesh to re-form
-            time.sleep(2)
+            wait_seconds(2, "mesh re-form after restart")
 
             # Verify data integrity after restarts
             print(f"    Verifying {len(expected_keys)} keys...")
@@ -231,9 +252,10 @@ def run_soak_test(args):
 
         # Final convergence check
         print("\nPhase 3: Final convergence check...")
-        time.sleep(3)  # Let gossip settle
+        wait_seconds(3, "final convergence settle")  # Let gossip settle
         all_consistent = True
         for key in expected_keys:
+            ensure_not_timed_out("final convergence check")
             values = []
             for node in nodes:
                 ok, val = node.read(collection, key)
@@ -253,6 +275,9 @@ def run_soak_test(args):
             print("FAILURE: Data divergence detected")
             return False
 
+    except TimeoutError as te:
+        print(str(te))
+        return False
     finally:
         print("\nCleaning up...")
         for node in nodes:
@@ -267,6 +292,7 @@ def main():
     print(f"Durability Soak Test")
     print(f"  Nodes: {args.nodes}, Writes: {args.writes}, Restarts: {args.restarts}")
     print(f"  Durability: {args.durability}, Timeout: {args.timeout_ms}ms")
+    print(f"  Overall test timeout: {args.timeout}s")
     print(f"  Binary: {args.desentryd}")
 
     success = run_soak_test(args)

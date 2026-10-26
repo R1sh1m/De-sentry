@@ -52,6 +52,9 @@ env/
 .env/
 ENV/
 
+# Auto-downloaded toolchain (Miniconda, Node.js)
+.local/
+
 # Eggs and distributions
 *.egg
 *.egg-info/

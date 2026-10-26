@@ -9,6 +9,9 @@
     five separate manual steps. Every step is idempotent: re-running this
     after a pull only rebuilds what changed.
 
+    Node.js and Python 3 are auto-downloaded into .local/ when missing from
+    PATH. A self-contained Python virtual environment is created in .venv/.
+
     Run from the repository root:
         .\scripts\setup.ps1
         .\scripts\setup.ps1 -Install   # also try to install missing tools via winget
@@ -40,6 +43,52 @@ foreach ($dir in @("C:\msys64\ucrt64\bin", "C:\msys64\usr\bin", "$env:USERPROFIL
     }
 }
 
+# ── Local tool directory (gitignored) ─────────────────────────────────────
+$localDir     = Join-Path $projectRoot ".local"
+$nodeVersion  = "22.11.0"
+
+# ── Auto-download Node.js if not on PATH ──────────────────────────────────
+function Ensure-Node {
+    if (Test-Command "node") { return }
+    Write-Host "[setup] Node.js not found on PATH -- downloading v$nodeVersion" -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path $localDir -Force | Out-Null
+
+    $zipPath   = Join-Path $localDir "node.zip"
+    $url       = "https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-win-x64.zip"
+    Write-Host "  Downloading from $url" -ForegroundColor Gray
+    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+
+    Expand-Archive -Path $zipPath -DestinationPath $localDir -Force
+    Remove-Item $zipPath
+
+    $extracted = Get-ChildItem -Directory $localDir | Where-Object { $_.Name -like "node-v${nodeVersion}-*" } | Select-Object -First 1
+    if ($null -eq $extracted) {
+        Write-Error "[setup] Failed to extract Node.js archive"
+        return
+    }
+    Rename-Item -Path $extracted.FullName -NewName "node"
+    $env:Path = (Join-Path $localDir "node") + ";" + $env:Path
+    Write-Host "  [ok] node $(node -v)" -ForegroundColor Gray
+}
+
+# ── Auto-download Python 3 if not on PATH ─────────────────────────────────
+function Ensure-Python {
+    if (Test-Command "python") { return }
+    Write-Host "[setup] Python 3 not found on PATH -- downloading Miniconda" -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path $localDir -Force | Out-Null
+
+    $exePath = Join-Path $localDir "miniconda.exe"
+    $url     = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe"
+    Write-Host "  Downloading from $url" -ForegroundColor Gray
+    Invoke-WebRequest -Uri $url -OutFile $exePath -UseBasicParsing
+
+    $condaDir = Join-Path $localDir "miniconda"
+    & $exePath /InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D="$condaDir"
+    Remove-Item $exePath
+    $env:Path = "$condaDir;" + "$condaDir\Scripts;" + $env:Path
+    Write-Host "  [ok] python $(python --version)" -ForegroundColor Gray
+}
+
 $missing = @()
 function Require-Tool($name, $hint) {
     if (Test-Command $name) {
@@ -50,13 +99,13 @@ function Require-Tool($name, $hint) {
     }
 }
 
-Write-Host "1/5 prerequisites" -ForegroundColor Cyan
+Write-Host "1/6 prerequisites" -ForegroundColor Cyan
 Require-Tool "cmake" "winget install -e --id Kitware.CMake"
 Require-Tool "ninja" "comes with the MSYS2 package mingw-w64-ucrt-x86_64-ninja"
 Require-Tool "g++" "MSYS2 UCRT64 (https://www.msys2.org) or Visual Studio Build Tools"
 Require-Tool "cargo" "winget install -e --id Rustlang.Rustup  (then the MSVC *and* GNU toolchains as needed)"
-Require-Tool "node" "winget install -e --id OpenJS.NodeJS.LTS"
-Require-Tool "python3" "winget install -e --id Python.Python.3"
+Require-Tool "node" "auto-downloads into .local\node"
+Require-Tool "python" "auto-downloads Miniconda into .local\miniconda"
 if (-not (Test-Path "C:\msys64\ucrt64\include\openssl\evp.h")) {
     Write-Host "  [!!] OpenSSL headers not found under MSYS2 UCRT64 -- pacman -S mingw-w64-ucrt-x86_64-openssl" -ForegroundColor Yellow
     $missing += "openssl-headers"
@@ -64,16 +113,29 @@ if (-not (Test-Path "C:\msys64\ucrt64\include\openssl\evp.h")) {
     Write-Host "  [ok] openssl-headers (MSYS2 UCRT64)" -ForegroundColor Gray
 }
 
+# ── Attempt auto-download for node and python ─────────────────────────────
+if ($missing -contains "node")   { Ensure-Node }
+if ($missing -contains "python") { Ensure-Python }
+
+# Re-check: remove any tool that is now available
+$newMissing = @()
+foreach ($tool in $missing) {
+    if (Test-Command $tool) {
+        Write-Host ("  [ok] {0,-10} (installed by setup)" -f $tool) -ForegroundColor Gray
+    } else {
+        $newMissing += $tool
+    }
+}
+$missing = $newMissing
+
 if ($missing.Count -gt 0) {
     if (-not $Install) {
         Write-Error ("Missing tools: {0}. Re-run with -Install to try winget, or install them by hand." -f ($missing -join ", "))
     }
-    Write-Host "Trying winget for the missing tools..." -ForegroundColor Cyan
+    Write-Host "Trying winget for the remaining missing tools..." -ForegroundColor Cyan
     $wingetMap = @{
         "cmake"   = "Kitware.CMake"
         "cargo"   = "Rustlang.Rustup"
-        "node"    = "OpenJS.NodeJS.LTS"
-        "python3" = "Python.Python.3"
     }
     foreach ($tool in $missing) {
         if ($wingetMap.ContainsKey($tool)) {
@@ -86,7 +148,28 @@ if ($missing.Count -gt 0) {
     return
 }
 
-Write-Host "2/5 engine (CMake configure + build)" -ForegroundColor Cyan
+Write-Host "2/6 Python virtual environment" -ForegroundColor Cyan
+$venvDir = Join-Path $projectRoot ".venv"
+if (-not (Test-Path $venvDir)) {
+    Write-Host "  Creating virtual environment at $venvDir" -ForegroundColor Gray
+    & python -m venv $venvDir
+}
+$venvPython = Join-Path $venvDir "Scripts\python.exe"
+Write-Host ("  venv: {0} ({1})" -f (Get-Command $venvPython | Select-Object -ExpandProperty Source),
+                                   (& $venvPython --version)) -ForegroundColor Gray
+
+# Install any declared Python requirements
+foreach ($reqFile in @(
+    Join-Path $projectRoot "clients\python\requirements.txt",
+    Join-Path $projectRoot "app\scripts\requirements.txt"
+)) {
+    if (Test-Path $reqFile) {
+        Write-Host ("  pip install -r {0}" -f (Split-Path $reqFile -Leaf)) -ForegroundColor Gray
+        & $venvPython -m pip install -q -r $reqFile
+    }
+}
+
+Write-Host "3/6 engine (CMake configure + build)" -ForegroundColor Cyan
 $generatorArgs = @()
 if (Test-Command "ninja") { $generatorArgs = @("-G", "Ninja") }
 # Keep the compiler ABI aligned with the UCRT64 OpenSSL headers/libraries
@@ -118,17 +201,17 @@ $engineBin = Get-ChildItem "$projectRoot\build\desentryd.exe",
 if (-not $engineBin) { throw "build finished but desentryd.exe was not produced" }
 Write-Host ("  engine ready: {0} ({1:N1} MiB)" -f $engineBin.FullName, ($engineBin.Length / 1MB)) -ForegroundColor Gray
 
-Write-Host "3/5 app dependencies (npm install)" -ForegroundColor Cyan
+Write-Host "4/6 app dependencies (npm install)" -ForegroundColor Cyan
 Push-Location "$projectRoot\app"
 try {
     & npm install --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 
-    Write-Host "4/5 sizing model (one-time download, skipped when present)" -ForegroundColor Cyan
+    Write-Host "5/6 sizing model (one-time download, skipped when present)" -ForegroundColor Cyan
     & node scripts/fetch-model.mjs
     if ($LASTEXITCODE -ne 0) { throw "fetch-model failed" }
 
-    Write-Host "5/5 stage desentryd as the Tauri sidecar" -ForegroundColor Cyan
+    Write-Host "6/6 stage desentryd as the Tauri sidecar" -ForegroundColor Cyan
     & node scripts/stage-sidecar.mjs
     if ($LASTEXITCODE -ne 0) { throw "stage-sidecar failed" }
 } finally {

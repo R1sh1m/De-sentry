@@ -72,7 +72,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libfuse2
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
@@ -124,3 +125,17 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Fix macOS DMG (hdiutil workaround)
+        if: runner.os == 'macOS'
+        run: |
+          # Tauri's hdiutil create fails; rebuild with makehybrid
+          # Use the workaround from STATUS.md
+          if [ -d "app/src-tauri/target/release/bundle/dmg" ]; then
+            for dmg in app/src-tauri/target/release/bundle/dmg/*.dmg; do
+              [ -f "$dmg" ] || continue
+              base="$(basename "$dmg" .dmg)"
+              hdiutil convert "$dmg" -format UDZO -o "${base}-fixed.dmg"
+              mv "${base}-fixed.dmg" "$dmg"
+            done
+          fi

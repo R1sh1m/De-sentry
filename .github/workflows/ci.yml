@@ -48,6 +48,14 @@ jobs:
       - name: Run the C++ test suites
         run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
 
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.os }}
+          path: build/
+          retention-days: 7
+
   app:
     runs-on: ubuntu-22.04
     steps:
@@ -121,3 +129,16 @@ jobs:
 
       - name: Bounded soak (12 nodes, not the full 50-node default)
         run: python3 tests/integration/soak_test.py --nodes 12 --writes 150 --chaos 3
+
+  docker-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        run: docker compose build
+      - name: Run unit tests in container
+        run: docker compose run unit-tests
+      - name: Run cluster integration test
+        run: docker compose up --abort-on-container-exit tester

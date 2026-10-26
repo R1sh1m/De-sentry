@@ -1,6 +1,7 @@
 # De-Sentry Node Creation Wizard Flow
 
 **Purpose:** Document the end-to-end node creation wizard for installer E2E manual verification.  
+**Note:** The three‑PC LAN pairing flow now requires physical‑hardware verification. See the test plan in `tests/physical/README.md`.
 **Source of truth:** `app/src/views/wizard.ts` (UI), `app/src-tauri/src/commands.rs` (`create_node` Tauri command), `src/supervisor/supervisor_routes.cpp` (supervisor API), `app/src/bridge.ts` (Tauri boundary), `app/src/api.ts` (HTTP client).
 
 ---

@@ -335,9 +335,6 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     obj.emplace_back("replication_factor", JsonValue(static_cast<int64_t>(meta.replication_factor)));
     obj.emplace_back("has_schema", JsonValue(meta.has_schema));
     obj.emplace_back("acl", AclToJson(engine->storage().catalog().EffectiveAcl(collection)));
-    JsonValue::Array indexes;
-    for (const std::string& idx : meta.secondary_indexes) indexes.emplace_back(JsonValue(idx));
-    obj.emplace_back("secondary_indexes", JsonValue(std::move(indexes)));
     return JsonOk(JsonValue(std::move(obj)));
   });
 
@@ -1032,6 +1029,49 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     resp.content_type = "application/json";
     resp.body = network->config().ToJson();
     return resp;
+  });
+
+  // -- secondary index lookup (equality on a single field) ------------------
+  // MUST be registered BEFORE /_lookup/:collection or the more general
+  // pattern will consume requests like /_lookup/users/email?value=...
+  server->Get("/_lookup/:collection/:index", [engine, self](const HttpRequest& req) -> HttpResponse {
+    const std::string& collection = req.params.at("collection");
+    const std::string& index_field = req.params.at("index");
+    const std::string value = QueryString(req, "value");
+
+    if (value.empty()) {
+      return JsonError(400, "missing required query parameter: value");
+    }
+
+    if (!engine->CanRead(collection, self())) {
+      return JsonError(404, "collection not found or not readable: " + collection);
+    }
+
+    const int64_t limit_raw = QueryInt(req, "limit", 100);
+    const size_t limit = static_cast<size_t>(std::clamp(limit_raw, int64_t(1), int64_t(1000)));
+
+    auto keys_or = engine->storage().router().QueryIndex(collection, index_field, value, limit);
+    if (!keys_or.ok()) return StatusError(keys_or.status());
+
+    const std::vector<std::string>& keys = keys_or.value();
+    JsonValue::Array results;
+    for (const std::string& key : keys) {
+      auto doc_or = engine->GetDocument(collection, key, self());
+      if (!doc_or.ok()) continue;
+
+      JsonValue::Object entry;
+      entry.emplace_back("key", JsonValue(key));
+      entry.emplace_back("value", doc_or.value());
+      results.emplace_back(std::move(entry));
+    }
+
+    JsonValue::Object obj;
+    obj.emplace_back("collection", JsonValue(collection));
+    obj.emplace_back("index_field", JsonValue(index_field));
+    obj.emplace_back("query_value", JsonValue(value));
+    obj.emplace_back("count", JsonValue(static_cast<int64_t>(results.size())));
+    obj.emplace_back("results", JsonValue(std::move(results)));
+    return JsonOk(JsonValue(std::move(obj)));
   });
 
   // -- universal lookup: search collection names and document keys -----------

@@ -72,7 +72,7 @@
     },
     "linux": {
       "deb": {
-        "depends": []
+        "depends": ["libssl3", "libssl3t64"]
       },
       "appimage": {
         "bundleMediaFramework": false

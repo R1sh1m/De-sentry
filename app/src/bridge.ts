@@ -67,10 +67,11 @@ export interface NodeSpec {
   quota_split: QuotaSplit;
   shard_key: string;
   replication_factor: number;
-  secondary_indexes: string[];
   retention_days: number;
   /** Draft collections the wizard offers to create, with `_schema` payloads. */
   collections: DraftCollection[];
+  /** Secondary indexes (experimental, persisted but not queried). */
+  secondary_indexes: unknown[];
   /** The sizing decision itself, recorded into the node manifest for audit. */
   decision: SizingDecision;
 }

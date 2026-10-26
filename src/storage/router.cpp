@@ -1,3 +1,4 @@
+#include "desentry/crdt/document.h"
 #include "desentry/storage/router.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include "desentry/storage/engines/ts_rollup.h"
 #include "desentry/storage/engines/vector_hnsw_lite.h"
 #include "desentry/storage/engines/vendored_backends.h"
+#include "desentry/crdt/document.h"
 
 namespace desentry {
 
@@ -495,6 +497,60 @@ Status StorageRouter::Flush() {
     if (!st.ok()) return st;
   }
   return index_->Flush();
+}
+
+// -- secondary index query (equality only, lazy build, no persistence) ---
+StatusOr<std::vector<std::string>> StorageRouter::QueryIndex(const std::string& collection,
+                                                               const std::string& index_field,
+                                                               const std::string& value,
+                                                               size_t limit) {
+  EngineBackend* backend = BackendFor(collection);
+  if (backend == nullptr) {
+    return Status::InvalidArgument("no available backend for collection " + collection);
+  }
+
+  // Scan the entire collection (no start_key, no limit on scan -- we need
+  // to check every document for the indexed field).
+  std::vector<EngineRow> rows = backend->Scan(collection, "", 0);
+  std::vector<std::string> matched_keys;
+  matched_keys.reserve(std::min(rows.size(), limit));
+
+  for (const auto& [key, encoded_doc] : rows) {
+    if (matched_keys.size() >= limit) break;
+
+    // Decode the CRDT-encoded document to JSON.
+    CrdtValue doc;
+    try {
+      doc = CrdtValue::Decode(encoded_doc);
+    } catch (const std::exception&) {
+      continue;  // Skip corrupt entries; they won't match anyway.
+    }
+
+    if (doc.IsEmpty()) continue;
+
+    const JsonValue& json = doc.ToJson();
+    if (!json.is_object()) continue;
+
+    const JsonValue* field = json.Find(index_field);
+    if (field == nullptr) continue;
+
+    // Equality match: compare field value against query value.
+    // For strings, compare the raw string value (not JSON-encoded).
+    // For other types, compare the JSON dump.
+    if (field->is_string()) {
+      if (field->AsString() == value) {
+        matched_keys.push_back(key);
+      }
+    } else {
+      // For non-strings (numbers, booleans, etc.), compare JSON dumps.
+      std::string field_str = field->Dump();
+      if (field_str == value) {
+        matched_keys.push_back(key);
+      }
+    }
+  }
+
+  return matched_keys;
 }
 
 }  // namespace desentry

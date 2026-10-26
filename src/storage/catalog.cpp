@@ -104,12 +104,7 @@ Status Catalog::LoadFromDisk() {
     if (shard_key && shard_key->is_string()) meta.shard_key = shard_key->AsString();
     const JsonValue* rf = entry.Find("replication_factor");
     if (rf && rf->is_number()) meta.replication_factor = static_cast<uint32_t>(rf->AsInt());
-    const JsonValue* idx = entry.Find("secondary_indexes");
-    if (idx && idx->is_array()) {
-      for (const JsonValue& i : idx->AsArray()) {
-        if (i.is_string()) meta.secondary_indexes.push_back(i.AsString());
-      }
-    }
+
     collections_[meta.name] = std::move(meta);
   }
   DSN_LOG_INFO("catalog", "loaded " << collections_.size() << " collection(s) from " << path_);
@@ -130,9 +125,6 @@ Status Catalog::SaveLocked() {
     obj.emplace_back("retention_days", JsonValue(static_cast<int64_t>(meta.retention_days)));
     obj.emplace_back("shard_key", JsonValue(meta.shard_key));
     obj.emplace_back("replication_factor", JsonValue(static_cast<int64_t>(meta.replication_factor)));
-    JsonValue::Array idx;
-    for (const std::string& i : meta.secondary_indexes) idx.emplace_back(JsonValue(i));
-    obj.emplace_back("secondary_indexes", JsonValue(std::move(idx)));
     arr.emplace_back(std::move(obj));
   }
   // Write-then-rename so a crash mid-save can never leave a truncated

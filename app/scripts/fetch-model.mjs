@@ -21,7 +21,7 @@
  * making for an installer people have to download.
  */
 
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { mkdir, rm, stat, readdir, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,8 +35,31 @@ const MODEL_DIR = resolve(HERE, "..", "resources", "model");
 
 const FORCE = process.argv.includes("--force");
 
-/** Pinned revision, so the file that ships is the file that was tested. */
-const MODEL_REVISION = "main";
+/**
+ * Read the pinned model revision from prototypes.json so the build script and
+ * the runtime share a single source of truth. If the field is missing the build
+ * fails fast rather than silently downloading whatever "main" points to today.
+ */
+const PROTOTYPES_PATH = resolve(HERE, "..", "resources", "prototypes.json");
+let MODEL_REVISION;
+try {
+  const prototypes = JSON.parse(readFileSync(PROTOTYPES_PATH, "utf-8"));
+  MODEL_REVISION = prototypes.model_version;
+  if (!MODEL_REVISION) {
+    process.stderr.write(
+      `\nError: prototypes.json is missing the "model_version" field.\n` +
+        `  Add it to pin the model revision, then re-run.\n`,
+    );
+    process.exit(1);
+  }
+} catch (error) {
+  process.stderr.write(
+    `\nError: could not read ${PROTOTYPES_PATH}: ${error.message}\n` +
+      `  The model revision cannot be verified without it.\n`,
+  );
+  process.exit(1);
+}
+
 const MODEL_REPO = "Xenova/all-MiniLM-L6-v2";
 
 const MODEL_FILES = [

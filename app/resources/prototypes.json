@@ -24,6 +24,8 @@
   "confidence_floor": 0.35,
   "//confidence_floor": "Below this the wizard stops proposing and makes the user pick engines. It is a real threshold, not a display nicety.",
   "version": 2,
+  "model_version": "main",
+  "//model_version": "Pinned model revision from HuggingFace. Must match what fetch-model.mjs downloads.",
   "prototypes": [
     {
       "workload": "sql",

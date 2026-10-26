@@ -231,6 +231,70 @@ quota.** `engine_common.h` grants merges a 5% overdraft. A node that rejected a
 peer's merge because it was full would stop converging permanently — that is a
 correctness failure, not backpressure.
 
+### 4.4 Secondary Indexes (Phase 3: Minimal Implementation)
+
+v2 adds a minimal bounded secondary index query path for equality lookups on a
+single field. This is **not** a full indexing system — it is a targeted
+implementation that provides the core functionality without the complexity of
+persistent indexes, incremental updates, or multi-field support.
+
+**Implementation approach:**
+
+```
+GET /_lookup/:collection/:index?value=...
+  │
+  ├─► Scan entire collection (no index cache)
+  │   ├─► Decode each document
+  │   ├─► Extract indexed field
+  │   └─► Compare for equality
+  │
+  └─► Return matching keys with values
+```
+
+**Characteristics:**
+
+| Property | Implementation |
+|---|---|
+| Query type | Equality only (no ranges, no prefix) |
+| Index storage | In-memory only (rebuilt each query) |
+| Persistence | None (no index files) |
+| Updates | Full scan on each query |
+| Fields | Single field per query |
+| Limit | Configurable (default 100, max 1000) |
+
+**Bug fixes:**
+- The `count` field in the response now correctly reflects the number of matching documents (previously returned an incorrect value).
+
+**Why this approach:**
+
+1. **Bounded scope** — One code path, one test suite, clear limitations
+2. **No persistence complexity** — No index rebuild on startup, no corruption handling
+3. **No incremental update complexity** — No index maintenance on writes
+4. **Works immediately** — No warm-up, no background build
+
+**Trade-offs:**
+
+- **O(n) query cost** — Acceptable for small collections (<10k docs)
+- **No persistence** — Index rebuilt on each query (not each restart)
+- **Equality only** — No range queries, no sorting, no aggregation
+
+**Future phases (not implemented):**
+
+- Phase 4: Persistent index files with lazy rebuild
+- Phase 5: Incremental index maintenance on writes
+- Phase 6: Multi-field and composite indexes
+- Phase 7: Range queries and sorted results
+
+The endpoint is exposed at `GET /_lookup/:collection/:index?value=...` and
+returns a JSON response with matching documents. See `docs/api.md` for the
+full API specification.
+
+---
+
+### 4.5 Storage reclamation
+
+Long-lived collections accumulate deleted space and lack page-level integrity checks. The design for safe space reclamation (vacuum) and per-page checksums is documented in [docs/storage-reclamation-design.md](storage-reclamation-design.md).
+
 ---
 
 ## 5. Ledger v2
@@ -322,6 +386,17 @@ polling timer at all.
 the cursor and re-read rather than pretending continuity across a gap that is
 really there — the app does, `desentry_client.follow()` does, and
 `tools/dashboard.html` does.
+
+### 5.5 Ledger Digest Cache
+
+A digest cache exists in `NodeEngine` but critical verification and summary
+operations still perform full ledger/storage scans. An incremental caching design
+is in progress to replace full-scan digest work with repairable summaries while
+maintaining tamper-evidence and providing corruption recovery.
+
+See [docs/ledger-digest-cache-design.md](ledger-digest-cache-design.md) for the
+full design, including the current state analysis, incremental cache architecture,
+consistency invariants, and migration plan.
 
 ---
 

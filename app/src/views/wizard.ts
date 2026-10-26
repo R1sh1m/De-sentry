@@ -439,7 +439,8 @@ export function createWizard(): WizardHandles {
         },
       };
     }
-    const currentCollections = draft.spec.collections ?? [];
+    const spec = draft.spec;
+    const currentCollections = spec.collections ?? [];
     const updatedCollections: typeof currentCollections = [];
     const existingByEngine = new Map<string, (typeof currentCollections)[0]>();
     for (const c of currentCollections) {
@@ -463,10 +464,10 @@ export function createWizard(): WizardHandles {
       }
     }
 
-    draft.spec.collections = updatedCollections;
-    draft.spec.engines = [...draft.manualEngines];
-    if (!draft.spec.engines.includes(draft.spec.default_engine)) {
-      draft.spec.default_engine = draft.spec.engines[0] ?? "kv";
+    spec.collections = updatedCollections;
+    spec.engines = [...draft.manualEngines];
+    if (!spec.engines.includes(spec.default_engine)) {
+      spec.default_engine = spec.engines[0] ?? "kv";
     }
   }
 
@@ -713,7 +714,7 @@ export function createWizard(): WizardHandles {
         if (draft.step === 3 && draft.description.trim() !== "" && !draft.sizing && draft.spec === null) {
           void runSizing();
         }
-      }, 300);
+      }, 500);
     });
     const suggestions = el(
       "details",

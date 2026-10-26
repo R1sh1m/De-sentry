@@ -90,6 +90,41 @@ replication is available.
 | `GET` | `/_graph/:collection/:key` | Query vertex adjacency list and edge relations |
 | `GET` | `/_engines` | List compiled storage engines available in this binary |
 
+### Secondary Index Lookup
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/_lookup/:collection/:index?value=...` | Equality lookup on indexed field; returns matching documents |
+
+The secondary index lookup endpoint performs equality queries on a single field. The index is built lazily on first query (full collection scan) and is not persisted between restarts.
+
+**Query Parameters:**
+- `value` (required): The value to match (JSON-encoded for non-strings)
+- `limit` (optional): Maximum results to return (default: 100, max: 1000)
+
+**Response:**
+```json
+{
+  "collection": "users",
+  "index_field": "email",
+  "query_value": "alice@example.com",
+  "count": 2,
+  "results": [
+    {"key": "user1", "value": {"email": "alice@example.com", "name": "Alice"}},
+    {"key": "user3", "value": {"email": "alice@example.com", "name": "Alice2"}}
+  ]
+}
+```
+
+**Limitations (Phase 3 minimal implementation):**
+- Equality queries only (no range queries, no prefix matching)
+- No index persistence (rebuilt on each query)
+- No incremental updates (full scan each time)
+- Single field indexes only
+
+**Bug fixes:**
+- The `count` field in the response now correctly reflects the number of matching documents (previously returned an incorrect value).
+
 ---
 
 ## Supervisor Plane Endpoints (`/_supervisor/*`)

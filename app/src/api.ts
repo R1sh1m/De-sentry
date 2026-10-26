@@ -225,7 +225,6 @@ export interface CollectionDetail {
   replication_factor: number;
   has_schema: boolean;
   acl: CollectionAcl;
-  secondary_indexes: string[];
 }
 
 export interface EngineInfo {

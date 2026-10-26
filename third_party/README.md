@@ -46,6 +46,9 @@ criterion.
 
 ## Vendoring instructions
 
+**VENDORED_BACKENDS**: The optional backends (SQLite, DuckDB, LMDB, sqlite-vec) are **not supported** in the default build. They must be explicitly enabled and vendored; otherwise the build will fail if the corresponding CMake flags are set without source present. This is intentional to keep the shipped product zero‑dependency and offline‑first.
+
+
 All of these are single-file or few-file amalgamations, chosen for exactly
 that reason: no submodules, no build system to integrate, no transitive
 dependency tree.

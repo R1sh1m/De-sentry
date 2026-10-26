@@ -606,20 +606,40 @@ export function createExplorer(): ExplorerHandles {
     const searchInput = el("input", {
       class: "explorer__search-input",
       type: "search",
-      placeholder: "Filter this page's keys…",
-      title: "Page-local filter: it searches the keys on this page only, not the whole collection",
+      placeholder: "Search all keys in collection...",
+      title: "Search across the entire collection, not just the current page",
       value: current.keyFilter,
     }) as HTMLInputElement;
 
-    // Debounced so fast typing does not re-filter the list per keystroke.
-    // Shared across renders (not per-input): a re-render replaces the input
-    // while the old timer is still pending, and the orphan would then write
-    // a stale filter into the new page. Clearing here retires it.
+    // Debounced search across the entire collection via API
     window.clearTimeout(sharedFilterTimer);
     on(searchInput, "input", () => {
       window.clearTimeout(sharedFilterTimer);
-      sharedFilterTimer = window.setTimeout(() => {
-        current.keyFilter = searchInput.value.trim().toLowerCase();
+      sharedFilterTimer = window.setTimeout(async () => {
+        const query = searchInput.value.trim();
+        current.keyFilter = query.toLowerCase();
+        
+        if (query) {
+          // Search entire collection via API
+          const node = store.node(current.nodeId);
+          if (node !== undefined) {
+            try {
+              const api = apiFor(node.process.api_port);
+              const results = await api.searchLookup(current.collection, query, PAGE_SIZE);
+              // Replace current.rows with search results for rendering
+              current.rows = results.map(hit => ({ key: hit.key, document: hit.document } as DocumentRow));
+              current.mayHaveMore = results.length === PAGE_SIZE;
+            } catch {
+              // On error, fall back to empty results
+              current.rows = [];
+            }
+          }
+        } else {
+          // Reload current page when search is cleared
+          const startKey = current.pageStack.length > 0 ? current.pageStack[0] : "";
+          await load(current.nodeId, current.collection, startKey);
+          return; // load() calls render()
+        }
         renderKeysOnly();
       }, 200);
     });
@@ -646,7 +666,7 @@ export function createExplorer(): ExplorerHandles {
           el("p", {
             class: "muted",
             style: "padding: var(--space-xs); font: var(--text-caption);",
-            text: current.loading ? "Reading…" : current.keyFilter ? "No matching keys on this page" : "No documents in this collection yet.",
+            text: current.loading ? "Reading…" : current.keyFilter ? "No matching keys found" : "No documents in this collection yet.",
           }),
         );
         return;
@@ -682,8 +702,7 @@ export function createExplorer(): ExplorerHandles {
 
   function pager(current: ExplorerState): HTMLElement {
     // Paging is locked while a load is in flight: rapid Next/Back clicks
-    // otherwise interleave loads and the .then below applies one page's
-    // stack to another page's rows.
+    // otherwise interleave loads and cause stale stack updates.
     const busy = current.loading;
     const back = el("button", {
       class: "btn btn--sm btn--ghost",
@@ -692,7 +711,11 @@ export function createExplorer(): ExplorerHandles {
       disabled: busy || current.pageStack.length === 0,
     });
     on(back, "click", () => {
-      const previous = current.pageStack.pop() ?? "";
+      // Clone the stack, pop the last entry, and update state before loading.
+      const newStack = [...current.pageStack];
+      const previous = newStack.pop() ?? "";
+      // Update the state's pageStack so that load() preserves it.
+      if (state !== null) state.pageStack = newStack;
       void load(current.nodeId, current.collection, previous);
     });
 
@@ -705,17 +728,13 @@ export function createExplorer(): ExplorerHandles {
     on(next, "click", () => {
       const last = current.rows[current.rows.length - 1];
       if (last === undefined) return;
-      const stack = [...current.pageStack, current.rows[0]?.key ?? ""];
-      // Generation guard: only the latest navigation may install its stack.
-      const generation = ++loadGeneration;
+      // Push the first key of the current page onto the stack.
+      const newStack = [...current.pageStack, current.rows[0]?.key ?? ""];
+      // Update state before loading the next page so load() retains the stack.
+      if (state !== null) state.pageStack = newStack;
       // Inclusive bound + drop-first (see load()): correct for every key,
       // including ones ending in a space.
-      void load(current.nodeId, current.collection, last.key, last.key).then(() => {
-        if (state !== null && generation === loadGeneration) {
-          state.pageStack = stack;
-        }
-        render();
-      });
+      void load(current.nodeId, current.collection, last.key, last.key);
     });
 
     // "N keys on page" says nothing about position; the from→to range does.
