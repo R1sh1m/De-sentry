@@ -52,6 +52,10 @@ def test_time_series():
     schema = {"type": "object", "properties": {"ts": {"type": "string"}, "value": {"type": "number"}}}
     res = request('PUT', f"{base}/_schema/ts_metrics", schema)
     record("Create TS collection", 'error' not in res)
+
+    # Bind to ts_rollup engine
+    res = request('PUT', f"{base}/_collection/ts_metrics/engine", {"engine": "ts_rollup"})
+    record("Bind TS engine", 'error' not in res)
     
     # Set placement for time-series
     placement = {"shard_key": "metric_name", "replication_factor": 3, "retention_days": 7}
@@ -85,6 +89,10 @@ def test_vector_search():
     res = request('PUT', f"{base}/_schema/vec_docs", schema)
     record("Create vector collection", 'error' not in res)
     
+    # Bind to vector engine BEFORE inserting
+    res = request('PUT', f"{base}/_collection/vec_docs/engine", {"engine": "vector_hnsw_lite"})
+    record("Bind vector engine", 'error' not in res)
+    
     # Insert vectors
     for i in range(3):
         doc = {"embedding": [float(i), float(i+1), float(i+2)], "text": f"doc {i}"}
@@ -92,8 +100,8 @@ def test_vector_search():
         if i == 0:
             record("Insert vector doc", 'error' not in res)
     
-    # k-NN search
-    query = {"query_vector": [0.5, 1.5, 2.5], "k": 2}
+    # k-NN search (use "vector" key as required)
+    query = {"vector": [0.5, 1.5, 2.5], "k": 2}
     res = request('POST', f"{base}/_search/vector/vec_docs", query)
     record("Vector k-NN search", 'error' not in res or 'results' in res)
     
@@ -315,6 +323,14 @@ def summary():
     
     return failed == 0
 
+def is_supervisor_present():
+    base = BASE_URLS['supervisor']
+    try:
+        res = request('GET', f"{base}/_status")
+        return 'error' not in res
+    except Exception:
+        return False
+
 def main():
     log("Starting De-Sentry Advanced Feature Test")
     log("="*60)
@@ -326,10 +342,12 @@ def main():
     test_columnar()
     test_cross_node_replication()
     test_acl_enforcement()
-    # test_placement_ring()  # Skipped: placement ring requires valid key mapping
-    test_checkpoint()
-    test_pairing_qr()
-    test_manifest()
+    test_placement_ring()
+    if is_supervisor_present():
+        test_checkpoint()
+        test_pairing_qr()
+        test_manifest()
+
     test_ledger_verify()
     test_brain_snapshot()
     test_changes_feed()

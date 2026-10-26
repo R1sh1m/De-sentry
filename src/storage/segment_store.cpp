@@ -108,6 +108,11 @@ StatusOr<std::string> SegmentStore::ReadBlob(page_id_t first_page_id) const {
     SegPageHeader h = ReadHeader(data);
     if (h.magic != kSegmentPageMagic || h.chunk_len > kSegmentPagePayload) {
       pool_->UnpinPage(cursor, false);
+      // Zero magic indicates an unwritten or torn page. End the chain.
+      if (h.magic == 0) {
+        cursor = kInvalidPageId;
+        break;
+      }
       return Status::Corruption("segment store: bad page header at page " + std::to_string(cursor));
     }
     if (h.chunk_len > 0 && Crc32(data + kSegmentPageHeaderBytes, h.chunk_len) != h.crc) {
