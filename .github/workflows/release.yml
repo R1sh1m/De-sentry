@@ -91,6 +91,7 @@ jobs:
 
       - name: Build OpenSSL for arm64 cross-compilation
         if: runner.os == 'macOS' && matrix.args == '--target aarch64-apple-darwin'
+        shell: bash
         run: |
           # GitHub's macos-latest runner is Intel; Homebrew's OpenSSL is x86_64-only.
           # Build OpenSSL from source for arm64 so the C++ engine can cross-compile.
@@ -109,6 +110,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Build the engine
+        shell: bash
         run: |
           if [ "${{ runner.os }}" = "macOS" ] && [ "${{ matrix.args }}" = "--target aarch64-apple-darwin" ]; then
             cmake -S . -B build-arm64 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_OSX_ARCHITECTURES=arm64
@@ -161,6 +163,7 @@ jobs:
 
       - name: Fix macOS DMG (hdiutil workaround)
         if: runner.os == 'macOS'
+        shell: bash
         run: |
           # Tauri's hdiutil create fails; rebuild with makehybrid
           # Use the workaround from STATUS.md
