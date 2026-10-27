@@ -10,6 +10,12 @@
 //! by whoever wrote the code: what failed, on what, and what to do.
 
 use std::net::IpAddr;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, Duration};
+use getrandom::getrandom;
+use crate::pairing::{PairingInfo, JoinResult, MAX_ADDRESSES};
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +28,7 @@ use crate::appstate::{self, AppState, DiscoveredCandidate, SidecarEvent};
 use crate::configgen::{self, NodeConfigSpec, QuotaSplit};
 use crate::keychain;
 use crate::nodes::{LaunchSpec, LogLine, ProcessState, SupervisedNode};
+use crate::nodes::now_ms;
 use crate::passphrase;
 use crate::password;
 use crate::ports::PortAllocation;
@@ -78,6 +85,89 @@ fn has_non_loopback_bootstrap_peers(config: &serde_json::Value) -> bool {
 
 fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+// -- pairing code store ------------------------------------------------------
+
+/// In-memory store for short-lived 6-digit pairing codes.
+///
+/// Each entry carries the node info, creation time (for TTL), and a failed-
+/// attempt counter (rate limit). The map is bounded by TTL (10 minutes) and
+/// rate-limit eviction (3 failed attempts).
+struct PairingEntry {
+    info: PairingInfo,
+    created: Instant,
+    failed_attempts: u32,
+}
+
+static PAIRING_STORE: OnceLock<Mutex<HashMap<String, PairingEntry>>> = OnceLock::new();
+
+fn pairing_store() -> &'static Mutex<HashMap<String, PairingEntry>> {
+    PAIRING_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Generate a random 6-digit code formatted as "DDD-DDD".
+fn generate_6digit_code() -> String {
+    let mut buf = [0u8; 4];
+    if getrandom(&mut buf).is_err() {
+        // Fallback: use system time (not cryptographically random, but
+        // sufficient for a pairing code).
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u32)
+            .unwrap_or(0);
+        let num = ts % 1_000_000;
+        return format!("{:03}-{:03}", num / 1000, num % 1000);
+    }
+    let num = u32::from_be_bytes([0, buf[0], buf[1], buf[2]]) % 1_000_000;
+    format!("{:03}-{:03}", num / 1000, num % 1000)
+}
+
+/// Store a PairingInfo and return the generated 6-digit code.
+/// The code is set on the info before storing.
+fn store_pairing(mut info: PairingInfo) -> String {
+    let store = pairing_store();
+    let mut map = store.lock().unwrap();
+    let mut code = generate_6digit_code();
+    // Ensure uniqueness (collision is extremely unlikely with 1M space)
+    while map.contains_key(&code) {
+        code = generate_6digit_code();
+    }
+    info.code = code.clone();
+    map.insert(code.clone(), PairingEntry {
+        info,
+        created: Instant::now(),
+        failed_attempts: 0,
+    });
+    code
+}
+
+/// Look up a pairing code, checking TTL and returning the stored info.
+/// Removes the entry on success (one-time use).
+#[allow(dead_code)]
+fn lookup_pairing(code: &str) -> Result<PairingInfo, String> {
+    let store = pairing_store();
+    let mut map = store.lock().map_err(|_| "pairing store unavailable".to_string())?;
+    if let Some(entry) = map.get(code) {
+        // TTL check: 10 minutes
+        if entry.created.elapsed() > Duration::from_secs(600) {
+            map.remove(code);
+            return Err("pairing code has expired (10-minute limit)".to_string());
+        }
+        let info = entry.info.clone();
+        map.remove(code);
+        Ok(info)
+    } else {
+        Err("pairing code not found".to_string())
+    }
+}
+
+/// Clear the pairing store (for tests).
+#[cfg(test)]
+fn clear_pairing_store() {
+    let store = pairing_store();
+    let mut map = store.lock().unwrap();
+    map.clear();
 }
 
 // -- app information ---------------------------------------------------------
@@ -1369,6 +1459,238 @@ pub fn passphrase_strength(passphrase: String) -> Reply<PassphraseStrength> {
     })
 }
 
+// -- single-click mesh start -------------------------------------------------
+
+/// Creates and starts a node with sensible defaults for a one-click mesh.
+///
+/// This is the "Start Mesh" button path: no wizard, no questions. Defaults:
+/// - Engine: "kv" (the baseline key-value store)
+/// - Ports: allocated automatically to avoid conflicts
+/// - Identity: auto-generated Ed25519 keypair
+/// - Quota: unlimited (0 means no ceiling)
+/// - Encryption: off (can be added later via the security panel)
+/// - Discovery: on (joins LAN mesh automatically)
+///
+/// The node data directory is created under the app's default data root with
+/// a unique name. Returns Ok(()) on success, or an error message.
+#[tauri::command]
+pub fn start_mesh(
+    app: AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Reply<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    // Allocate ports first -- this is the only step that can fail due to
+    // resource exhaustion, and we want to fail fast before touching disk.
+    let allocation = state.allocate_ports().map_err(fail)?;
+    
+    // Create a unique data directory under the app's data root.
+    // Using a timestamp-based name keeps it sortable and human-readable.
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir_name = format!("mesh-node-{}", timestamp);
+    let data_dir = state.data_root.join(&dir_name);
+    
+    // Ensure the directory exists before writing config.
+    if let Err(error) = std::fs::create_dir_all(&data_dir) {
+        state.release_ports(allocation);
+        return Err(format!("could not create data directory: {error}"));
+    }
+    
+    // Build the node config with sensible defaults.
+    let config = NodeConfigSpec {
+        data_dir: data_dir.clone(),
+        node_name: String::new(), // Empty: engine will generate from hostname or use id
+        ports: allocation,
+        supervisor: false,
+        discovery_enabled: true,
+        quota_mb: 0, // Unlimited
+        quota_split: QuotaSplit::default(),
+        engines: vec!["kv".to_owned()],
+        default_engine: "kv".to_owned(),
+        replication_factor: 3,
+        retention_days: 0,
+        encrypt_at_rest: false,
+        keychain_ref: String::new(),
+        bootstrap_peers: Vec::new(),
+        advertise_hostname: hostname(),
+        key_mode: "generated".to_owned(),
+        kdf_salt_hex: String::new(),
+        kdf_iters: 0,
+        dek_wrapped_hex: String::new(),
+        dek_tag_hex: String::new(),
+    };
+    
+    // Write node.json atomically.
+    let config_path = match config.write() {
+        Ok(path) => path,
+        Err(error) => {
+            state.release_ports(allocation);
+            let _ = std::fs::remove_dir_all(&data_dir);
+            return Err(format!("could not write node config: {error}"));
+        }
+    };
+    
+    // Build the launch spec.
+    let spec = LaunchSpec {
+        node_name: String::new(),
+        data_dir: data_dir.clone(),
+        config_path: config_path.clone(),
+        api_port: allocation.api_port,
+        p2p_port: allocation.p2p_port,
+        discovery_port: allocation.discovery_port,
+        supervisor: false,
+        discovery_enabled: true,
+        mesh_isolated: false, // Will discover LAN peers
+        removable: false,
+        encrypted: false,
+        unlock_secret: None,
+    };
+    
+    // Start the node.
+    let node = match state.start_node(spec) {
+        Ok(node) => node,
+        Err(error) => {
+            state.release_ports(allocation);
+            let _ = std::fs::remove_file(&config_path);
+            let _ = std::fs::remove_dir_all(&data_dir);
+            return Err(fail(error));
+        }
+    };
+    
+    // Emit the state change so the UI updates immediately.
+    appstate::emit(&app, SidecarEvent::NodeState { node: node.clone() });
+    
+    log::info!(
+        "started mesh node {} at {} (API port {})",
+        node.node_id,
+        data_dir.display(),
+        node.api_port
+    );
+    
+    Ok(())
+}
+
+// -- pairing (short 6-digit code) --------------------------------------------
+
+/// Generates a 6-digit pairing code for a running data node.
+///
+/// Picks the first running data node (not supervisor), builds its LAN
+/// addresses, generates a random 6-digit code, stores it in the in-memory
+/// pairing store with a 10-minute TTL, and returns the PairingInfo.
+#[tauri::command]
+pub fn pairing_code(state: State<'_, std::sync::Arc<AppState>>) -> Reply<PairingInfo> {
+    // Find a running data node (not supervisor)
+    let nodes = state.views();
+    let node = nodes
+        .iter()
+        .find(|n| !n.supervisor && n.process == ProcessState::Running)
+        .ok_or_else(|| "there is no running data node to pair with".to_string())?;
+
+    // Build addresses: LAN first, then loopback fallback
+    let lan = lan_address().ok().flatten();
+    let mut addresses = Vec::new();
+    if let Some(lan_ip) = lan {
+        addresses.push(format!("{}:{}", lan_ip, node.p2p_port));
+    }
+    addresses.push(format!("127.0.0.1:{}", node.p2p_port));
+    if addresses.len() > MAX_ADDRESSES {
+        addresses.truncate(MAX_ADDRESSES);
+    }
+
+    let info = PairingInfo {
+        code: String::new(), // placeholder; store_pairing fills it
+        node_id: node.node_id.clone(),
+        node_name: node.node_name.clone(),
+        addresses,
+        discovery_port: node.discovery_port,
+        created_ms: now_ms(),
+    };
+
+    let code = store_pairing(info.clone());
+    log::info!(
+        "generated pairing code {} for node {} ({})",
+        code,
+        node.node_id,
+        node.node_name
+    );
+
+    // Return the info with the code filled in
+    Ok(PairingInfo {
+        code,
+        node_id: info.node_id,
+        node_name: info.node_name,
+        addresses: info.addresses,
+        discovery_port: info.discovery_port,
+        created_ms: info.created_ms,
+    })
+}
+
+/// Joins a mesh using a 6-digit pairing code.
+///
+/// Looks up the code in the in-memory store, validates TTL, checks for
+/// self-pairing, and returns the peer's bootstrap addresses. Rate limits
+/// to 3 failed attempts before invalidating the code.
+#[tauri::command]
+pub fn join_mesh(app: AppHandle, state: State<'_, std::sync::Arc<AppState>>, code: String) -> Reply<JoinResult> {
+    let _ = app; // reserved for future event emission
+    let code = code.trim();
+
+    // Validate code format: should be 7 chars "DDD-DDD"
+    if code.len() != 7 || !code.chars().take(3).all(|c| c.is_ascii_digit())
+        || code.chars().nth(3) != Some('-')
+        || !code.chars().skip(4).all(|c| c.is_ascii_digit())
+    {
+        return Err("enter a valid 6-digit pairing code (format: DDD-DDD)".to_string());
+    }
+
+    let store = pairing_store();
+    let mut map = store.lock().map_err(|_| "pairing store unavailable".to_string())?;
+
+    let entry = map.get_mut(code).ok_or_else(|| {
+        "pairing code not found — generate a fresh code on the other device".to_string()
+    })?;
+
+    // TTL check: 10 minutes
+    if entry.created.elapsed() > Duration::from_secs(600) {
+        map.remove(code);
+        return Err("pairing code has expired (10-minute limit) — generate a fresh one".to_string());
+    }
+
+    // Self-pairing check: reject if the code points at a local node
+    let local_ids: Vec<String> = state.views().iter().map(|n| n.node_id.clone()).collect();
+    if local_ids.contains(&entry.info.node_id) {
+        entry.failed_attempts += 1;
+        if entry.failed_attempts >= 3 {
+            map.remove(code);
+            return Err("pairing code invalidated after 3 failed attempts — generate a fresh one".to_string());
+        }
+        return Err("cannot join with your own node — enter a code from another device".to_string());
+    }
+
+    // Build result
+    let result = JoinResult {
+        mesh_node_id: entry.info.node_id.clone(),
+        mesh_node_name: entry.info.node_name.clone(),
+        peers_added: entry.info.addresses.clone(),
+        nodes_updated: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    // Remove entry after successful join (one-time use)
+    map.remove(code);
+    log::info!(
+        "joined mesh with node {} ({}) via code {}",
+        result.mesh_node_id,
+        result.mesh_node_name,
+        code
+    );
+
+    Ok(result)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PassphraseStrength {
     pub score: u8,
@@ -1698,6 +2020,44 @@ pub fn open_saved_asset(
         .map_err(|error| format!("could not open the saved file: {error}"))
 }
 
+/// Safely opens a GitHub release URL in the user's default browser.
+#[tauri::command]
+pub fn open_url(url: String) -> Reply<()> {
+    if !url.starts_with("https://github.com/R1sh1m/De-sentry/") {
+        return Err("disallowed URL destination".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&url);
+        cmd
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "start", "", &url]);
+        cmd
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(&url);
+        cmd
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open URL: {e}"))
+}
+
+/// Gracefully restarts the application after an update install.
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
+
 /// Opens a node's data directory in the platform's file manager.
 ///
 /// Takes a node id, never a path: the directory is resolved server-side from
@@ -1789,6 +2149,76 @@ pub fn notify(app: AppHandle, title: String, body: String) -> Reply<()> {
         .body(body)
         .show()
         .map_err(fail)
+}
+
+// -- trusted devices ---------------------------------------------------------
+
+/// Returns the list of trusted devices for a node.
+#[tauri::command]
+pub fn trusted_devices_list(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+) -> Reply<Vec<crate::trusted_device_store::TrustedDevice>> {
+    let node = state
+        .view_of(&node_id)
+        .ok_or_else(|| format!("there is no node with id {node_id}"))?;
+    let store = crate::trusted_device_store::TrustedDeviceStore::new(
+        PathBuf::from(&node.data_dir),
+        node_id.clone(),
+    );
+    store.list().map_err(|e| e.to_string())
+}
+
+/// Adds a device to the trusted list for a node.
+#[tauri::command]
+pub fn trusted_devices_add(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    device: crate::trusted_device_store::TrustedDevice,
+) -> Reply<()> {
+    let node = state
+        .view_of(&node_id)
+        .ok_or_else(|| format!("there is no node with id {node_id}"))?;
+    let store = crate::trusted_device_store::TrustedDeviceStore::new(
+        PathBuf::from(&node.data_dir),
+        node_id.clone(),
+    );
+    store.add(device).map_err(|e| e.to_string())
+}
+
+/// Removes a device from the trusted list for a node.
+#[tauri::command]
+pub fn trusted_devices_remove(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    device_id: String,
+) -> Reply<()> {
+    let node = state
+        .view_of(&node_id)
+        .ok_or_else(|| format!("there is no node with id {node_id}"))?;
+    let store = crate::trusted_device_store::TrustedDeviceStore::new(
+        PathBuf::from(&node.data_dir),
+        node_id.clone(),
+    );
+    store.remove(&device_id).map_err(|e| e.to_string())
+}
+
+/// Sets the auto-accept flag for a trusted device.
+#[tauri::command]
+pub fn trusted_devices_set_auto_accept(
+    state: State<'_, std::sync::Arc<AppState>>,
+    node_id: String,
+    device_id: String,
+    auto_accept: bool,
+) -> Reply<()> {
+    let node = state
+        .view_of(&node_id)
+        .ok_or_else(|| format!("there is no node with id {node_id}"))?;
+    let store = crate::trusted_device_store::TrustedDeviceStore::new(
+        PathBuf::from(&node.data_dir),
+        node_id.clone(),
+    );
+    store.set_auto_accept(&device_id, auto_accept).map_err(|e| e.to_string())
 }
 
 // -- discovery ---------------------------------------------------------------
@@ -1972,5 +2402,63 @@ mod tests {
         assert!(super::resolve_unlock_secret(&dir, "a totally different phrase here").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// -- pairing tests -----------------------------------------------------------
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn store_and_lookup_pairing() {
+        clear_pairing_store();
+        let info = PairingInfo {
+            code: String::new(),
+            node_id: "node123".to_owned(),
+            node_name: "testnode".to_owned(),
+            addresses: vec!["127.0.0.1:7701".to_owned()],
+            discovery_port: 7901,
+            created_ms: now_ms(),
+        };
+        let code = store_pairing(info.clone());
+        // Ensure the code format is DDD-DDD
+        assert_eq!(code.len(), 7);
+        assert_eq!(code.chars().nth(3), Some('-'));
+        let retrieved = lookup_pairing(&code).expect("should retrieve stored pairing");
+        assert_eq!(retrieved.node_id, info.node_id);
+        assert_eq!(retrieved.node_name, info.node_name);
+        assert_eq!(retrieved.addresses, info.addresses);
+    }
+
+    #[test]
+    fn ttl_eviction() {
+        clear_pairing_store();
+        // Insert an entry with an old timestamp
+        let old_entry = PairingEntry {
+            info: PairingInfo {
+                code: "000-001".to_owned(),
+                node_id: "oldnode".to_owned(),
+                node_name: "old".to_owned(),
+                addresses: vec![],
+                discovery_port: 0,
+                created_ms: now_ms(),
+            },
+            created: Instant::now() - Duration::from_secs(601),
+            failed_attempts: 0,
+        };
+        {
+            let store = pairing_store();
+            let mut map = store.lock().unwrap();
+            map.insert(old_entry.info.code.clone(), old_entry);
+        }
+        // Lookup should fail and remove the entry
+        let result = lookup_pairing("000-001");
+        assert!(result.is_err());
+        let store = pairing_store();
+        let map = store.lock().unwrap();
+        assert!(!map.contains_key("000-001"));
     }
 }

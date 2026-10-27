@@ -406,6 +406,17 @@ export interface JoinResult {
   warnings: string[];
 }
 
+/** A device trusted for automatic admission to a node. */
+export interface TrustedDevice {
+  node_id: string;
+  node_name: string;
+  p2p_address: string;
+  api_address: string;
+  public_key_hex: string;
+  added_ms: number;
+  auto_accept: boolean;
+}
+
 // -- invoke ------------------------------------------------------------------
 
 /** True when running inside the Tauri shell rather than a plain browser tab. */
@@ -466,6 +477,14 @@ export const sidecar = {
   /** Every `desentryd` this app owns, supervisor included. */
   listNodes(): Promise<SupervisedNode[]> {
     return invoke<SupervisedNode[]>("list_nodes");
+  },
+
+  /**
+   * Creates and starts a node with sensible defaults for a one-click mesh.
+   * No wizard, no questions: engine="kv", auto-allocated ports, discovery on.
+   */
+  startMesh(): Promise<void> {
+    return invoke<void>("start_mesh");
   },
 
   /** Writes node.json, allocates ports, spawns the process, returns once it answers. */
@@ -605,6 +624,21 @@ export const sidecar = {
     return invoke<void>("notify", { title, body });
   },
 
+  /** Opens an allowlisted URL (e.g. GitHub release) in the default system browser. */
+  openUrl(url: string): Promise<void> {
+    if (!isTauri()) {
+      if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+      return Promise.resolve();
+    }
+    return invoke<void>("open_url", { url });
+  },
+
+  /** Gracefully restarts the application after an update install. */
+  restartApp(): Promise<void> {
+    if (!isTauri()) return Promise.resolve();
+    return invoke<void>("restart_app");
+  },
+
   // -- discovery -------------------------------------------------------------
 
   /**
@@ -705,6 +739,28 @@ export const sidecar = {
 
   joinMesh(code: string): Promise<JoinResult> {
     return invoke<JoinResult>("join_mesh", { code });
+  },
+
+  // -- trusted devices -------------------------------------------------------
+
+  /** Lists all trusted devices for a node. */
+  trustedDevicesList(nodeId: string): Promise<TrustedDevice[]> {
+    return invoke<TrustedDevice[]>("trusted_devices_list", { nodeId });
+  },
+
+  /** Adds a device to the trusted list for a node. */
+  trustedDevicesAdd(nodeId: string, device: TrustedDevice): Promise<void> {
+    return invoke<void>("trusted_devices_add", { nodeId, device });
+  },
+
+  /** Removes a device from the trusted list for a node. */
+  trustedDevicesRemove(nodeId: string, deviceId: string): Promise<void> {
+    return invoke<void>("trusted_devices_remove", { nodeId, deviceId });
+  },
+
+  /** Sets the auto-accept flag for a trusted device. */
+  trustedDevicesSetAutoAccept(nodeId: string, deviceId: string, autoAccept: boolean): Promise<void> {
+    return invoke<void>("trusted_devices_set_auto_accept", { nodeId, deviceId, autoAccept });
   },
 };
 

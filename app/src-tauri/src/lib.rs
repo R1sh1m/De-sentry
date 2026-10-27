@@ -37,6 +37,7 @@ pub mod ports;
 pub mod power;
 pub mod recovery;
 pub mod tray;
+pub mod trusted_device_store;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -393,11 +394,20 @@ pub fn run() {
             commands::set_autostart,
             commands::set_background_mode,
             commands::notify,
+            commands::trusted_devices_list,
+            commands::trusted_devices_add,
+            commands::trusted_devices_remove,
+            commands::trusted_devices_set_auto_accept,
             commands::scan_for_nodes,
             commands::trigger_discovery_scan,
             commands::sync_storage_reservation,
             commands::node_security,
             commands::set_node_password,
+            commands::start_mesh,
+            commands::pairing_code,
+            commands::join_mesh,
+            commands::open_url,
+            commands::restart_app,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
