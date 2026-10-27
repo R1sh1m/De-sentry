@@ -46,6 +46,7 @@ import {
   type SidecarEvent,
   type SupervisedNode,
 } from "./bridge.js";
+import { compareVersions, fetchLatestRelease } from "./updates.js";
 
 // -- view models -------------------------------------------------------------
 
@@ -1016,11 +1017,9 @@ export async function boot(): Promise<void> {
   store.state.ready = true;
   store.notify();
 
-  // Signed self-update check (M-13): fire-and-forget after boot so a slow or
-  // absent feed never blocks the UI. An available update downloads and
-  // installs staged (minisign-verified) and applies on next start; failures
-  // stay silent by design -- the app must work fully offline, and an update
-  // feed is best-effort, not a dependency.
+  // Release check is fire-and-forget so GitHub never blocks app startup. A
+  // signed Tauri updater package installs automatically; an unsigned DMG is
+  // surfaced as available and can be opened from the About sheet.
   void checkForUpdates();
 
   // 30-second auto-poll for newly discovered nodes (covers LAN peers that
@@ -1037,25 +1036,31 @@ export async function boot(): Promise<void> {
   }, 5_000);
 }
 
-/** Signed update check: see the call in boot() for the policy. */
+/** Best-effort release check: see the call in boot() for the policy. */
 async function checkForUpdates(): Promise<void> {
   try {
     const { isTauri } = await import("./bridge.js");
     if (!isTauri()) return;
-    const { check } = await import("@tauri-apps/plugin-updater");
-    const timeoutMs = 10_000;
-    const timeoutPromise = new Promise<null>((resolve) =>
-      setTimeout(() => resolve(null), timeoutMs)
-    );
-    const update = await Promise.race([
-      check({ timeout: timeoutMs }),
-      timeoutPromise,
-    ]);
-    if (update === null) return;
-    store.toast("info", "Update available", `De-Sentry ${update.version} is downloading; it applies on your next start.`);
-    await update.downloadAndInstall();
-    store.toast("success", "Update installed", `De-Sentry ${update.version} will apply when you restart the app.`);
+    const currentVersion = store.state.appInfo?.version;
+    if (!currentVersion) return;
+    const release = await fetchLatestRelease();
+    if (compareVersions(release.version, currentVersion) <= 0) return;
+
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check({ timeout: 8_000 });
+      if (update !== null && compareVersions(update.version, currentVersion) > 0) {
+        store.toast("info", "Update available", `De-Sentry ${update.version} is downloading; it applies on your next start.`);
+        await update.downloadAndInstall();
+        store.toast("success", "Update installed", `De-Sentry ${update.version} will apply when you restart the app.`);
+        return;
+      }
+    } catch {
+      // macOS DMG releases have no signed updater artifact; direct users to the
+      // release page from About instead of silently misreporting the feed.
+    }
+    store.toast("info", "Update available", `De-Sentry ${release.version} is available on GitHub Releases. Open About to view it.`);
   } catch {
-    // Offline, no feed, or no release yet: silent (see above).
+    // Offline or GitHub API unavailable: update checks are best-effort.
   }
 }

@@ -25,6 +25,7 @@ import { createDropbox } from "./views/dropbox.js";
 import { createFiles } from "./views/files.js";
 import { createLookup } from "./views/lookup.js";
 import { openPalette } from "./views/palette.js";
+import { compareVersions, fetchLatestRelease, type LatestRelease } from "./updates.js";
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -351,15 +352,20 @@ function openAboutSheet(): void {
   let checkState: "idle" | "checking" | "up-to-date" | "available" | "installing" | "installed" | "error" = "idle";
   let updateStatusText = "";
   let pendingUpdate: import("@tauri-apps/plugin-updater").Update | null = null;
+  let manualRelease: LatestRelease | null = null;
   let checkButton: HTMLButtonElement | null = null;
   let statusEl: HTMLElement | null = null;
 
   async function onUpdateClick(): Promise<void> {
-    if (checkState === "available" && pendingUpdate) {
-      await installUpdate(pendingUpdate);
-    } else {
-      await checkForUpdates();
+    if (checkState === "available") {
+      if (pendingUpdate) {
+        await installUpdate(pendingUpdate);
+      } else if (manualRelease) {
+        window.open(manualRelease.url, "_blank", "noopener,noreferrer");
+      }
+      return;
     }
+    await checkForUpdates();
   }
 
   async function installUpdate(update: import("@tauri-apps/plugin-updater").Update): Promise<void> {
@@ -385,35 +391,40 @@ function openAboutSheet(): void {
     renderUpdateStatus();
 
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const timeoutMs = 8_000;
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Update check timed out")), timeoutMs)
-      );
-      const update = await Promise.race([
-        check({ timeout: timeoutMs }),
-        timeoutPromise,
-      ]);
-      if (update === null) {
+      const latest = await fetchLatestRelease();
+      if (compareVersions(latest.version, appVersion) <= 0) {
         checkState = "up-to-date";
         pendingUpdate = null;
-        updateStatusText = "You're up to date";
+        manualRelease = null;
+        updateStatusText = `You're up to date (v${latest.version})`;
       } else {
         checkState = "available";
-        pendingUpdate = update;
-        updateStatusText = `v${update.version} available`;
+        manualRelease = latest;
+        pendingUpdate = null;
+        // Keep Tauri's signed updater path when a release provides one. Current
+        // macOS releases ship an unsigned DMG, so the fallback opens its page.
+        try {
+          const { check } = await import("@tauri-apps/plugin-updater");
+          const update = await check({ timeout: 8_000 });
+          if (update !== null && compareVersions(update.version, appVersion) > 0) {
+            pendingUpdate = update;
+          }
+        } catch {
+          // Unsigned DMG releases do not have a platform entry in latest.json.
+        }
+        updateStatusText = `v${latest.version} available`;
       }
     } catch (error) {
       console.warn("Failed to check for updates:", error);
       checkState = "error";
       pendingUpdate = null;
       const errStr = String(error).toLowerCase();
-      if (errStr.includes("target") || errStr.includes("platform")) {
-        updateStatusText = navigator.userAgent.includes("Mac") ? "No macOS build in feed" : "No build for platform";
-      } else if (errStr.includes("time") || errStr.includes("timeout")) {
-        updateStatusText = "Timed out (check internet)";
+      if (errStr.includes("abort") || errStr.includes("time") || errStr.includes("timeout")) {
+        updateStatusText = "Timed out checking GitHub";
+      } else if (errStr.includes("http 403")) {
+        updateStatusText = "GitHub rate limit; retry shortly";
       } else {
-        updateStatusText = "Feed unreachable";
+        updateStatusText = "Couldn't reach GitHub Releases";
       }
     }
     renderUpdateStatus();
@@ -431,6 +442,9 @@ function openAboutSheet(): void {
     } else if (checkState === "available" && pendingUpdate) {
       checkButton.disabled = false;
       checkButton.textContent = `Install v${pendingUpdate.version}`;
+    } else if (checkState === "available" && manualRelease) {
+      checkButton.disabled = false;
+      checkButton.textContent = `View v${manualRelease.version}`;
     } else if (checkState === "installing") {
       checkButton.disabled = true;
       checkButton.textContent = "Installing...";
