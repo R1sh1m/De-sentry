@@ -122,6 +122,11 @@ jobs:
 
       - name: App setup (deps, sizing model, sidecar staging)
         working-directory: app
+        env:
+          # macOS arm64 cross-build: tell stage-sidecar.mjs to name the sidecar
+          # desentryd-aarch64-apple-darwin and source it from build-arm64/
+          DESENTRY_SIDECAR_TRIPLE: ${{ matrix.args == '--target aarch64-apple-darwin' && 'aarch64-apple-darwin' || '' }}
+          DESENTRY_ENGINE: ${{ matrix.args == '--target aarch64-apple-darwin' && format('{0}/build-arm64/desentryd', github.workspace) || '' }}
         run: |
           npm ci
           npm run fetch-model
