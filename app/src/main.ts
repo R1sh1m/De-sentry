@@ -421,7 +421,7 @@ function openAboutSheet(): void {
     updateStatusText = "";
     renderUpdateStatus();
 
-    const activeVersion = store.state.appInfo?.version ?? (appVersion && appVersion !== "unknown" ? appVersion : "1.2.0");
+    const activeVersion = store.state.appInfo?.version ?? (appVersion && appVersion !== "unknown" ? appVersion : "1.3.0");
 
     // Airplane mode / offline: honor zero-fetched-dependencies principle
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -629,7 +629,7 @@ function build(): void {
   }
 
   // Header ------------------------------------------------------------------
-  const appVersionBadge = el("span", { class: "brand-badge", text: `v${store.state.appInfo?.version ?? "1.2.0"}` });
+  const appVersionBadge = el("span", { class: "brand-badge", text: `v${store.state.appInfo?.version ?? "1.3.0"}` });
   const titleRow = el(
     "div",
     { class: "brand-cluster__row" },
@@ -926,7 +926,7 @@ function build(): void {
       .join(" · ");
     const sub = title.querySelector(".header__sub");
     if (sub !== null) sub.textContent = subtitle;
-    appVersionBadge.textContent = `v${info?.version ?? "1.2.0"}`;
+    appVersionBadge.textContent = `v${info?.version ?? "1.3.0"}`;
 
     sidebar.render();
     healthAlerts.render();

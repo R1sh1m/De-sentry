@@ -12,6 +12,19 @@ the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
+> **2026-10-27 — v1.3.0 release verification.** All 16 C++ test suites passed
+> green (100% pass rate: acl, at_rest, crdt, crypto, ledger_feed, ledger_v2,
+> liveness, mdns_discovery, network, placement, quota, relay_client, retention,
+> router, storage, transit). Integration test suites passed: `start_mesh_test.py`
+> and `files_feature_test.py` (all 71 checks verified across chunked multi-file
+> uploads and cross-node retrieval). Frontend checks passed: `tsc --noEmit`,
+> `check:qr`, `check:css`, and Vite production build clean. Rust sidecar `cargo check`
+> clean. Added self-hosted `desentry-relay` service and `RelayClient` for NAT
+> traversal fallback, `MdnsDiscovery` for zero-configuration local networking,
+> encrypted `TrustedDeviceStore` (AES-256-GCM) with PIN/QR device pairing flow,
+> and modernized dark-slate control room UI with upgraded canvas topology.
+> Physical multi-machine LAN verification remains unverified.
+
 > **2026-10-27 — v1.2.0 release verification.** All 14 C++ test suites passed
 > green (100% pass rate: acl, at_rest, crdt, crypto, ledger_feed, ledger_v2,
 > liveness, network, placement, quota, retention, router, storage, transit).
