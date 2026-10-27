@@ -115,6 +115,7 @@ enum class PeerSource : uint8_t {
   kDiscovery = 1,
   kHandshake = 2,
   kProbe = 3,
+  kMdns = 4,
 };
 
 struct PeerInfo {

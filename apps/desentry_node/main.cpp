@@ -92,6 +92,7 @@ int main(int argc, char** argv) {
   bool force_supervisor = false;
   bool read_unlock_stdin = false;
   bool re_encrypt = false;
+  std::string relay_url;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -109,6 +110,8 @@ int main(int argc, char** argv) {
       read_unlock_stdin = true;
     } else if (arg == "--re-encrypt") {
       re_encrypt = true;
+    } else if (arg == "--relay" && i + 1 < argc) {
+      relay_url = argv[++i];
     } else if (arg == "--log-level" && i + 1 < argc) {
       desentry::Logger::Instance().SetLevel(ParseLogLevel(argv[++i]));
     } else if (arg == "--help" || arg == "-h") {
@@ -129,6 +132,7 @@ int main(int argc, char** argv) {
   if (override_api_port > 0) config.api_port = static_cast<uint16_t>(override_api_port);
   if (override_p2p_port > 0) config.p2p_port = static_cast<uint16_t>(override_p2p_port);
   if (force_supervisor) config.supervisor = true;
+  if (!relay_url.empty()) config.relay_url = relay_url;
 
   // A supervisor's API must be loopback-only. Enforcing it here rather than
   // trusting the config file means a hand-edited or app-generated config can

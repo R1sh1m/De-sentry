@@ -61,6 +61,10 @@ struct NodeConfig {
   // broadcast doesn't reach).
   std::vector<std::string> bootstrap_peers;
 
+  // Optional self-hosted relay URL for NAT traversal fallback (ws:// or wss://).
+  // Empty = no relay. Only used when direct P2P connections fail.
+  std::string relay_url;
+
   // Gossip anti-entropy interval.
   uint32_t gossip_interval_ms = 2000;
 

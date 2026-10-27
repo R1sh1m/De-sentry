@@ -8,8 +8,12 @@
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/net/identity.h"
+#include "desentry/net/mdns_discovery.h"
 #include "desentry/security/at_rest.h"
 #include "desentry/security/crypto.h"
+#ifdef DESENTRY_WITH_RELAY
+#include "desentry/net/relay_client.h"
+#endif
 
 namespace desentry {
 
@@ -64,6 +68,9 @@ bool VerifyTransitEntry(const TransitEntry& entry, const std::string& holder_nod
 }  // namespace
 
 NetworkManager::~NetworkManager() { Stop(); }
+#ifdef DESENTRY_WITH_RELAY
+  if (relay_client_) relay_client_->Disconnect();
+#endif
 
 namespace {
 
@@ -154,6 +161,9 @@ Status NetworkManager::Start() {
   });
 
   transport_ = std::make_unique<TcpTransport>(&engine_->identity(), config_.p2p_port);
+#ifdef DESENTRY_WITH_RELAY
+  if (!config_.relay_url.empty()) relay_client_ = std::make_unique<RelayClient>(config_.relay_url, engine_->identity().node_id());
+#endif
   transport_->SetClusterSecret(cluster_secret_);
   transport_->SetHandshakeCallback([this](const std::string& node_id, const std::string& pubkey,
                                           const std::string& host, uint16_t p2p_port) {
@@ -188,6 +198,26 @@ Status NetworkManager::Start() {
     discovery_->SetClusterSecret(cluster_secret_);
     discovery_->Start(&peer_table_);
   }
+
+#ifdef DESENTRY_WITH_RELAY
+  if (!config_.relay_url.empty()) {
+    relay_client_->Connect();
+  }
+#endif
+
+#ifdef DESENTRY_WITH_MDNS
+  if (config_.mdns_enabled) {
+    mdns_ = std::make_unique<MdnsDiscovery>([this](const std::string& node_id, const std::string& host, uint16_t p2p_port, uint16_t api_port) {
+      PeerInfo info;
+      info.node_id = node_id;
+      info.host = host;
+      info.p2p_port = p2p_port;
+      info.api_port = api_port;
+      peer_table_.Upsert(info, PeerSource::kMdns);
+    });
+    mdns_->Start(engine_->identity().node_id(), config_.p2p_port, config_.api_port);
+  }
+#endif
 
   for (const std::string& spec : config_.bootstrap_peers) {
     std::string host;
@@ -809,6 +839,19 @@ void NetworkManager::FanOut(const OpBroadcastPayload& payload, const std::string
             // Not a receipt (e.g., legacy kPong with node_id string), ignore.
           }
         }
+      } else {
+        // Direct P2P failed: try relay as NAT traversal fallback.
+        // The relay is purely a fallback — LAN/direct connections take precedence.
+#ifdef DESENTRY_WITH_RELAY
+        if (relay_client_ && relay_client_->connected()) {
+          auto relay_st = relay_client_->RelaySend(node_id, msg.payload);
+          if (relay_st.ok()) {
+            DSN_LOG_DEBUG("network", "relay fallback succeeded for " << node_id);
+          } else {
+            DSN_LOG_DEBUG("network", "relay fallback failed for " << node_id << ": " << relay_st.message());
+          }
+        }
+#endif
       }
     });
     if (!queued) {

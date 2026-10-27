@@ -26,19 +26,10 @@ ChangeBatch ChangeFeed::Snapshot(lsn_t since, size_t limit) {
   ChangeBatch batch;
   batch.from = since;
 
-  auto all_or = wal_->ReadAll();
-  if (!all_or.ok()) {
-    // A ledger that cannot be read is not "no changes": signal a re-sync so
-    // the caller treats its cursor as suspect rather than as current.
-    batch.tip = wal_->LastLsn();
-    batch.truncated = true;
-    return batch;
-  }
-  const std::vector<WalRecord>& all = all_or.value();
   const lsn_t tip = wal_->LastLsn();
   batch.tip = tip;
 
-  const lsn_t oldest = all.empty() ? tip + 1 : all.front().lsn;
+  const lsn_t oldest = tip + 1;
   // Three ways a cursor goes stale, all of which mean "re-sync":
   //   * it points past the tip (the log was pruned/renumbered beneath it);
   //   * the oldest surviving entry is newer than the cursor (prefix dropped);
@@ -60,9 +51,17 @@ ChangeBatch ChangeFeed::Snapshot(lsn_t since, size_t limit) {
     return batch;
   }
 
-  batch.entries.reserve(std::min<size_t>(all.size(), limit == 0 ? all.size() : limit));
-  for (const WalRecord& rec : all) {
-    if (rec.lsn <= since) continue;
+  // Range read only the entries newer than the cursor (O(k) instead of O(N)).
+  const lsn_t from = since == kInvalidLsn ? kInvalidLsn : since + 1;
+  auto range_or = wal_->ReadRange(from, tip);
+  if (!range_or.ok()) {
+    batch.tip = tip;
+    batch.truncated = true;
+    return batch;
+  }
+  const std::vector<WalRecord>& records = range_or.value();
+  batch.entries.reserve(std::min<size_t>(records.size(), limit == 0 ? records.size() : limit));
+  for (const WalRecord& rec : records) {
     if (limit != 0 && batch.entries.size() >= limit) break;
     batch.entries.push_back(rec);
   }

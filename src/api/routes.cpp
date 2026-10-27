@@ -10,12 +10,14 @@
 #include "desentry/common/hex.h"
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
+#include "desentry/ledger/change_feed.h"
 #include "desentry/net/admission.h"
 #include "desentry/security/crypto.h"
 #include "desentry/storage/engines/graph_adj.h"
 #include "desentry/storage/engines/ts_rollup.h"
 #include "desentry/storage/engines/vector_hnsw_lite.h"
 #include "desentry/storage/engines/vendored_backends.h"
+#include "desentry/storage/wal.h"
 
 namespace desentry {
 
@@ -620,6 +622,14 @@ void RegisterRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* netw
     bcast_obj.emplace_back("rate_limited", JsonValue(static_cast<int64_t>(bcast.rate_limited)));
     bcast_obj.emplace_back("queued", JsonValue(static_cast<int64_t>(bcast.queued)));
     obj.emplace_back("broadcast", JsonValue(std::move(bcast_obj)));
+
+    // Ledger health: tip position and hash let operators verify the node is
+    // advancing and can be cross-checked against /_ledger/tip.
+    const WriteAheadLog::LedgerTip tip = engine->LedgerTip();
+    JsonValue::Object ledger_obj;
+    ledger_obj.emplace_back("tip_entry_id", JsonValue(static_cast<int64_t>(tip.entry_id)));
+    ledger_obj.emplace_back("tip_hash_hex", JsonValue(HexEncode(tip.entry_hash)));
+    obj.emplace_back("ledger", JsonValue(std::move(ledger_obj)));
 
     const NetworkManager::ProbeStats probes = network->probe_stats();
     JsonValue::Object probes_obj;

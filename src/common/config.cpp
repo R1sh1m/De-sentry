@@ -94,8 +94,12 @@ NodeConfig NodeConfig::LoadFromFile(const std::string& path) {
     }
   }
 
+  // Optional relay URL for NAT traversal fallback.
+  str_field("relay_url", &cfg.relay_url);
+
   // -- v2 fields -----------------------------------------------------------
   bool_field("supervisor", &cfg.supervisor);
+  str_field("relay_url", &cfg.relay_url);
   uint64_field("quota_mb", &cfg.quota_mb);
   str_field("default_engine", &cfg.default_engine);
   uint32_field("replication_factor", &cfg.replication_factor);
@@ -197,6 +201,7 @@ std::string NodeConfig::ToJson() const {
   o.emplace_back("node_name", JsonValue(node_name));
   o.emplace_back("data_dir", JsonValue(data_dir));
   o.emplace_back("api_bind_addr", JsonValue(api_bind_addr));
+  o.emplace_back("relay_url", JsonValue(relay_url));
   o.emplace_back("api_port", JsonValue(static_cast<int64_t>(api_port)));
   o.emplace_back("p2p_bind_addr", JsonValue(p2p_bind_addr));
   o.emplace_back("p2p_port", JsonValue(static_cast<int64_t>(p2p_port)));

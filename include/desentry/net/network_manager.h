@@ -45,6 +45,10 @@
 #include "desentry/net/receipt_tracker.h"
 #include "desentry/net/tcp_transport.h"
 #include "desentry/net/udp_discovery.h"
+#include "desentry/net/mdns_discovery.h"
+#ifdef DESENTRY_WITH_RELAY
+#include "desentry/net/relay_client.h"
+#endif
 
 namespace desentry {
 
@@ -186,6 +190,7 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   PeerTable peer_table_;
   std::unique_ptr<TcpTransport> transport_;
   std::unique_ptr<UdpDiscovery> discovery_;
+  std::unique_ptr<MdnsDiscovery> mdns_;
   std::unique_ptr<GossipEngine> gossip_;
   std::unique_ptr<PlacementPolicy> placement_;
   std::unique_ptr<WorkerPool> broadcast_pool_;
@@ -213,6 +218,12 @@ void BroadcastLocalWrite(const std::string& collection, const std::string& key,
   std::atomic<uint64_t> broadcasts_sent_{0};
   std::atomic<uint64_t> duplicates_suppressed_{0};
   std::atomic<uint64_t> rate_limited_{0};
+
+#ifdef DESENTRY_WITH_RELAY
+  // Optional relay client for NAT traversal fallback. Only used when
+  // direct P2P connections fail. Never on the data path.
+  std::unique_ptr<RelayClient> relay_client_;
+#endif
 };
 
 }  // namespace desentry

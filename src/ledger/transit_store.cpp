@@ -454,16 +454,22 @@ Status TransitStore::CompactLocked() {
 StatusOr<uint64_t> TransitStore::ExpireAsOf(int64_t now_ms) {
   std::lock_guard<std::mutex> lock(mu_);
   uint64_t expired = 0;
+  std::vector<std::pair<std::string, std::string>> to_drop;  // (owner_node, key_hash)
   for (auto it = entries_.begin(); it != entries_.end();) {
     const TransitEnvelope& envelope = it->second;
     if (envelope.expires_ms == 0 || envelope.expires_ms > now_ms) {
       ++it;
       continue;
     }
-    Status st = AppendRecord(EncodeDropBody(envelope.owner_node, envelope.key_hash));
-    if (!st.ok()) return st;
+    to_drop.emplace_back(envelope.owner_node, envelope.key_hash);
     it = entries_.erase(it);
     ++expired;
+  }
+  // Append drop records outside the full-map scan so the lock is held for the
+  // shortest possible time while still writing them atomically.
+  for (const auto& [owner, key_hash] : to_drop) {
+    Status st = AppendRecord(EncodeDropBody(owner, key_hash));
+    if (!st.ok()) return st;
   }
   if (expired > 0) {
     DSN_LOG_INFO("transit", "expired " << expired << " held envelope(s)");

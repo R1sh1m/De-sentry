@@ -1,6 +1,7 @@
 #include "desentry/storage/wal.h"
 
 #include <cstring>
+#include <limits>
 #include <set>
 
 #include "desentry/common/byte_buffer.h"
@@ -452,6 +453,11 @@ StatusOr<lsn_t> WriteAheadLog::Append(WalRecordType type, const std::string& col
                                        const std::string& key, const std::string& document_bytes,
                                        const AppendOptions& options) {
   std::lock_guard<std::mutex> lock(mu_);
+
+  // Guard against LSN overflow which would break ordering guarantees.
+  if (next_lsn_ == std::numeric_limits<lsn_t>::max()) {
+    return Status::OutOfSpace("LSN overflow: cannot assign new ledger entry ID");
+  }
 
   WalRecord rec;
   rec.lsn = next_lsn_;

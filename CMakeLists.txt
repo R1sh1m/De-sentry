@@ -48,6 +48,8 @@ option(DESENTRY_WITH_SQLITE     "Build the SQLite backend (public domain)"      
 option(DESENTRY_WITH_SQLITE_VEC "Build the sqlite-vec backend (Apache-2.0/MIT)"   OFF)
 option(DESENTRY_WITH_DUCKDB     "Build the DuckDB backend (MIT)"                  OFF)
 option(DESENTRY_WITH_LMDB       "Build the LMDB backend (OpenLDAP licence)"       OFF)
+option(DESENTRY_WITH_RELAY      "Build optional self-hosted relay support"        OFF)
+option(DESENTRY_WITH_MDNS       "Enable mDNS discovery"                           ON)
 option(DESENTRY_BUILD_TESTS     "Build the test binaries"                         ON)
 
 set(DESENTRY_VENDORED_SOURCES "")
@@ -132,6 +134,13 @@ file(GLOB_RECURSE DESENTRY_CORE_SRC CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/supervisor/*.cpp"
 )
 
+# Optional relay support: compiled only when DESENTRY_WITH_RELAY=ON.
+# The GLOB above already picks up relay_client.cpp from src/net/*.cpp, so
+# we need to exclude it when relay is disabled.
+if(NOT DESENTRY_WITH_RELAY)
+  list(FILTER DESENTRY_CORE_SRC EXCLUDE REGEX "relay_client\\.cpp$")
+endif()
+
 add_library(desentry_core STATIC ${DESENTRY_CORE_SRC} ${DESENTRY_VENDORED_SOURCES})
 target_include_directories(desentry_core PUBLIC "${CMAKE_SOURCE_DIR}/include")
 if(DESENTRY_VENDORED_INCLUDES)
@@ -176,6 +185,16 @@ add_executable(desentry_cli apps/desentry_cli/main.cpp)
 target_link_libraries(desentry_cli PRIVATE desentry_core)
 
 # ---------------------------------------------------------------------------
+# Optional self-hosted relay server (WebSocket, metadata-only broker).
+# Only built when DESENTRY_WITH_RELAY=ON.
+# ---------------------------------------------------------------------------
+if(DESENTRY_WITH_RELAY)
+  add_executable(desentry-relay apps/desentry_relay/main.cpp)
+  target_link_libraries(desentry-relay PRIVATE desentry_core)
+  target_compile_definitions(desentry-relay PRIVATE DESENTRY_WITH_RELAY=1)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests (simple, dependency-free assert-based test binaries -- no external
 # test framework, so the whole project builds offline with zero fetched
 # dependencies).
@@ -218,4 +237,5 @@ message(STATUS "  sqlite backend  : ${DESENTRY_WITH_SQLITE}")
 message(STATUS "  sqlite-vec      : ${DESENTRY_WITH_SQLITE_VEC}")
 message(STATUS "  duckdb backend  : ${DESENTRY_WITH_DUCKDB}")
 message(STATUS "  lmdb backend    : ${DESENTRY_WITH_LMDB}")
+message(STATUS "  relay support   : ${DESENTRY_WITH_RELAY}")
 message(STATUS "  from-scratch engines (always built): kv, columnar_lite, ts_rollup, vector_hnsw_lite, graph_adj")

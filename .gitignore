@@ -9,6 +9,7 @@ DEMO/
 # ── C++ Build Artifacts ────────────────────────────────────────────────────────
 build/
 build-*/
+build_*/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -204,6 +205,8 @@ credentials/
 *.swo
 *~
 \#*\#
+tmp_*
+/D/
 
 # ------------------------------------------------------------------------------
 #  v2 desktop app (app/)
