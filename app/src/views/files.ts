@@ -91,7 +91,7 @@ export interface FilesHandles {
 }
 
 export function createFiles(): FilesHandles {
-  const element = el("div", { class: "canvas files-view", style: "display: flex; flex-direction: column; overflow: auto; padding: 24px;" });
+  const element = el("div", { class: "canvas files-view" });
 
   let state: FilesState = {
     files: [],
@@ -348,15 +348,15 @@ export function createFiles(): FilesHandles {
   // -- render helpers ----------------------------------------------------------
 
   function renderFileCard(file: FileItem): HTMLElement {
-    const card = el("div", { class: "card", style: "padding: var(--space-sm); cursor: pointer; position: relative;" });
+    const card = el("div", { class: "files-view__file-card" });
 
-    const iconEl = el("div", { style: "font-size: 32px; text-align: center; margin-bottom: var(--space-xs);" }, getFileIcon(file.mime, file.filename));
-    const nameEl = el("div", { class: "mono", style: "font-weight: 600; font-size: var(--text-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", title: file.filename, text: file.filename });
-    const sizeEl = el("div", { class: "muted", style: "font: var(--text-fine);", text: formatFileSize(file.size_bytes) });
-    const badgeEl = el("span", { class: "badge", style: "font-size: 10px;", text: file.collection });
-    const dateEl = el("div", { class: "muted", style: "font: var(--text-fine);", text: formatRelativeTime(file.created_ms) });
+    const iconEl = el("div", { class: "files-view__file-card-icon" }, getFileIcon(file.mime, file.filename));
+    const nameEl = el("div", { class: "mono files-view__file-card-name", title: file.filename, text: file.filename });
+    const sizeEl = el("div", { class: "muted files-view__file-card-size", text: formatFileSize(file.size_bytes) });
+    const badgeEl = el("span", { class: "badge files-view__file-card-badge", text: file.collection });
+    const dateEl = el("div", { class: "muted files-view__file-card-date", text: formatRelativeTime(file.created_ms) });
 
-    const actions = el("div", { class: "row", style: "gap: var(--space-xxs); margin-top: var(--space-xs); opacity: 0; transition: opacity 0.15s;", "data-actions": "true" });
+    const actions = el("div", { class: "files-view__file-card-actions", "data-actions": "true" });
 
     const previewBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Preview" }, icon(Icons.search, 12));
     on(previewBtn, "click", (e) => {
@@ -451,18 +451,18 @@ export function createFiles(): FilesHandles {
   }
 
   function renderFileRow(file: FileItem): HTMLElement {
-    const row = el("tr", { style: "cursor: pointer;" });
+    const row = el("tr", { class: "files-view__file-row" });
 
     const nameCell = el("td", {},
-      el("span", { style: "margin-right: var(--space-xs);", text: getFileIcon(file.mime, file.filename) }),
+      el("span", { class: "files-view__file-row-icon", text: getFileIcon(file.mime, file.filename) }),
       el("span", { class: "mono", text: truncate(file.filename, 40) }),
     );
     const typeCell = el("td", { class: "muted", text: categoryLabel(getFileCategory(file.mime, file.filename)) });
     const sizeCell = el("td", { class: "muted", text: formatFileSize(file.size_bytes) });
-    const collectionCell = el("td", {}, el("span", { class: "badge", style: "font-size: 10px;", text: file.collection }));
+    const collectionCell = el("td", {}, el("span", { class: "badge files-view__file-row-badge", text: file.collection }));
     const modifiedCell = el("td", { class: "muted", text: formatRelativeTime(file.created_ms) });
 
-    const actionsCell = el("td", { class: "row", style: "gap: var(--space-xxs);" });
+    const actionsCell = el("td", { class: "row files-view__file-row-actions" });
     const previewBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", title: "Preview" }, icon(Icons.search, 12));
     on(previewBtn, "click", (e) => {
       e.stopPropagation();
@@ -509,8 +509,8 @@ export function createFiles(): FilesHandles {
   }
 
   function renderRecentFiles(): HTMLElement {
-    const section = el("div", { class: "card", style: "padding: var(--space-sm); margin-top: var(--space-md);" });
-    const header = el("div", { class: "row row--between", style: "margin-bottom: var(--space-xs);" },
+    const section = el("div", { class: "card files-view__recent-section" });
+    const header = el("div", { class: "row row--between files-view__recent-section-header" },
       el("strong", { text: "Recent Files" }),
       el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Clear" }),
     );
@@ -523,16 +523,16 @@ export function createFiles(): FilesHandles {
     section.appendChild(header);
 
     if (state.recentFiles.length === 0) {
-      section.appendChild(el("p", { class: "muted", style: "font: var(--text-fine);", text: "No recent files." }));
+      section.appendChild(el("p", { class: "muted files-view__recent-section-empty", text: "No recent files." }));
       return section;
     }
 
-    const list = el("div", { class: "stack", style: "gap: var(--space-xxs);" });
+    const list = el("div", { class: "stack files-view__recent-section-list" });
     for (const file of state.recentFiles.slice(0, 20)) {
-      const item = el("div", { class: "row", style: "gap: var(--space-xs); padding: var(--space-xxs); cursor: pointer; border-radius: var(--radius-xs);" },
+      const item = el("div", { class: "row files-view__recent-section-item" },
         el("span", { text: getFileIcon(file.mime, file.filename) }),
-        el("span", { class: "mono", style: "font-size: var(--text-fine); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", text: file.filename }),
-        el("span", { class: "muted", style: "font: var(--text-fine);", text: formatRelativeTime(file.created_ms) }),
+        el("span", { class: "mono files-view__recent-section-item-name", text: file.filename }),
+        el("span", { class: "muted files-view__recent-section-item-time", text: formatRelativeTime(file.created_ms) }),
       );
       on(item, "click", () => {
         openFilePreview({
@@ -558,7 +558,7 @@ export function createFiles(): FilesHandles {
     const filtered = applyFilters(state.files);
 
     // Title
-    const title = el("h2", { class: "title", text: "File Browser", style: "margin-bottom: var(--space-md);" });
+    const title = el("h2", { class: "files-view__title", text: "File Browser" });
 
     // Search bar
     const searchInput = el("input", {
@@ -566,7 +566,6 @@ export function createFiles(): FilesHandles {
       type: "search",
       placeholder: "Search files...",
       value: state.filters.search,
-      style: "flex: 1;",
     }) as HTMLInputElement;
 
     on(searchInput, "input", () => {
@@ -578,8 +577,8 @@ export function createFiles(): FilesHandles {
       }, 300);
     });
 
-    const searchBox = el("div", { class: "row", style: "gap: var(--space-xs); margin-bottom: var(--space-sm);" },
-      el("span", { class: "sidebar__search-icon" }, icon(Icons.search, 14)),
+    const searchBox = el("div", { class: "files-view__search" },
+      el("span", { class: "files-view__search-icon" }, icon(Icons.search, 14)),
       searchInput,
     );
 
@@ -591,7 +590,7 @@ export function createFiles(): FilesHandles {
     });
 
     // Sort dropdown
-    const sortSelect = el("select", { class: "select-rounded", style: "width: auto;" }) as HTMLSelectElement;
+    const sortSelect = el("select", { class: "select-rounded files-view__sort-select" }) as HTMLSelectElement;
     const sortOptions = [
       { value: "newest", label: "Newest" },
       { value: "oldest", label: "Oldest" },
@@ -610,21 +609,25 @@ export function createFiles(): FilesHandles {
       void fetchFiles();
     });
 
-    // View toggle
-    const gridBtn = el("button", { class: "btn btn--sm" + (state.filters.viewMode === "grid" ? " btn--primary" : " btn--ghost"), type: "button", text: "Grid" });
-    const listBtn = el("button", { class: "btn btn--sm" + (state.filters.viewMode === "list" ? " btn--primary" : " btn--ghost"), type: "button", text: "List" });
+    // View toggle (segmented control)
+    const gridBtn = el("button", { class: "btn btn--sm", type: "button", text: "Grid", "aria-pressed": state.filters.viewMode === "grid" ? "true" : "false" });
+    const listBtn = el("button", { class: "btn btn--sm", type: "button", text: "List", "aria-pressed": state.filters.viewMode === "list" ? "true" : "false" });
     on(gridBtn, "click", () => {
       state.filters.viewMode = "grid";
+      gridBtn.setAttribute("aria-pressed", "true");
+      listBtn.setAttribute("aria-pressed", "false");
       render();
     });
     on(listBtn, "click", () => {
       state.filters.viewMode = "list";
+      gridBtn.setAttribute("aria-pressed", "false");
+      listBtn.setAttribute("aria-pressed", "true");
       render();
     });
 
-    const toolbar = el("div", { class: "row row--between", style: "margin-bottom: var(--space-sm); flex-wrap: wrap; gap: var(--space-xs);" },
-      el("div", { class: "row", style: "gap: var(--space-xs);" }, filterToggle, sortSelect),
-      el("div", { class: "row", style: "gap: var(--space-xxs);" }, gridBtn, listBtn),
+    const toolbar = el("div", { class: "files-view__toolbar" },
+      el("div", { class: "files-view__toolbar-group" }, filterToggle, sortSelect),
+      el("div", { class: "files-view__toolbar-group" }, el("div", { class: "segmented" }, gridBtn, listBtn)),
     );
 
     // Filter panel (collapsible)
@@ -702,43 +705,46 @@ export function createFiles(): FilesHandles {
         void fetchFiles();
       });
 
-      filterPanel = el("div", { class: "card", style: "padding: var(--space-sm); margin-bottom: var(--space-sm); display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-xs);" },
-        el("div", { class: "stack", style: "gap: var(--space-xxs);" },
-          el("label", { class: "muted", style: "font: var(--text-fine);", text: "File Type" }),
+      filterPanel = el("div", { class: "files-view__filter-panel" },
+        el("div", { class: "stack files-view__filter-field" },
+          el("label", { class: "muted files-view__filter-label", text: "File Type" }),
           fileTypeSelect,
         ),
-        el("div", { class: "stack", style: "gap: var(--space-xxs);" },
-          el("label", { class: "muted", style: "font: var(--text-fine);", text: "Size" }),
+        el("div", { class: "stack files-view__filter-field" },
+          el("label", { class: "muted files-view__filter-label", text: "Size" }),
           sizeSelect,
         ),
-        el("div", { class: "stack", style: "gap: var(--space-xxs);" },
-          el("label", { class: "muted", style: "font: var(--text-fine);", text: "Collection" }),
+        el("div", { class: "stack files-view__filter-field" },
+          el("label", { class: "muted files-view__filter-label", text: "Collection" }),
           collectionSelect,
         ),
-        el("div", { class: "stack", style: "gap: var(--space-xxs);" },
-          el("label", { class: "muted", style: "font: var(--text-fine);", text: "Date" }),
+        el("div", { class: "stack files-view__filter-field" },
+          el("label", { class: "muted files-view__filter-label", text: "Date" }),
           dateSelect,
         ),
       );
     }
 
     // Content area
-    const content = el("div", { style: "flex: 1;" });
+    const content = el("div", { class: "files-view__content" });
 
     if (state.loading) {
-      content.appendChild(el("div", { class: "card" }, el("div", { class: "skeleton", style: "height: 240px" })));
+      content.appendChild(el("div", { class: "card" }, el("div", { class: "skeleton files-view__skeleton" })));
     } else if (state.error && state.files.length === 0) {
-      content.appendChild(el("p", { class: "error-note", text: state.error }));
+      content.appendChild(el("div", { class: "files-view__error" },
+        el("span", { class: "files-view__error-chip", text: "Node unavailable" }),
+        el("p", { class: "muted", text: state.error }),
+      ));
     } else if (filtered.length === 0) {
       content.appendChild(emptyState({ title: "No files found", body: "Try adjusting your filters or search query." }));
     } else if (state.filters.viewMode === "grid") {
-      const grid = el("div", { style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--space-sm);" });
+      const grid = el("div", { class: "files-view__grid" });
       for (const file of filtered) {
         grid.appendChild(renderFileCard(file));
       }
       content.appendChild(grid);
     } else {
-      const table = el("table", { class: "table", style: "width: 100%;" });
+      const table = el("table", { class: "table files-view__table-wrap" });
       const thead = el("thead", {},
         el("tr", {},
           el("th", { text: "Name" }),
@@ -760,7 +766,7 @@ export function createFiles(): FilesHandles {
 
     // Load more button
     if (state.hasMore) {
-      const loadMore = el("button", { class: "btn btn--sm btn--ghost", type: "button", text: "Load more", style: "margin-top: var(--space-sm);" });
+      const loadMore = el("button", { class: "btn btn--sm btn--ghost files-view__load-more", type: "button", text: "Load more" });
       on(loadMore, "click", () => {
         state.page += 1;
         void fetchFiles();
@@ -769,15 +775,15 @@ export function createFiles(): FilesHandles {
     }
 
     // Layout: main content + recent files sidebar
-    const layout = el("div", { style: "display: flex; gap: var(--space-md);" });
-    const mainCol = el("div", { style: "flex: 1; min-width: 0;" });
+    const layout = el("div", { class: "files-view__layout" });
+    const mainCol = el("div", { class: "files-view__main" });
     mainCol.appendChild(title);
     mainCol.appendChild(searchBox);
     mainCol.appendChild(toolbar);
     if (filterPanel) mainCol.appendChild(filterPanel);
     mainCol.appendChild(content);
 
-    const sideCol = el("div", { style: "width: 260px; flex-shrink: 0;" });
+    const sideCol = el("div", { class: "files-view__recent" });
     sideCol.appendChild(renderRecentFiles());
 
     layout.appendChild(mainCol);

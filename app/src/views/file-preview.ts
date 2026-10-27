@@ -95,14 +95,14 @@ export function openFilePreview(meta: FileMeta): void {
   closeModal();
 
   const scrim = el("div", { class: "modal-scrim", role: "dialog", "aria-modal": "true" });
-  const box = el("div", { class: "modal-box", style: "max-width: 90vw; max-height: 90vh; width: 800px;" });
+  const box = el("div", { class: "file-preview__box" });
 
   const header = el(
     "div",
-    { class: "row row--between", style: "margin-bottom: var(--space-sm);" },
-    el("div", { class: "row", style: "gap: var(--space-xs);" },
-      el("span", { style: "font-size: 24px;", text: getFileIcon(meta.mime, meta.filename) }),
-      el("strong", { style: "font: var(--text-body-strong);", text: meta.filename }),
+    { class: "row row--between file-preview__header" },
+    el("div", { class: "file-preview__title-row" },
+      el("span", { class: "file-preview__icon", text: getFileIcon(meta.mime, meta.filename) }),
+      el("strong", { class: "file-preview__filename", text: meta.filename }),
     ),
     el("button", { class: "btn btn--sm btn--ghost", type: "button", "aria-label": "Close" }, icon(Icons.close, 14)),
   );
@@ -112,20 +112,20 @@ export function openFilePreview(meta: FileMeta): void {
 
   const metaSection = el(
     "div",
-    { class: "stack", style: "gap: var(--space-xxs); margin-bottom: var(--space-md);" },
-    el("div", { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `Type: ${meta.mime}`),
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `Size: ${bytes(meta.size_bytes)}`),
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `Category: ${categoryLabel(getFileCategory(meta.mime, meta.filename))}`),
+    { class: "file-preview__meta" },
+    el("div", { class: "file-preview__meta-row" },
+      el("span", { class: "file-preview__meta-item", text: `Type: ${meta.mime}` }),
+      el("span", { class: "file-preview__meta-item", text: `Size: ${bytes(meta.size_bytes)}` }),
+      el("span", { class: "file-preview__meta-item", text: `Category: ${categoryLabel(getFileCategory(meta.mime, meta.filename))}` }),
     ),
-    el("div", { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `SHA256: ${meta.sha256.slice(0, 16)}…`),
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `Created: ${timestamp(meta.created_ms)}`),
-      el("span", { class: "muted", style: "font: var(--text-fine);" }, `Collection: ${meta.collection}`),
+    el("div", { class: "file-preview__meta-row" },
+      el("span", { class: "file-preview__meta-item", text: `SHA256: ${meta.sha256.slice(0, 16)}…` }),
+      el("span", { class: "file-preview__meta-item", text: `Created: ${timestamp(meta.created_ms)}` }),
+      el("span", { class: "file-preview__meta-item", text: `Collection: ${meta.collection}` }),
     ),
   );
 
-  const previewArea = el("div", { class: "stack", style: "min-height: 200px; max-height: 60vh; overflow: auto;" });
+  const previewArea = el("div", { class: "file-preview__area" });
 
   // Build preview content based on file type
   if (isPreviewable(meta.mime)) {
@@ -134,7 +134,7 @@ export function openFilePreview(meta: FileMeta): void {
       previewArea.appendChild(loading);
       const embed = el("embed", {
         type: "application/pdf",
-        style: "width: 100%; height: 60vh; border: none;",
+        class: "file-preview__embed",
       });
       void fetchFile(meta).then(async (res) => {
         const base64 = await blobAsBase64(await res.blob());
@@ -147,7 +147,7 @@ export function openFilePreview(meta: FileMeta): void {
     } else if (meta.mime.startsWith("image/")) {
       const img = el("img", {
         alt: meta.filename,
-        style: "max-width: 100%; max-height: 60vh; object-fit: contain;",
+        class: "file-preview__image",
       });
       previewArea.appendChild(img);
       void fetchFile(meta).then(async (res) => {
@@ -161,14 +161,14 @@ export function openFilePreview(meta: FileMeta): void {
     }
   } else if (isOfficeFile(meta.mime, meta.filename)) {
     previewArea.appendChild(
-      el("div", { class: "stack", style: "align-items: center; padding: var(--space-xl);" },
-        el("span", { style: "font-size: 48px;", text: getFileIcon(meta.mime, meta.filename) }),
-        el("p", { class: "muted", text: "Office documents cannot be previewed in-app." }),
-        el("p", { class: "muted", style: "font: var(--text-fine);", text: "Use \"Open in System App\" to view with your default application." }),
+      el("div", { class: "file-preview__empty" },
+        el("span", { class: "file-preview__empty-icon", text: getFileIcon(meta.mime, meta.filename) }),
+        el("p", { class: "file-preview__empty-text", text: "Office documents cannot be previewed in-app." }),
+        el("p", { class: "file-preview__empty-hint", text: "Use \"Open in System App\" to view with your default application." }),
       ),
     );
   } else if (isTextFile(meta.mime, meta.filename)) {
-    const textArea = el("pre", { class: "explorer__doc", style: "white-space: pre-wrap; max-height: 60vh; overflow: auto;" });
+    const textArea = el("pre", { class: "file-preview__doc" });
     previewArea.appendChild(textArea);
     // Fetch text content
     void (async () => {
@@ -182,15 +182,15 @@ export function openFilePreview(meta: FileMeta): void {
     })();
   } else {
     previewArea.appendChild(
-      el("div", { class: "stack", style: "align-items: center; padding: var(--space-xl);" },
-        el("span", { style: "font-size: 48px;", text: getFileIcon(meta.mime, meta.filename) }),
-        el("p", { class: "muted", text: "Binary file — no in-app preview available." }),
-        el("p", { class: "muted", style: "font: var(--text-fine);", text: "Use \"Open in System App\" or \"Save As...\" to access this file." }),
+      el("div", { class: "file-preview__empty" },
+        el("span", { class: "file-preview__empty-icon", text: getFileIcon(meta.mime, meta.filename) }),
+        el("p", { class: "file-preview__empty-text", text: "Binary file — no in-app preview available." }),
+        el("p", { class: "file-preview__empty-hint", text: "Use \"Open in System App\" or \"Save As...\" to access this file." }),
       ),
     );
   }
 
-  const actions = el("div", { class: "row", style: "gap: var(--space-xs); margin-top: var(--space-md);" });
+  const actions = el("div", { class: "file-preview__actions" });
 
   // Open in System App button
   const openBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, icon(Icons.plug, 12), " Open in System App");

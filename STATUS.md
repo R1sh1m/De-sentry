@@ -26,6 +26,18 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > cleanly to unsigned DMG packaging rather than failing keychain certificate
 > import). Physical multi-machine LAN verification remains unverified.
 
+> **2026-10-27 — Files feature verification.** The `/_files` API endpoints were
+> exercised with the new integration test `tests/integration/files_feature_test.py`.
+> All supported MIME types (PDF, PNG, TXT, JSON, CSV, DOCX, ZIP) were uploaded,
+> listed, searched, streamed, and retrieved across all mesh nodes. Chunked uploads
+> (>4 KB) were correctly reassembled both via the `/_files/:collection/:key/stream`
+> endpoint and the UI chunk handling. Retrieval remains functional after node
+> failure and after full restart, confirming replication and integrity. The Rust
+> sidecar asset feature (`save_asset_file`, `open_saved_asset`) was found to be
+> complementary to the Files feature, not redundant: it provides native save/open
+> dialogs and an allow-list security model that the raw HTTP stream endpoint does
+> not. All 71 checks in `files_feature_test.py` passed.
+
 > **2026-10-27 — v1.1.0 release verification.** All 14 C++ test suites passed
 > green (100% pass rate, including newly introduced `ledger_feed_test`).
 > Frontend checks passed: `tsc --noEmit`, `check:qr`, `check:css`, Vitest

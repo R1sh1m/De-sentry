@@ -8,7 +8,7 @@
  */
 
 import { apiFor, ApiError } from "../api.js";
-import { refreshCollection, refreshNode, store, type NodeView } from "../state.js";
+import { refreshCollection, refreshNode, store, convergenceOf, type NodeView } from "../state.js";
 import { bytes, displayNodeName, engineLabel, json, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 
@@ -36,7 +36,7 @@ export interface DropboxHandles {
 }
 
 export function createDropbox(): DropboxHandles {
-  const element = el("div", { class: "canvas dropbox-view", style: "display: flex; flex-direction: column; overflow: auto; padding: 24px;" });
+  const element = el("div", { class: "canvas dropbox-view" });
 
   interface StagedItem {
     id: number;
@@ -331,16 +331,15 @@ export function createDropbox(): DropboxHandles {
     // Title and introduction
     const titleCluster = el(
       "div",
-      { style: "margin-bottom: 20px;" },
-      el("h2", { class: "title", text: "Universal Dropbox" }),
+      { class: "dropbox-view__header" },
+      el("h2", { class: "dropbox-view__title", text: "Universal Dropbox" }),
       el("p", {
-        class: "muted",
-        style: "max-width: 680px; margin-top: 4px; line-height: 1.5;",
+        class: "dropbox-view__lead",
         text: "Drop files to preserve their original bytes, or paste JSON, CSV, vector embeddings, time-series metrics, or text to analyze and ingest structured records. File assets synchronize across the mesh and can be saved in their original form.",
       }),
     );
 
-    const fileInput = el("input", { type: "file", multiple: true, style: "display: none;" }) as HTMLInputElement;
+    const fileInput = el("input", { type: "file", multiple: true, class: "dropbox__file-input" }) as HTMLInputElement;
     on(fileInput, "change", () => {
       if (fileInput.files && fileInput.files.length > 0) {
         for (const file of Array.from(fileInput.files)) readFile(file);
@@ -359,39 +358,33 @@ export function createDropbox(): DropboxHandles {
     const dropZone = el(
       "div",
       {
-        class: "card drop-zone",
-        style: "border: 2px dashed var(--color-hairline); border-radius: var(--radius-md); padding: 40px 20px; text-align: center; cursor: pointer; transition: all 0.2s ease; background: var(--color-surface-pearl);",
+        class: "drop-zone dropbox-zone",
       },
-      el("div", { class: "drop-zone__icon-wrap" }, icon(Icons.inbox, 30)),
-      el("h3", { style: "margin: 12px 0 4px; font-size: var(--text-base);", text: "Drag & drop data files here" }),
-      el("p", { class: "muted", style: "font-size: var(--text-sm); margin-bottom: 16px;", text: "File uploads preserve exact bytes; paste JSON, CSV, vectors, logs, or plain text for structured intake." }),
-      el("div", { class: "row", style: "justify-content: center;" }, browseBtn, fileInput),
+      el("div", { class: "dropbox-zone__icon-wrap" }, icon(Icons.inbox, 30)),
+      el("h3", { class: "dropbox-zone__title", text: "Drag & drop data files here" }),
+      el("p", { class: "dropbox-zone__body", text: "File uploads preserve exact bytes; paste JSON, CSV, vectors, logs, or plain text for structured intake." }),
+      el("div", { class: "row dropbox__browse-row" }, browseBtn, fileInput),
     );
 
     on(dropZone, "click", () => {
       fileInput.click();
     });
     on(dropZone, "mouseenter", () => {
-      dropZone.style.borderColor = "var(--color-primary)";
-      dropZone.style.background = "var(--color-surface)";
+      dropZone.classList.add("dropbox-zone--active");
     });
     on(dropZone, "mouseleave", () => {
-      dropZone.style.borderColor = "var(--color-hairline)";
-      dropZone.style.background = "var(--color-surface-pearl)";
+      dropZone.classList.remove("dropbox-zone--active");
     });
     on(dropZone, "dragover", (e) => {
       e.preventDefault();
-      dropZone.style.borderColor = "var(--color-primary)";
-      dropZone.style.background = "var(--color-surface)";
+      dropZone.classList.add("dropbox-zone--active");
     });
     on(dropZone, "dragleave", () => {
-      dropZone.style.borderColor = "var(--color-hairline)";
-      dropZone.style.background = "var(--color-surface-pearl)";
+      dropZone.classList.remove("dropbox-zone--active");
     });
     on(dropZone, "drop", (e) => {
       e.preventDefault();
-      dropZone.style.borderColor = "var(--color-hairline)";
-      dropZone.style.background = "var(--color-surface-pearl)";
+      dropZone.classList.remove("dropbox-zone--active");
       const files = (e as DragEvent).dataTransfer?.files;
       if (files && files.length > 0) {
         for (const file of Array.from(files)) readFile(file);
@@ -399,29 +392,43 @@ export function createDropbox(): DropboxHandles {
     });
 
     // Paste area for quick text ingestion
+    const pasteLabel = el("label", {
+      class: "dropbox-paste__label",
+      text: "Or paste structured data (JSON, CSV, vectors, time-series) or raw text:",
+    });
     const pasteArea = el("textarea", {
-      class: "mono",
-      style: "width: 100%; height: 90px; padding: 10px; font-size: var(--text-xs); background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); color: var(--color-ink); resize: vertical; margin-top: 12px;",
-      placeholder: "Or paste JSON, vector array, CSV or raw text here…",
+      id: "dropbox-paste-input",
+      class: "dropbox-paste",
+      placeholder: "Paste your data here, then click Analyze…",
+      "aria-label": "Paste JSON, CSV, vector array, or text for structured intake",
     }) as HTMLTextAreaElement;
 
-    const analyzePasteBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "align-self: flex-start; margin-top: 6px;" }, "Analyze Pasted Text");
+    const analyzePasteBtn = el("button", {
+      class: "btn btn--sm btn--ghost dropbox__analyze-btn",
+      type: "button",
+      "aria-label": "Analyze pasted content and prepare for ingestion",
+    }, "Analyze Pasted Text");
     on(analyzePasteBtn, "click", () => {
-      if (pasteArea.value.trim()) {
-        stageData(analyzeText(pasteArea.value.trim()), "Pasted text");
+      const text = pasteArea.value.trim();
+      if (text) {
+        const payload = analyzeText(text, "Pasted text");
+        stageData(payload, "Pasted text");
         pasteArea.value = "";
+        store.toast("success", "Content analyzed", `Staged ${payload.records.length} record${payload.records.length === 1 ? "" : "s"} as ${payload.workload} data.`, 3500);
+      } else {
+        store.toast("warning", "Nothing to analyze", "Paste some JSON, CSV, vectors, or text first.", 3000);
       }
     });
 
-    const intakeSection = el("div", { class: "stack" }, dropZone, pasteArea, analyzePasteBtn);
+    const intakeSection = el("div", { class: "stack" }, dropZone, pasteLabel, pasteArea, analyzePasteBtn);
 
     // Staged files — one card per dropped/pasted payload so different files
     // keep their own engine suggestion, destination, collection and log.
     const stagedCards: HTMLElement[] = staged.map((item) => stagedCard(item, nodes));
 
     const stagedHeader = staged.length > 1
-      ? el("div", { class: "row row--between", style: "margin-top: 24px; align-items: center;" },
-          el("strong", { text: `${staged.length} files staged`, style: "font-size: var(--text-sm);" }),
+      ? el("div", { class: "row row--between dropbox__staged-header" },
+          el("strong", { class: "text-base", text: `${staged.length} files staged` }),
           (() => {
             const anyBusy = staged.some((s) => s.isIngesting);
             const all = el("button", {
@@ -444,14 +451,27 @@ export function createDropbox(): DropboxHandles {
 
     const nodeSelect = el("select", { class: "select-rounded", "aria-label": `Destination node for ${item.sourceName || payload.title}` }) as HTMLSelectElement;
     nodeSelect.disabled = item.isIngesting || item.ingestionComplete;
+
+    const STATUS_SYMBOLS: Record<string, string> = {
+      converged: "● ",
+      lagging: "◐ ",
+      waiting: "◐ ",
+      checking: "◑ ",
+      offline: "○ ",
+      isolated: "◔ ",
+      supervisor: "◆ ",
+    };
+
     for (const n of nodes) {
+      const status = convergenceOf(n);
+      const symbol = STATUS_SYMBOLS[status] ?? "";
       const quota = n.status?.quota;
       const freeMiB = n.brain?.free_quota_mb
         ?? (quota ? Math.max(0, Math.round((quota.limit_bytes - quota.used_bytes) / (1024 * 1024))) : null)
         ?? null;
       const opt = el("option", {
         value: n.process.node_id,
-        text: `${displayNodeName(n.process.node_name, n.process.data_dir, n.process.node_id)}${freeMiB !== null ? ` (${freeMiB} MiB free)` : ""}`,
+        text: `${symbol}${displayNodeName(n.process.node_name, n.process.data_dir, n.process.node_id)} — ${status === "converged" ? "In sync" : status === "offline" ? "Offline" : status}${(freeMiB !== null ? ` (${freeMiB} MiB free)` : "")}`,
       }) as HTMLOptionElement;
       if (n.process.node_id === item.targetNodeId) opt.selected = true;
       nodeSelect.appendChild(opt);
@@ -464,7 +484,6 @@ export function createDropbox(): DropboxHandles {
       value: item.targetCollection,
       placeholder: "collection_name",
       "aria-label": `Collection for ${item.sourceName || payload.title}`,
-      style: "padding: 6px 10px; font-size: var(--text-sm); font-family: var(--font-mono); width: 160px;",
     }) as HTMLInputElement;
     colInput.disabled = item.isIngesting || item.ingestionComplete;
     on(colInput, "input", () => { item.targetCollection = colInput.value.trim(); });
@@ -472,9 +491,8 @@ export function createDropbox(): DropboxHandles {
     const commitBtn = el(
       "button",
       {
-        class: "btn btn--primary",
+        class: "btn btn--primary dropbox-staged-card__control",
         type: "button",
-        style: "gap: 6px;",
         disabled: item.isIngesting || item.ingestionComplete || nodes.length === 0 ? "true" : undefined,
         title: nodes.length === 0 ? "No online nodes to ingest into" : undefined,
       },
@@ -486,7 +504,7 @@ export function createDropbox(): DropboxHandles {
     // to leave the PUT loop running on a detached item. Discarding now marks
     // the item cancelled first, and the loop checks per record.
     const cancelBtn = el("button", {
-      class: "btn btn--ghost",
+      class: "btn btn--ghost dropbox-staged-card__control",
       type: "button",
       text: item.isIngesting ? "Cancel" : "Discard",
     });
@@ -503,9 +521,9 @@ export function createDropbox(): DropboxHandles {
     const previewRows = payload.records.slice(0, 3).map((r) =>
       el(
         "div",
-        { class: "row row--between", style: "padding: 6px 0; border-bottom: 1px solid var(--color-hairline); font-size: var(--text-xs);" },
-        el("span", { class: "mono", text: r.key, style: "font-weight: 600;" }),
-        el("span", { class: "mono muted", text: truncate(json(r.doc), 60) }),
+        { class: "dropbox-staged-card__preview-row" },
+        el("span", { class: "dropbox-staged-card__preview-key", text: r.key }),
+        el("span", { class: "dropbox-staged-card__preview-value", text: truncate(json(r.doc), 60) }),
       ),
     );
 
@@ -529,34 +547,34 @@ export function createDropbox(): DropboxHandles {
 
     return el(
       "div",
-      { class: "card", style: "margin-top: 16px; padding: 20px;" },
-      el("div", { class: "row row--between", style: "align-items: center; margin-bottom: 12px;" },
-        el("div", {},
-          el("span", { class: "badge", text: payload.workload.toUpperCase(), style: "margin-right: 8px;" }),
-          el("strong", { text: payload.title }),
-          item.sourceName ? el("span", { class: "muted", style: "font-size: var(--text-xs); margin-left: 8px;", text: item.sourceName }) : null,
+      { class: "card dropbox-staged-card" },
+      el("div", { class: "dropbox-staged-card__header" },
+        el("div", { class: "dropbox-staged-card__meta" },
+          el("span", { class: "badge", text: payload.workload.toUpperCase() }),
+          el("strong", { class: "dropbox-staged-card__title", text: payload.title }),
+          item.sourceName ? el("span", { class: "muted", text: item.sourceName }) : null,
         ),
-        el("span", { class: "muted", style: "font-size: var(--text-xs);" }, `Engine: ${engineLabel(payload.suggestedEngine)}`),
+        el("span", { class: "muted", text: `Engine: ${engineLabel(payload.suggestedEngine)}`}),
       ),
-      el("p", { style: "font-size: var(--text-sm); margin-bottom: 16px;", text: payload.summary }),
-      el("div", { class: "row", style: "gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap;" },
-        el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Destination Node:"),
+      el("p", { class: "dropbox-staged-card__summary", text: payload.summary }),
+      el("div", { class: "dropbox-staged-card__controls" },
+        el("span", { class: "dropbox-staged-card__label", text: "Destination Node:" }),
         nodeSelect,
-        el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Collection:"),
+        el("span", { class: "dropbox-staged-card__label", text: "Collection:" }),
         colInput,
       ),
-      el("div", { class: "stack", style: "background: var(--color-surface-pearl); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 16px;" },
-        el("strong", { text: payload.records.length > 3 ? `Preview (first 3 of ${payload.records.length} records):` : `Preview (${payload.records.length} ${payload.records.length === 1 ? "record" : "records"}):`, style: "font-size: var(--text-xs); margin-bottom: 4px;" }),
+      el("div", { class: "dropbox-staged-card__preview" },
+        el("strong", { class: "dropbox-staged-card__preview-header", text: payload.records.length > 3 ? `Preview (first 3 of ${payload.records.length} records):` : `Preview (${payload.records.length} ${payload.records.length === 1 ? "record" : "records"}):` }),
         ...previewRows,
       ),
-      el("div", { class: "row", style: "gap: 10px;" }, commitBtn, cancelBtn, viewButton),
+      el("div", { class: "dropbox-staged-card__actions" }, commitBtn, cancelBtn, viewButton),
       failures > 0 && !item.isIngesting
         ? el("p", { class: "error-note", text: `${failures} record${failures === 1 ? "" : "s"} failed — see the log below.` })
         : null,
       item.logs.length > 0
-        ? el("div", { class: "stack", style: "margin-top: 16px; padding: 12px; background: var(--color-surface-pearl); border-radius: var(--radius-sm); font-size: var(--text-xs); max-height: 300px; overflow-y: auto;" },
-            el("strong", { text: "Ingestion Log:" }),
-            ...item.logs.map((l) => el("div", { class: "mono", text: l, style: "white-space: pre-wrap; word-break: break-word;" })),
+        ? el("div", { class: "dropbox-staged-card__log" },
+            el("strong", { class: "dropbox-staged-card__log-header", text: "Ingestion Log:" }),
+            ...item.logs.map((l) => el("div", { class: "dropbox-staged-card__log-line", text: l })),
           )
         : null,
     );
