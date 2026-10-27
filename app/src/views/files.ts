@@ -125,6 +125,7 @@ export function createFiles(): FilesHandles {
       .join("|");
     if (!force && activationKey === lastActivationKey) return;
     lastActivationKey = activationKey;
+    state.page = 0;
     void fetchFiles();
     void fetchRecentFiles();
   }
@@ -132,8 +133,8 @@ export function createFiles(): FilesHandles {
   // -- API calls ---------------------------------------------------------------
 
   async function fetchFiles(): Promise<void> {
-    const node = store.dataNodes().find((n) => n.reachable && n.process.process === "running");
-    if (!node) {
+    const nodes = store.dataNodes().filter((n) => n.reachable && n.process.process === "running");
+    if (nodes.length === 0) {
       state.error = "No running node available.";
       state.loading = false;
       render();
@@ -152,33 +153,56 @@ export function createFiles(): FilesHandles {
       if (state.filters.collection !== "all") params.set("collection", state.filters.collection);
       if (state.filters.dateFilter !== "anytime") params.set("date", state.filters.dateFilter);
       params.set("sort", state.filters.sort);
-      params.set("page", String(state.page));
-      params.set("limit", "50");
+      // Query each running node. Assets can exist on a different local node,
+      // and the first node in the tree is not necessarily the file's holder.
+      const pageSize = 50;
+      params.set("offset", String(state.page * pageSize));
+      params.set("limit", String(pageSize));
+      const batches = await Promise.all(nodes.map(async (node) => {
+        try {
+          const res = await fetch(`http://127.0.0.1:${node.process.api_port}/_files?${params}`, {
+            headers: await getAuthHeaders(),
+          });
+          if (!res.ok) throw new Error(`File list returned ${res.status}`);
+          const data = await res.json() as { files?: FileItem[]; total?: number; has_more?: boolean; hasMore?: boolean };
+          return {
+            node,
+            files: (data.files ?? []).map((file) => ({ ...file, nodePort: node.process.api_port })),
+            hasMore: data.has_more ?? data.hasMore ?? false,
+          };
+        } catch {
+          const files = await buildFilesFromCollections(node);
+          return { node, files, hasMore: false };
+        }
+      }));
 
-      // Try the _files endpoint; fall back to listing collections
-      const res = await fetch(`http://127.0.0.1:${node.process.api_port}/_files?${params}`, {
-        headers: await getAuthHeaders(),
-      });
-
-      if (res.ok) {
-        const data = await res.json() as { files?: FileItem[]; total?: number; hasMore?: boolean };
-        state.files = (data.files ?? []).map((f) => ({ ...f, nodePort: node.process.api_port }));
-        state.hasMore = data.hasMore ?? false;
-      } else {
-        // Fallback: build file list from collections
-        await buildFilesFromCollections(node);
+      const merged = new Map<string, FileItem>();
+      for (const batch of batches) {
+        for (const file of batch.files) {
+          const identity = `${file.collection}\u0000${file.key}`;
+          if (!merged.has(identity)) merged.set(identity, file);
+        }
       }
-
-      // Fetch collections list
-      const brain = node.brain;
-      if (brain) {
-        state.collections = brain.collections.map((c) => c.name);
+      const pageFiles = [...merged.values()];
+      if (state.page === 0) state.files = pageFiles;
+      else {
+        const existing = new Map(state.files.map((file) => [`${file.collection}\u0000${file.key}`, file]));
+        for (const file of pageFiles) {
+          const identity = `${file.collection}\u0000${file.key}`;
+          if (!existing.has(identity)) existing.set(identity, file);
+        }
+        state.files = [...existing.values()];
       }
+      state.hasMore = batches.some((batch) => batch.hasMore);
+      state.collections = [...new Set(nodes.flatMap((node) => node.brain?.collections.map((c) => c.name) ?? []))];
     } catch (err) {
       state.error = describeError(err);
       // Try fallback
-      const node = store.dataNodes().find((n) => n.reachable && n.process.process === "running");
-      if (node) await buildFilesFromCollections(node);
+      const node = nodes[0];
+      if (node) {
+        state.files = await buildFilesFromCollections(node);
+        state.hasMore = false;
+      }
     } finally {
       state.loading = false;
       render();
@@ -195,11 +219,11 @@ export function createFiles(): FilesHandles {
     }
   }
 
-  async function buildFilesFromCollections(node: { process: { api_port: number } }): Promise<void> {
+  async function buildFilesFromCollections(node: { process: { api_port: number } }): Promise<FileItem[]> {
     // Fallback: iterate collections and list documents
     const files: FileItem[] = [];
     const brain = store.dataNodes().find((n) => n.process.api_port === node.process.api_port)?.brain;
-    if (!brain) return;
+    if (!brain) return [];
 
     for (const col of brain.collections) {
       try {
@@ -224,8 +248,7 @@ export function createFiles(): FilesHandles {
         // Skip collections that fail
       }
     }
-    state.files = files;
-    state.hasMore = false;
+    return files;
   }
 
   async function fetchRecentFiles(): Promise<void> {

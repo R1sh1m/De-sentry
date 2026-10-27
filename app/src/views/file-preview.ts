@@ -27,12 +27,42 @@ export interface FileMeta {
 }
 
 let activeModal: HTMLElement | null = null;
+let activeObjectUrls: string[] = [];
+
+function fileStreamUrl(port: number, collection: string, key: string): string {
+  return `http://127.0.0.1:${port}/_files/${encodeURIComponent(collection)}/${encodeURIComponent(key)}/stream`;
+}
+
+async function fetchFile(meta: FileMeta): Promise<Response> {
+  const token = await apiToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const ports = [
+    meta.nodePort,
+    ...store.dataNodes()
+      .filter((node) => node.reachable && node.process.process === "running")
+      .map((node) => node.process.api_port),
+  ].filter((port, index, all) => port > 0 && all.indexOf(port) === index);
+  let lastError = "No reachable node has this file.";
+  for (const port of ports) {
+    try {
+      const response = await fetch(fileStreamUrl(port, meta.collection, meta.key), { headers });
+      if (response.ok) return response;
+      const detail = (await response.text()).trim();
+      lastError = `Node ${port} returned ${response.status}${detail ? `: ${detail.slice(0, 240)}` : ""}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  throw new Error(lastError);
+}
 
 function closeModal(): void {
   if (activeModal) {
     activeModal.remove();
     activeModal = null;
   }
+  for (const url of activeObjectUrls) URL.revokeObjectURL(url);
+  activeObjectUrls = [];
 }
 
 export function openFilePreview(meta: FileMeta): void {
@@ -74,19 +104,35 @@ export function openFilePreview(meta: FileMeta): void {
   // Build preview content based on file type
   if (isPreviewable(meta.mime)) {
     if (meta.mime === "application/pdf") {
+      const loading = el("p", { class: "muted", text: "Loading PDF…" });
+      previewArea.appendChild(loading);
       const embed = el("embed", {
-        src: `http://127.0.0.1:${meta.nodePort}/_files/${meta.collection}/${meta.key}/stream`,
         type: "application/pdf",
         style: "width: 100%; height: 60vh; border: none;",
       });
-      previewArea.appendChild(embed);
+      void fetchFile(meta).then(async (res) => {
+        const url = URL.createObjectURL(await res.blob());
+        activeObjectUrls.push(url);
+        embed.setAttribute("src", url);
+        loading.remove();
+        previewArea.appendChild(embed);
+      }).catch((error: unknown) => {
+        loading.textContent = `Could not load PDF: ${error instanceof Error ? error.message : String(error)}`;
+      });
     } else if (meta.mime.startsWith("image/")) {
       const img = el("img", {
-        src: `http://127.0.0.1:${meta.nodePort}/_files/${meta.collection}/${meta.key}/stream`,
         alt: meta.filename,
         style: "max-width: 100%; max-height: 60vh; object-fit: contain;",
       });
       previewArea.appendChild(img);
+      void fetchFile(meta).then(async (res) => {
+        const url = URL.createObjectURL(await res.blob());
+        activeObjectUrls.push(url);
+        img.src = url;
+      }).catch((error: unknown) => {
+        img.remove();
+        previewArea.appendChild(el("p", { class: "muted", text: `Could not load image: ${error instanceof Error ? error.message : String(error)}` }));
+      });
     }
   } else if (isOfficeFile(meta.mime, meta.filename)) {
     previewArea.appendChild(
@@ -102,14 +148,9 @@ export function openFilePreview(meta: FileMeta): void {
     // Fetch text content
     void (async () => {
       try {
-        const token = await apiToken();
-        const res = await fetch(`http://127.0.0.1:${meta.nodePort}/_files/${meta.collection}/${meta.key}/stream`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (res.ok) {
-          const text = await res.text();
-          textArea.textContent = text;
-        }
+        const res = await fetchFile(meta);
+        const text = await res.text();
+        textArea.textContent = text;
       } catch {
         textArea.textContent = "Could not load file content.";
       }
@@ -131,11 +172,7 @@ export function openFilePreview(meta: FileMeta): void {
   on(openBtn, "click", async () => {
     try {
       // Fetch the file and save it, then open
-      const token = await apiToken();
-      const res = await fetch(`http://127.0.0.1:${meta.nodePort}/_files/${meta.collection}/${meta.key}/stream`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error("Failed to fetch file");
+      const res = await fetchFile(meta);
       const blob = await res.blob();
       const reader = new FileReader();
       reader.onload = async () => {
@@ -157,11 +194,7 @@ export function openFilePreview(meta: FileMeta): void {
   const saveBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.copy, 12), " Save As...");
   on(saveBtn, "click", async () => {
     try {
-      const token = await apiToken();
-      const res = await fetch(`http://127.0.0.1:${meta.nodePort}/_files/${meta.collection}/${meta.key}/stream`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error("Failed to fetch file");
+      const res = await fetchFile(meta);
       const blob = await res.blob();
       const reader = new FileReader();
       reader.onload = async () => {

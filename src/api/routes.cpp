@@ -1297,8 +1297,10 @@ void RegisterFileRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* 
     for (const std::string& coll : collections) {
       if (!engine->CanRead(coll, self())) continue;
 
-      const size_t fetch_limit = static_cast<size_t>(limit * 2 + 256);  // over-fetch for filtering
-      auto docs = engine->ListDocuments(coll, "", fetch_limit, self());
+      // File manifests can be separated by hundreds of chunk documents in
+      // key order. A bounded prefix silently hides later files, so scan the
+      // collection before filtering and paginating the much smaller file set.
+      auto docs = engine->ListDocuments(coll, "", 0, self());
 
       for (auto& [key, doc] : docs) {
         if (!doc.is_object()) continue;
