@@ -230,7 +230,7 @@ function confidenceMeter(value: number): HTMLElement {
       role: "img",
       "aria-label": `Confidence ${percent(value, 1)}`,
     },
-    el("div", { class: "meter__fill", style: `width: ${Math.round(Math.min(1, value) * 100)}%` }),
+    (() => { const d = el("div", { class: "meter__fill wizard__meter-fill" }); d.style.setProperty("--meter-width", `${Math.round(Math.min(1, value) * 100)}%`); return d; })(),
   );
 }
 
@@ -277,7 +277,7 @@ export function createWizard(): WizardHandles {
   const titleBar = el(
     "div",
     { class: "wizard__titlebar" },
-    el("span", { style: "width: 28px;" }),
+    el("span", { class: "wizard__spacer" }),
     el("span", { class: "wizard__titlebar-title", text: "Create / Adopt Node" }),
     closeButton,
   );
@@ -534,7 +534,7 @@ export function createWizard(): WizardHandles {
     const shown = draft.candidates.filter((c) => c.adoptable || c.existing_node);
 
     if (draft.scanning) {
-      list.appendChild(el("div", { class: "skeleton", style: "height: 120px" }));
+      list.appendChild(el("div", { class: "skeleton wizard__skeleton-sm" }));
     } else if (shown.length === 0) {
       list.appendChild(
         el("p", {
@@ -601,23 +601,16 @@ export function createWizard(): WizardHandles {
     const selectedCard = draft.dataDir
       ? el(
           "div",
-          {
-            class: "card card--selected-location",
-            style:
-              "border: 1px solid var(--color-status-converged); background: rgba(34, 197, 94, 0.08); padding: var(--space-md); margin-top: var(--space-md); margin-bottom: var(--space-sm);",
-          },
+          { class: "card card--selected-location" },
           el(
             "div",
-            { class: "row row--between", style: "align-items: center;" },
+            { class: "row row--between" },
             el(
               "div",
-              { class: "row", style: "gap: 12px; align-items: center;" },
+              { class: "row" },
               el(
                 "span",
-                {
-                  style:
-                    "display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: rgba(34, 197, 94, 0.2); color: var(--color-status-converged); flex-shrink: 0;",
-                },
+                { class: "selected-location__icon" },
                 icon(draft.removable ? Icons.drive : Icons.folder, 18),
               ),
               el(
@@ -625,18 +618,15 @@ export function createWizard(): WizardHandles {
                 {},
                 el(
                   "div",
-                  {
-                    style:
-                      "font: var(--text-fine); color: var(--color-status-converged); font-weight: 700; text-transform: uppercase; letter-spacing: var(--tracking-label); margin-bottom: 2px;",
-                  },
+                  { class: "selected-location__status" },
                   "✓ Selected Storage Location",
                 ),
-                el("strong", { class: "mono", style: "word-break: break-all; font-size: 13px;", text: draft.dataDir }),
+                el("strong", { class: "mono", text: draft.dataDir }),
               ),
             ),
             el(
               "div",
-              { class: "row", style: "gap: 8px;" },
+              { class: "wizard__row-gap-sm" },
               el("span", { class: "badge", "data-tone": "converged", text: draft.adopt ? "adopting node" : "selected" }),
               draft.removable ? el("span", { class: "badge", text: "removable" }) : null,
             ),
@@ -771,17 +761,17 @@ export function createWizard(): WizardHandles {
         });
         const modeChoice = el(
           "div",
-          { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
+          { class: "row wizard__row-gap-md wizard__row-wrap" },
           el(
             "label",
-            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-pointer" },
             standaloneRadio,
             el("strong", { text: "Isolated Standalone Database" }),
             el("span", { class: "badge", "data-tone": "converged", text: "Zero Replication" }),
           ),
           el(
             "label",
-            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-pointer" },
             meshRadio,
             el("strong", { text: "LAN Mesh Replica" }),
             el("span", { class: "badge", text: "Replicated" }),
@@ -849,9 +839,9 @@ export function createWizard(): WizardHandles {
     });
     const choice = el(
       "div",
-      { class: "row", style: "gap: var(--space-md); flex-wrap: wrap;" },
-      el("label", { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" }, generatedRadio, el("span", { text: "Generated recovery key" })),
-      el("label", { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" }, passphraseRadio, el("span", { text: "My own passphrase" })),
+      { class: "wizard__row-wrap" },
+      el("label", { class: "wizard__row-gap-xs-cur" }, generatedRadio, el("span", { text: "Generated recovery key" })),
+      el("label", { class: "wizard__row-gap-xs-cur" }, passphraseRadio, el("span", { text: "My own passphrase" })),
     );
 
     if (draft.keyMode !== "passphrase") {
@@ -906,7 +896,7 @@ export function createWizard(): WizardHandles {
           });
           return el(
             "label",
-            { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+            { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-pointer" },
             box,
             el("span", { text: "I understand this passphrase is weak but want to use it anyway" }),
           );
@@ -984,7 +974,7 @@ export function createWizard(): WizardHandles {
         { class: "stack" },
         el("p", { class: "wizard__eyebrow", text: "Step 3 of 5" }),
         el("h2", { class: "wizard__title", text: "Reading the description…" }),
-        el("div", { class: "skeleton", style: "height: 180px" }),
+        el("div", { class: "skeleton wizard__skeleton-md" }),
       );
     }
 
@@ -1016,7 +1006,7 @@ export function createWizard(): WizardHandles {
         el("p", { class: "wizard__eyebrow", text: "Step 3 of 5" }),
         el("h2", { class: "wizard__title", text: "What shape should this node be?" }),
         el("p", { class: "wizard__lead", text: draft.description || "No description given — you can propose with AI or configure manually below." }),
-        el("div", { class: "row", style: "margin-bottom: var(--space-xs);" }, start),
+        el("div", { class: "row wizard__margin-bottom-xs" }, start),
         section("Configure storage engines", enginePicker()),
       );
     }
@@ -1070,7 +1060,7 @@ export function createWizard(): WizardHandles {
     technical.appendChild(
       el(
         "div",
-        { class: "row", style: "margin-top: var(--space-xs);" },
+        { class: "row wizard__margin-top-xs" },
         ...decision.scores
           .slice()
           .sort((a, b) => b.score - a.score)
@@ -1097,7 +1087,7 @@ export function createWizard(): WizardHandles {
       );
 
       for (const q of questions) {
-        const qBlock = el("div", { class: "stack", style: "margin-top: var(--space-xs)" });
+        const qBlock = el("div", { class: "stack wizard__margin-top-xs" });
         qBlock.appendChild(el("p", { class: "ai-clarify-box__prompt", text: q.prompt }));
         qBlock.appendChild(el("p", { class: "ai-clarify-box__rationale", text: q.rationale }));
 
@@ -1130,7 +1120,7 @@ export function createWizard(): WizardHandles {
     // Lives inside Technical details; clarifying questions above stay visible
     // because they are actionable.
     if (reasoning) {
-      const reasoningCard = el("div", { class: "ai-reasoning-card", style: "margin-top: var(--space-xs);" });
+      const reasoningCard = el("div", { class: "ai-reasoning-card wizard__margin-top-xs" });
       reasoningCard.appendChild(el("p", { class: "ai-reasoning-card__summary", text: reasoning.summary }));
 
       if (reasoning.key_matched_signals.length > 0) {
@@ -1168,7 +1158,7 @@ export function createWizard(): WizardHandles {
       }
 
       if (reasoning.operational_trade_offs.length > 0) {
-        const tradeoffsBlock = el("div", { class: "stack", style: "gap: 4px; margin-top: var(--space-xs)" });
+        const tradeoffsBlock = el("div", { class: "stack wizard__gap-4px wizard__margin-top-xs" });
         tradeoffsBlock.appendChild(
           el("span", { class: "ai-reasoning-signals__label", text: "Operational Trade-Offs:" }),
         );
@@ -1183,15 +1173,11 @@ export function createWizard(): WizardHandles {
 
       // Fine-tuning refinement options (when already confident)
       if (!lowConfidence && questions.length > 0) {
-        const tuneBlock = el("div", {
-          class: "stack",
-          style:
-            "margin-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); padding-top: var(--space-xs); gap: 6px",
-        });
+        const tuneBlock = el("div", { class: "stack wizard__tune-block" });
         tuneBlock.appendChild(el("span", { class: "ai-reasoning-signals__label", text: "Fine-Tune This Proposal:" }));
         for (const q of questions) {
-          tuneBlock.appendChild(el("p", { class: "muted", style: "margin: 0", text: q.prompt }));
-          const optionsRow = el("div", { class: "row", style: "flex-wrap: wrap" });
+          tuneBlock.appendChild(el("p", { class: "muted wizard__margin-none", text: q.prompt }));
+          const optionsRow = el("div", { class: "row wizard__row-wrap" });
           for (const opt of q.options) {
             const chip = el("button", {
               class: "chip",
@@ -1237,7 +1223,7 @@ export function createWizard(): WizardHandles {
         "Budget split",
         quotaSplitBars(spec.quota_split, draft.quotaMb),
         reasoning?.quota_rationale
-          ? el("p", { class: "muted", style: "margin-top: var(--space-xs)", text: reasoning.quota_rationale })
+          ? el("p", { class: "muted wizard__margin-top-xs", text: reasoning.quota_rationale })
           : null,
       ),
     );
@@ -1258,7 +1244,7 @@ export function createWizard(): WizardHandles {
           "Collections it will create",
           el(
             "div",
-            { class: "row", style: "flex-wrap: wrap; gap: 8px;" },
+            { class: "wizard__engine-row" },
             ...collectionsToRender.map((c) =>
               el("span", {
                 class: "chip",
@@ -1276,24 +1262,22 @@ export function createWizard(): WizardHandles {
 
   function enginePicker(): HTMLElement {
     const available = draft.engines.length > 0 ? draft.engines : store.state.engines;
-    const container = el("div", { class: "stack", style: "gap: 8px;" });
-    const row = el("div", { class: "row", style: "flex-wrap: wrap; gap: 8px;" });
+    const container = el("div", { class: "wizard__engine-container" });
+    const row = el("div", { class: "row wizard__row-wrap wizard__gap-8px" });
 
     for (const engine of available) {
       const chosen = draft.manualEngines.has(engine.name);
       // All engines are presented as available; opt-in engines are included automatically
       // to give users the full range of database capabilities without manual selection.
       const chip = el("button", {
-        class: chosen ? "chip chip--selected" : "chip",
+        class: chosen ? "chip chip--selected wizard__chip-selected" : "chip",
         type: "button",
         "aria-pressed": String(chosen),
         title: engine.built_in
           ? "Built in — always available"
           : "Vendored backend, compiled into this build",
         text: (chosen ? "✓ " : "") + engineLabel(engine.name),
-        style: chosen
-          ? "border: 1px solid var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, transparent); font-weight: 600;"
-          : "",
+
       });
       on(chip, "click", () => {
         if (draft.manualEngines.has(engine.name)) {
@@ -1318,11 +1302,11 @@ export function createWizard(): WizardHandles {
 
     if (cols.length > 0) {
       container.appendChild(
-        el("div", { class: "stack", style: "gap: 4px; margin-top: 4px;" },
-          el("span", { class: "muted", style: "font-size: 11px;", text: "Initial collections created automatically:" }),
+        el("div", { class: "stack wizard__gap-4px wizard__margin-top-4px" },
+          el("span", { class: "muted wizard__font-size-11", text: "Initial collections created automatically:" }),
           el(
             "div",
-            { class: "row", style: "flex-wrap: wrap; gap: 6px;" },
+            { class: "row wizard__row-wrap wizard__gap-6px" },
             ...cols.map((c) =>
               el("span", {
                 class: "chip",
@@ -1336,8 +1320,7 @@ export function createWizard(): WizardHandles {
 
     container.appendChild(
       el("p", {
-        class: "muted",
-        style: "font: var(--text-fine); margin-top: 4px;",
+        class: "muted wizard__font-fine wizard__margin-top-4px",
         text: "All storage engines are enabled by default for maximum flexibility. Each collection uses the engine best suited for its workload.",
       }),
     );
@@ -1538,11 +1521,7 @@ export function createWizard(): WizardHandles {
       "div",
       { class: "constellation", "aria-hidden": "true" },
       ...groups.map((g, i) =>
-        el("span", {
-          class: "constellation__star",
-          style: `animation-delay: ${(i * 0.35).toFixed(2)}s;`,
-          text: g,
-        }),
+        (() => { const s = el("span", { class: "constellation__star wizard__star-delay", text: g }); s.style.animationDelay = `${(i * 0.35).toFixed(2)}s`; return s; })(),
       ),
     );
   }
@@ -1602,15 +1581,15 @@ export function createWizard(): WizardHandles {
       "details",
       { class: "disclosure" },
       el("summary", { class: "disclosure__summary", text: `Verify constellation (optional, first ${game.length} groups)` }),
-      el("p", { class: "muted", style: "font: var(--text-fine);", text: `Tap the stars back in key order — ${progress} of ${game.length} placed. Skipping this changes nothing about Done.` }),
-      el("div", { class: "row", style: "flex-wrap: wrap;" }, ...chips),
+      el("p", { class: "wizard__subtitle-text", text: `Tap the stars back in key order — ${progress} of ${game.length} placed. Skipping this changes nothing about Done.` }),
+      el("div", { class: "wizard__flex-wrap" }, ...chips),
     );
   }
 
   function stepRecovery(): HTMLElement {
     const node = draft.created;
     const key = draft.recoveryKey;
-    if (node === null) return el("div", { class: "skeleton", style: "height: 220px" });
+    if (node === null) return el("div", { class: "skeleton wizard__skeleton-tall" });
 
     if (key === null && draft.keyMode !== "passphrase") {
       return el(
@@ -1635,7 +1614,7 @@ export function createWizard(): WizardHandles {
         });
         return el(
           "label",
-          { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+          { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-pointer" },
           box,
           el("span", { text: "I have written down my passphrase somewhere safe" }),
         );
@@ -1664,7 +1643,7 @@ export function createWizard(): WizardHandles {
 
     // Both null-key cases returned above (unencrypted + passphrase). A null
     // here is unreachable; guard for the type-checker rather than rendering.
-    if (key === null) return el("div", { class: "skeleton", style: "height: 220px" });
+    if (key === null) return el("div", { class: "skeleton wizard__skeleton-tall" });
 
     const saveButton = el("button", { class: "btn btn--primary", type: "button", text: "Save to a file…" });
     on(saveButton, "click", async () => {
@@ -1722,7 +1701,7 @@ export function createWizard(): WizardHandles {
       });
       return el(
         "label",
-        { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer;" },
+        { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-pointer" },
         box,
         el("span", { text: "I have safely stored this recovery key" }),
       );
@@ -1731,7 +1710,7 @@ export function createWizard(): WizardHandles {
     const printConfirm = draft.recoveryPrintPending
       ? el(
           "div",
-          { class: "row", style: "gap: var(--space-xs); align-items: center; flex-wrap: wrap;" },
+          { class: "row wizard__row-gap-xs wizard__row-align-center wizard__row-wrap" },
           el("span", { class: "muted", text: "Did the key print correctly?" }),
           (() => {
             const yes = el("button", { class: "btn btn--sm", type: "button", text: "Yes, it printed" });
@@ -1747,7 +1726,7 @@ export function createWizard(): WizardHandles {
               draft.recoveryPrintPending = false;
               render();
             });
-            return el("span", { class: "row", style: "gap: var(--space-xs);" }, yes, notYet);
+            return el("span", { class: "row wizard__row-gap-xs" }, yes, notYet);
           })(),
         )
       : null;
@@ -1762,7 +1741,7 @@ export function createWizard(): WizardHandles {
         text: "This is the only time this key is shown. It is not escrowed: if this device's keychain is lost and you do not have this key, the data on this node cannot be read by anyone, including us.",
       }),
       el("div", { class: "qr" }, qrSvg(key, { scale: 4, title: "Recovery key" })),
-      el("p", { class: "mono", style: "user-select: text; word-break: break-all", text: key }),
+      el("p", { class: "mono wizard__mono-text", text: key }),
       keyConstellation(key),
       el("div", { class: "row" }, saveButton, printButton, copyButton),
       printConfirm,

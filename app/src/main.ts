@@ -102,9 +102,10 @@ function openShortcutsCheatsheet(): void {
     ["N", "New node"],
     ["1", "Tree view"],
     ["2", "Mesh view"],
-    ["3", "Open ledger for selected node"],
-    ["4", "Open console for selected node"],
-    ["5", "Open Dropbox"],
+    ["3", "Files view"],
+    ["4", "Open Dropbox"],
+    ["5", "Open console for selected node"],
+    ["6", "Open ledger for selected node"],
     ["+", "Zoom mesh in"],
     ["-", "Zoom mesh out"],
     ["Ctrl/Cmd + 0", "Fit mesh view"],
@@ -361,7 +362,17 @@ function openAboutSheet(): void {
       if (pendingUpdate) {
         await installUpdate(pendingUpdate);
       } else if (manualRelease) {
-        window.open(manualRelease.url, "_blank", "noopener,noreferrer");
+        if (isTauri()) {
+          await sidecar.openUrl(manualRelease.url);
+        } else {
+          window.open(manualRelease.url, "_blank", "noopener,noreferrer");
+        }
+      }
+      return;
+    }
+    if (checkState === "installed") {
+      if (isTauri()) {
+        await sidecar.restartApp();
       }
       return;
     }
@@ -373,9 +384,29 @@ function openAboutSheet(): void {
     updateStatusText = "Downloading update...";
     renderUpdateStatus();
     try {
-      await update.downloadAndInstall();
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+          updateStatusText = "Downloading update...";
+          renderUpdateStatus();
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          if (total > 0) {
+            const pct = Math.round((downloaded / total) * 100);
+            updateStatusText = `Downloading update (${pct}%)...`;
+          } else {
+            updateStatusText = "Downloading update...";
+          }
+          renderUpdateStatus();
+        } else if (event.event === "Finished") {
+          updateStatusText = "Installing update...";
+          renderUpdateStatus();
+        }
+      });
       checkState = "installed";
-      updateStatusText = `v${update.version} installed — restart app`;
+      updateStatusText = `v${update.version} installed — restart required`;
     } catch (err) {
       console.warn("Update install failed:", err);
       checkState = "error";
@@ -385,12 +416,12 @@ function openAboutSheet(): void {
   }
 
   async function checkForUpdates(): Promise<void> {
-    if (!isTauri() || checkState === "checking" || checkState === "installing") return;
+    if (checkState === "checking" || checkState === "installing") return;
     checkState = "checking";
     updateStatusText = "";
     renderUpdateStatus();
 
-    const activeVersion = appVersion && appVersion !== "unknown" ? appVersion : "1.2.0";
+    const activeVersion = store.state.appInfo?.version ?? (appVersion && appVersion !== "unknown" ? appVersion : "1.2.0");
 
     // Airplane mode / offline: honor zero-fetched-dependencies principle
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -403,6 +434,26 @@ function openAboutSheet(): void {
     }
 
     try {
+      // 1. In desktop Tauri shell, check the signed updater feed first (raw latest.json endpoint)
+      if (isTauri()) {
+        try {
+          const { check } = await import("@tauri-apps/plugin-updater");
+          const update = await check({ timeout: 8_000 });
+          if (update !== null && compareVersions(update.version, activeVersion) > 0) {
+            checkState = "available";
+            pendingUpdate = update;
+            manualRelease = null;
+            updateStatusText = `v${update.version} available`;
+            renderUpdateStatus();
+            return;
+          }
+        } catch (tauriError) {
+          console.warn("Tauri updater feed check notice:", tauriError);
+          // Fall through to public GitHub Releases check (e.g. for unsigned macOS DMGs or feed fallback)
+        }
+      }
+
+      // 2. Check public GitHub Releases (works in browser and acts as fallback for unsigned releases)
       const latest = await fetchLatestRelease();
       if (compareVersions(latest.version, activeVersion) <= 0) {
         checkState = "up-to-date";
@@ -413,17 +464,6 @@ function openAboutSheet(): void {
         checkState = "available";
         manualRelease = latest;
         pendingUpdate = null;
-        // Keep Tauri's signed updater path when a release provides one. Current
-        // macOS releases ship an unsigned DMG, so the fallback opens its page.
-        try {
-          const { check } = await import("@tauri-apps/plugin-updater");
-          const update = await check({ timeout: 8_000 });
-          if (update !== null && compareVersions(update.version, activeVersion) > 0) {
-            pendingUpdate = update;
-          }
-        } catch {
-          // Unsigned DMG releases do not have a platform entry in latest.json.
-        }
         updateStatusText = `v${latest.version} available`;
       }
     } catch (error) {
@@ -433,12 +473,15 @@ function openAboutSheet(): void {
       if (errStr.includes("http 403")) {
         checkState = "error";
         updateStatusText = "GitHub rate limited; retry shortly";
-      } else {
-        // Offline, unreachable feed, timeout, or airplane mode: silent mesh fallback
+      } else if (errStr.includes("offline") || (typeof navigator !== "undefined" && !navigator.onLine)) {
         checkState = "up-to-date";
-        updateStatusText = typeof navigator !== "undefined" && !navigator.onLine
-          ? "Mesh mode (offline)"
-          : `Up to date (v${activeVersion})`;
+        updateStatusText = "Mesh mode (offline)";
+      } else if (errStr.includes("abort") || errStr.includes("time") || errStr.includes("timeout")) {
+        checkState = "error";
+        updateStatusText = "Check timed out; retry shortly";
+      } else {
+        checkState = "error";
+        updateStatusText = "Could not reach update feed";
       }
     }
     renderUpdateStatus();
@@ -449,27 +492,35 @@ function openAboutSheet(): void {
     statusEl.textContent = updateStatusText;
     if (checkState === "checking") {
       checkButton.disabled = true;
+      checkButton.className = "btn btn--sm btn--ghost";
       checkButton.textContent = "Checking...";
     } else if (checkState === "up-to-date") {
       checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--ghost";
       checkButton.textContent = "Check Again";
     } else if (checkState === "available" && pendingUpdate) {
       checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--primary";
       checkButton.textContent = `Install v${pendingUpdate.version}`;
     } else if (checkState === "available" && manualRelease) {
       checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--primary";
       checkButton.textContent = `View v${manualRelease.version}`;
     } else if (checkState === "installing") {
       checkButton.disabled = true;
+      checkButton.className = "btn btn--sm btn--primary";
       checkButton.textContent = "Installing...";
     } else if (checkState === "installed") {
-      checkButton.disabled = true;
-      checkButton.textContent = "Restart Required";
+      checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--primary";
+      checkButton.textContent = isTauri() ? "Restart App" : "Restart Required";
     } else if (checkState === "error") {
       checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--ghost";
       checkButton.textContent = "Check Again";
     } else {
       checkButton.disabled = false;
+      checkButton.className = "btn btn--sm btn--ghost";
       checkButton.textContent = "Check for Updates";
     }
   }
@@ -578,11 +629,12 @@ function build(): void {
   }
 
   // Header ------------------------------------------------------------------
+  const appVersionBadge = el("span", { class: "brand-badge", text: `v${store.state.appInfo?.version ?? "1.2.0"}` });
   const titleRow = el(
     "div",
     { class: "brand-cluster__row" },
     el("p", { class: "header__title", text: "De-Sentry" }),
-    el("span", { class: "brand-badge", text: "v1.0" }),
+    appVersionBadge,
   );
   const title = el(
     "button",
@@ -874,6 +926,7 @@ function build(): void {
       .join(" · ");
     const sub = title.querySelector(".header__sub");
     if (sub !== null) sub.textContent = subtitle;
+    appVersionBadge.textContent = `v${info?.version ?? "1.2.0"}`;
 
     sidebar.render();
     healthAlerts.render();
@@ -955,6 +1008,17 @@ function build(): void {
     } else if (event.key === "2") {
       store.setCanvasMode("mesh");
     } else if (event.key === "3") {
+      store.select({ kind: "files" });
+    } else if (event.key === "4") {
+      store.select({ kind: "dropbox" });
+    } else if (event.key === "5") {
+      const node = store.selectedNode() ?? store.dataNodes()[0];
+      if (node) {
+        store.select({ kind: "console", nodeId: node.process.node_id });
+      } else {
+        store.select({ kind: "console" });
+      }
+    } else if (event.key === "6") {
       const node = store.selectedNode() ?? store.dataNodes()[0];
       if (node) {
         store.select({ kind: "ledger", nodeId: node.process.node_id });
@@ -962,11 +1026,6 @@ function build(): void {
         store.select({ kind: "ledger" });
         store.toast("info", "Ledger Feed", "No active nodes in mesh. Provision a node to view its transactions.", 3500);
       }
-    } else if (event.key === "4") {
-      const node = store.selectedNode() ?? store.dataNodes()[0];
-      if (node) store.select({ kind: "console", nodeId: node.process.node_id });
-    } else if (event.key === "5") {
-      store.select({ kind: "dropbox" });
     } else if ((event.metaKey || event.ctrlKey) && event.key === "0") {
       event.preventDefault();
       canvasZoomFit();

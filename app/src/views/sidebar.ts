@@ -720,10 +720,10 @@ function emptyMountRow(): HTMLElement {
 
 const PINNED_NAV = [
   { id: "view",    label: "View",        iconName: "mesh"     as keyof typeof Icons },
-  { id: "files",   label: "Files",       iconName: "folder"   as keyof typeof Icons },
-  { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons },
-  { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons },
-  { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons },
+  { id: "files",   label: "Files",       iconName: "folder"   as keyof typeof Icons, shortcut: "3" },
+  { id: "dropbox", label: "Dropbox",     iconName: "inbox"    as keyof typeof Icons, shortcut: "4" },
+  { id: "console", label: "Console",     iconName: "terminal" as keyof typeof Icons, shortcut: "5" },
+  { id: "ledger",  label: "Ledger Feed", iconName: "ledger"   as keyof typeof Icons, shortcut: "6" },
 ] as const;
 
 export interface SidebarHandles {
@@ -1157,12 +1157,14 @@ export function createSidebar(onNewNode: () => void, onAddAsPeer: (nodeId: strin
           elements.push(toggleRow);
         }
       } else {
+        const shortcut = "shortcut" in item ? (item as { shortcut?: string }).shortcut : undefined;
         const btn = el(
           "button",
           {
             class: "nav-item" + (isHighlighted ? " nav-item--highlighted" : ""),
             type: "button",
             "aria-selected": String(isActive),
+            title: shortcut ? `${item.label} (${shortcut})` : item.label,
           },
           icon(Icons[item.iconName], 14),
           el("span", { class: "nav-item__label", text: item.label }),

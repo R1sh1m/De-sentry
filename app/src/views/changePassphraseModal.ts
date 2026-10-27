@@ -51,16 +51,13 @@ export function openChangePassphraseModal(node: { node_id: string; node_name?: s
     text: "The old secret stops working immediately. The node's data is not re-encrypted — its key is re-wrapped under the new passphrase.",
   });
 
-  const inputStyle =
-    "flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--color-ink);";
+  const oldInput = el("input", { type: "password", class: "input modal-passphrase__input", placeholder: "Current recovery key or passphrase…", autocomplete: "off" }) as HTMLInputElement;
+  const newInput = el("input", { type: "password", class: "input modal-passphrase__input", placeholder: "New passphrase (at least 12 characters)…", autocomplete: "new-password" }) as HTMLInputElement;
+  const confirmInput = el("input", { type: "password", class: "input modal-passphrase__input", placeholder: "Retype the new passphrase…", autocomplete: "new-password" }) as HTMLInputElement;
 
-  const oldInput = el("input", { type: "password", class: "input", style: inputStyle, placeholder: "Current recovery key or passphrase…", autocomplete: "off" }) as HTMLInputElement;
-  const newInput = el("input", { type: "password", class: "input", style: inputStyle, placeholder: "New passphrase (at least 12 characters)…", autocomplete: "new-password" }) as HTMLInputElement;
-  const confirmInput = el("input", { type: "password", class: "input", style: inputStyle, placeholder: "Retype the new passphrase…", autocomplete: "new-password" }) as HTMLInputElement;
-
-  const meter = el("p", { class: "muted", style: "margin: 4px 0 0;" });
-  const ackLabel = el("label", { class: "row", style: "gap: var(--space-xs); align-items: center; cursor: pointer; margin-top: 8px; display: none;" });
-  const ackBox = el("input", { type: "checkbox" }) as HTMLInputElement;
+  const meter = el("p", { class: "muted modal-passphrase__meter" });
+  const ackLabel = el("label", { class: "row modal-passphrase__ack" });
+  const ackBox = el("input", { type: "checkbox", class: "modal-passphrase__toggle" }) as HTMLInputElement;
   ackLabel.appendChild(ackBox);
   ackLabel.appendChild(el("span", { text: "I understand this passphrase is weak but want to use it anyway" }));
 
@@ -93,7 +90,7 @@ export function openChangePassphraseModal(node: { node_id: string; node_name?: s
   on(confirmInput, "input", refreshMeter);
   refreshMeter();
 
-  const errorNote = el("p", { class: "error-note", style: "display: none; margin: 8px 0;" });
+  const errorNote = el("p", { class: "error-note modal-passphrase__error" });
 
   const cancelBtn = el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Cancel" });
   const saveBtn = el("button", { type: "button", class: "btn btn--primary btn--sm", text: "Change passphrase" });
@@ -149,7 +146,7 @@ export function openChangePassphraseModal(node: { node_id: string; node_name?: s
   const showRow = (input: HTMLElement, label: string) => {
     const toggle = el(
       "button",
-      { type: "button", class: "btn btn--sm btn--ghost", title: "Show", "aria-label": `Show ${label}`, style: "margin-left: 6px;" },
+      { type: "button", class: "btn btn--sm btn--ghost modal-passphrase__toggle", title: "Show", "aria-label": `Show ${label}` },
       icon(Icons.eye, 14),
     );
     let shown = false;
@@ -157,17 +154,17 @@ export function openChangePassphraseModal(node: { node_id: string; node_name?: s
       shown = !shown;
       (input as HTMLInputElement).type = shown ? "text" : "password";
     });
-    return el("div", { class: "row", style: "margin: 8px 0; align-items: center;" }, input, toggle);
+    return el("div", { class: "row modal-passphrase__input-row" }, input, toggle);
   };
 
   const box = el(
     "div",
-    { class: "modal-box", style: "max-width: 520px;" },
+    { class: "modal-box modal-passphrase__box", },
     title,
     lead,
-    el("p", { class: "muted", style: "margin-bottom: 0;", text: "Current secret" }),
+    el("p", { class: "muted modal-passphrase__text", text: "Current secret" }),
     showRow(oldInput, "current secret"),
-    el("p", { class: "muted", style: "margin-bottom: 0;", text: "New passphrase" }),
+    el("p", { class: "modal-passphrase__text", text: "New passphrase" }),
     showRow(newInput, "new passphrase"),
     showRow(confirmInput, "passphrase confirmation"),
     meter,

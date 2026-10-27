@@ -38,8 +38,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
 
   const input = el("input", {
     type: "password",
-    class: "input",
-    style: "flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--color-ink);",
+    class: "input modal-unlock__field",
     placeholder: "Enter passphrase or recovery key…",
     autocomplete: "off",
   }) as HTMLInputElement;
@@ -49,10 +48,9 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     "button",
     {
       type: "button",
-      class: "btn btn--sm btn--ghost",
+      class: "btn btn--sm btn--ghost modal-unlock__toggle",
       title: "Show password",
       "aria-label": "Show password",
-      style: "margin-left: 6px;",
     },
     icon(Icons.eye, 14),
   );
@@ -65,9 +63,9 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     replace(toggleVisibility, icon(showPassword ? Icons.eyeOff : Icons.eye, 14));
   });
 
-  const inputRow = el("div", { class: "row", style: "margin: 12px 0;" }, input, toggleVisibility);
+  const inputRow = el("div", { class: "row modal-unlock__input-row" }, input, toggleVisibility);
 
-  const errorNote = el("p", { class: "error-note", style: "display: none; margin-bottom: 8px;" });
+  const errorNote = el("p", { class: "error-note modal-unlock__error" });
 
   const cancelBtn = el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Cancel" });
   const unlockBtn = el("button", { type: "button", class: "btn btn--primary btn--sm", text: "Unlock Node" });
@@ -80,7 +78,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     const secret = input.value.trim();
     if (!secret) {
       errorNote.textContent = "Please enter a key or password.";
-      errorNote.style.display = "block";
+      errorNote.classList.add("modal-unlock__error--visible");
       input.focus();
       return;
     }
@@ -88,7 +86,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     submitting = true;
     unlockBtn.setAttribute("disabled", "true");
     unlockBtn.textContent = "Unlocking…";
-    errorNote.style.display = "none";
+    errorNote.classList.remove("modal-unlock__error--visible");
 
     try {
       const unlocked = await sidecar.unlockNode(node.node_id, secret, node.data_dir);
@@ -111,7 +109,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
     } catch (err) {
       submitting = false;
       errorNote.textContent = describeError(err);
-      errorNote.style.display = "block";
+      errorNote.classList.add("modal-unlock__error--visible");
       unlockBtn.removeAttribute("disabled");
       unlockBtn.textContent = "Unlock Node";
       input.focus();
@@ -135,7 +133,7 @@ export function openUnlockModal(node: { node_id: string; node_name?: string; dat
 
   const box = el(
     "div",
-    { class: "modal-box", style: "max-width: 480px;" },
+    { class: "modal-box modal-unlock__box" },
     title,
     lead,
     inputRow,

@@ -16,6 +16,7 @@ import { convergenceOf, reachabilitySummary, refreshNodeList, refreshTopology, s
 import { sidecar, type DiscoveredCandidate } from "../bridge.js";
 import { openUnlockModal } from "./unlockModal.js";
 import { openChangePassphraseModal } from "./changePassphraseModal.js";
+import { openPairingDialog } from "./pairingDialog.js";
 import { apiFor } from "../api.js";
 import { bytes, count, displayNodeName, duration, engineLabel, percent, shortHash, shortNode, truncate } from "../util/format.js";
 import { el, icon, Icons, on, replace, svg } from "../util/dom.js";
@@ -367,6 +368,28 @@ export function edgesOf(placed: Placed[]): EdgeData[] {
       });
     }
   }
+
+  // Connect multiple supervisors together with peer edges so the actual
+  // mesh topology is reflected even when supervisors don't share a data-plane
+  // peer link yet.
+  for (let i = 0; i < supervisors.length; i++) {
+    for (let j = i + 1; j < supervisors.length; j++) {
+      const a = supervisors[i];
+      const b = supervisors[j];
+      const key = [a.node.process.node_id, b.node.process.node_id].sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        a,
+        b,
+        live: a.status !== "offline" && b.status !== "offline",
+        fitness: 0.8,
+        latencyMs: 0,
+        successRate: 1,
+        kind: "peer",
+      });
+    }
+  }
   return edges;
 }
 
@@ -426,6 +449,9 @@ export function meshView(nodes: NodeView[], width: number, height: number, _cont
   let dragNodeId: string | null = null;
   let dragLastX = 0;
   let dragLastY = 0;
+  // Batch per-frame node moves so pointer-move stutter doesn't jank the DOM.
+  let movePending = false;
+  const pendingMove = { nodeId: "", dx: 0, dy: 0 };
 
   /** Move one card and re-anchor its edges, all in the live DOM. */
   const moveNodeDom = (nodeId: string, dx: number, dy: number): void => {
@@ -609,7 +635,7 @@ export function meshView(nodes: NodeView[], width: number, height: number, _cont
   for (const p of placed) {
     const isSupervisor = p.node.process.supervisor;
     const isSelected = selectedId === p.node.process.node_id;
-    const dotR = isSupervisor ? 10 : (isSelected ? 11 : 8);
+    const dotR = isSupervisor ? 12 : (isSelected ? 11 : 8);
     mmSvg.appendChild(
       svg("circle", {
         cx: p.x,
@@ -787,7 +813,22 @@ export function meshView(nodes: NodeView[], width: number, height: number, _cont
       const dy = (e.clientY - dragLastY) / zoomScale;
       dragLastX = e.clientX;
       dragLastY = e.clientY;
-      if (dx !== 0 || dy !== 0) moveNodeDom(dragNodeId, dx, dy);
+      if (dx !== 0 || dy !== 0) {
+        pendingMove.nodeId = dragNodeId;
+        pendingMove.dx += dx;
+        pendingMove.dy += dy;
+        if (!movePending) {
+          movePending = true;
+          requestAnimationFrame(() => {
+            if (pendingMove.dx !== 0 || pendingMove.dy !== 0) {
+              moveNodeDom(pendingMove.nodeId, pendingMove.dx, pendingMove.dy);
+            }
+            pendingMove.dx = 0;
+            pendingMove.dy = 0;
+            movePending = false;
+          });
+        }
+      }
       return;
     }
     if (!isDragging) return;
@@ -1612,27 +1653,45 @@ function discoveredCanvas(candidates: DiscoveredCandidate[], onNewNode: () => vo
 }
 
 function emptyCanvas(onNewNode: () => void, onJoinMesh?: () => void): HTMLElement {
-  const button = el("button", { class: "btn btn--primary", type: "button" },
-    icon(Icons.plus, 13),
-    el("span", { style: "margin-left: 4px;", text: "Ignite first node" }),
+  const startMeshBtn = el("button", { class: "btn btn--primary btn--lg", type: "button" },
+    icon(Icons.plus, 16),
+    el("span", { style: "margin-left: 6px;", text: "Start Mesh" }),
   );
-  on(button, "click", onNewNode);
+  on(startMeshBtn, "click", async () => {
+    startMeshBtn.setAttribute("disabled", "true");
+    try {
+      await sidecar.startMesh();
+      await refreshNodeList();
+      await refreshTopology();
+      store.toast("success", "Mesh started", "Your first node is running and discovering peers on the LAN.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      store.toast("error", "Could not start mesh", msg);
+      startMeshBtn.removeAttribute("disabled");
+    }
+  });
 
-  const actions: HTMLElement[] = [button];
-  if (onJoinMesh) {
-    const inviteBtn = el("button", { class: "btn btn--ghost", type: "button" },
-      icon(Icons.mesh, 14),
-      el("span", { style: "margin-left: 4px;", text: "Import mesh invite" }),
-    );
-    on(inviteBtn, "click", onJoinMesh);
-    actions.push(inviteBtn);
-  }
+  const joinMeshBtn = el("button", { class: "btn btn--secondary btn--lg", type: "button" },
+    icon(Icons.plug, 16),
+    el("span", { style: "margin-left: 6px;", text: "Join Mesh" }),
+  );
+  on(joinMeshBtn, "click", () => {
+    openPairingDialog({
+      onCancel: () => {},
+      onJoin: () => {
+        onJoinMesh?.();
+      },
+    });
+  });
+
+  const advancedLink = el("button", { class: "btn btn--ghost btn--sm", type: "button", text: "Advanced setup…" });
+  on(advancedLink, "click", onNewNode);
 
   return emptyState({
     badge: "OFFLINE-FIRST",
-    title: "No nodes yet",
-    body: "A node is a folder that holds a slice of your data. Ignite one on this machine or import a LAN mesh invite to join an existing mesh. Your data stays local until you connect.",
-    actions,
+    title: "Connect and sync your data privately.",
+    body: "Start a local mesh node with one click. Your data stays on your devices and syncs peer-to-peer over your LAN — no cloud, no accounts, no internet required.",
+    actions: [startMeshBtn, joinMeshBtn, advancedLink],
     trustSignals: ["Airplane-mode ready", "No cloud required", "Encrypted at rest"],
   });
 }

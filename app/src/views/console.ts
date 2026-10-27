@@ -6,8 +6,8 @@
  */
 
 import { apiFor, ApiError } from "../api.js";
-import { sidecar } from "../bridge.js";
-import { store, type NodeView } from "../state.js";
+import { sidecar, onSidecarEvent, type LogLine } from "../bridge.js";
+import { store, convergenceOf, type NodeView } from "../state.js";
 import { displayNodeName, engineLabel, json } from "../util/format.js";
 import { el, icon, Icons, on, replace } from "../util/dom.js";
 import { emptyState } from "../util/empty.js";
@@ -26,7 +26,7 @@ export interface ConsoleHandles {
 }
 
 export function createConsole(): ConsoleHandles {
-  const element = el("div", { class: "canvas console-view", style: "display: flex; flex-direction: column; overflow: hidden; padding: 0;" });
+  const element = el("div", { class: "canvas console-view" });
   let activeTab: ConsoleTab = "documents";
 
   // Tab State
@@ -55,6 +55,7 @@ export function createConsole(): ConsoleHandles {
   let apiResult = "";
   let nodeLogLines: Awaited<ReturnType<typeof sidecar.nodeLogs>> = [];
   let logsLoading = false;
+  let logUnsubscribe: (() => void) | null = null;
 
   function render(): void {
     const node = store.selectedNode() ?? store.dataNodes()[0];
@@ -95,8 +96,30 @@ export function createConsole(): ConsoleHandles {
       class: "select-rounded",
     }) as HTMLSelectElement;
 
+    const STATUS_SYMBOLS: Record<string, string> = {
+      converged: "● ",
+      lagging: "◐ ",
+      waiting: "◐ ",
+      checking: "◑ ",
+      offline: "○ ",
+      isolated: "◔ ",
+      supervisor: "◆ ",
+    };
+
     for (const d of store.dataNodes()) {
-      const opt = el("option", { value: d.process.node_id, text: `${displayNodeName(d.process.node_name, d.process.data_dir, d.process.node_id)} (port ${d.process.api_port})` }) as HTMLOptionElement;
+      const status = convergenceOf(d);
+      const symbol = STATUS_SYMBOLS[status] ?? "";
+      const statusLabel = status === "converged" ? "In sync"
+        : status === "lagging" ? "Catching up"
+        : status === "waiting" ? "Waiting"
+        : status === "checking" ? "Checking"
+        : status === "offline" ? "Offline"
+        : status === "isolated" ? "Local only"
+        : status;
+      const opt = el("option", {
+        value: d.process.node_id,
+        text: `${symbol}${displayNodeName(d.process.node_name, d.process.data_dir, d.process.node_id)} (port ${d.process.api_port} — ${statusLabel})`,
+      }) as HTMLOptionElement;
       if (d.process.node_id === node.process.node_id) opt.selected = true;
       nodeSelector.appendChild(opt);
     }
@@ -106,7 +129,7 @@ export function createConsole(): ConsoleHandles {
 
     const enginesBadges = el(
       "div",
-      { class: "row", style: "gap: 4px; flex-wrap: wrap;" },
+      { class: "console-view__badge-row" },
       ...(node.brain?.collections ?? []).map((c) =>
         el("span", { class: "badge", text: `${c.name} (${engineLabel(c.engine)})` }),
       ),
@@ -115,8 +138,7 @@ export function createConsole(): ConsoleHandles {
     // Cluster-membership posture: closed mesh shows its fingerprint so two
     // machines can confirm they will join the SAME mesh when pairing.
     const meshBadge = el("span", {
-      class: "mono muted",
-      style: "font-size: var(--text-xs);",
+      class: "console-view__badge-muted console-view__badge-margin",
       title: "Cluster membership: closed meshes refuse outsiders",
       text: "",
     });
@@ -127,17 +149,15 @@ export function createConsole(): ConsoleHandles {
     const header = el(
       "div",
       {
-        class: "row row--between",
-        style: "padding: 12px 16px; border-bottom: 1px solid var(--color-hairline); background: var(--color-surface); flex-shrink: 0;",
+        class: "console-view__header",
       },
-      el("div", { class: "row", style: "gap: 12px; align-items: center;" }, backBtn, nodeSelector, enginesBadges),
+      el("div", { class: "console-view__controls" }, backBtn, nodeSelector, enginesBadges),
       el(
         "div",
-        { class: "row", style: "gap: 12px; align-items: center;" },
+        { class: "console-view__controls" },
         meshBadge,
         el("span", {
           class: "mono muted",
-          style: "font-size: var(--text-xs);",
           title: "Node-local write-ahead log position; peer nodes can have different ledger heights.",
         }, `Local ledger #${node.tip?.entry_id ?? 0}`),
       ),
@@ -177,7 +197,6 @@ export function createConsole(): ConsoleHandles {
         {
           class: `btn btn--sm ${activeTab === t.id ? "btn--primary" : "btn--ghost"}`,
           type: "button",
-          style: "gap: 6px;",
           title: t.title,
         },
         icon(t.icon, 13),
@@ -192,10 +211,7 @@ export function createConsole(): ConsoleHandles {
 
     const nav = el(
       "div",
-      {
-        class: "row",
-        style: "padding: 8px 16px; gap: 8px; border-bottom: 1px solid var(--color-hairline); background: var(--color-surface-pearl); flex-shrink: 0;",
-      },
+      { class: "console-view__tab-nav" },
       ...tabButtons,
     );
 
@@ -226,6 +242,10 @@ export function createConsole(): ConsoleHandles {
   }
 
   function renderLogsTab(node: NodeView): HTMLElement {
+    // Tear down any previous real-time subscription so we only listen for the
+    // currently selected node while this tab is open.
+    if (logUnsubscribe) { logUnsubscribe(); logUnsubscribe = null; }
+
     const refreshBtn = el("button", {
       class: "btn btn--sm btn--ghost",
       type: "button",
@@ -233,20 +253,28 @@ export function createConsole(): ConsoleHandles {
       disabled: logsLoading,
     });
     const output = el("pre", {
-      class: "mono",
-      style: "flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); font-size: var(--text-xs); line-height: 1.55; color: var(--color-ink);",
+      class: "console-view__output-pre mono",
       text: nodeLogLines.length
-        ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleTimeString()} [${entry.stream}] ${entry.line}`).join("\n")
+        ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleString()} [${entry.stream}] ${entry.line}`).join("\n")
         : "No captured output yet. Refresh after the node has been running for a moment.",
     });
+
+    const appendLog = (entry: LogLine) => {
+      nodeLogLines.push(entry);
+      if (nodeLogLines.length > 400) nodeLogLines.shift();
+      output.textContent = nodeLogLines.map((e) => `${new Date(e.ts_ms).toLocaleString()} [${e.stream}] ${e.line}`).join("\n");
+      output.scrollTop = output.scrollHeight;
+    };
+
     on(refreshBtn, "click", async () => {
       logsLoading = true;
       refreshBtn.textContent = "Refreshing…";
       refreshBtn.setAttribute("disabled", "true");
       try {
-        nodeLogLines = await sidecar.nodeLogs(node.process.node_id, 400);
+        const fresh = await sidecar.nodeLogs(store.selectedNode()?.process.node_id ?? node.process.node_id, 400);
+        nodeLogLines = fresh;
         output.textContent = nodeLogLines.length
-          ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleTimeString()} [${entry.stream}] ${entry.line}`).join("\n")
+          ? nodeLogLines.map((entry) => `${new Date(entry.ts_ms).toLocaleString()} [${entry.stream}] ${entry.line}`).join("\n")
           : "No captured output yet. Refresh after the node has been running for a moment.";
       } catch (error) {
         output.textContent = `Could not read node logs: ${describeError(error)}`;
@@ -256,7 +284,15 @@ export function createConsole(): ConsoleHandles {
         refreshBtn.removeAttribute("disabled");
       }
     });
-    return el("div", { class: "stack", style: "flex: 1; min-height: 0; padding: 16px; gap: 12px; overflow: hidden;" },
+
+    // Real-time tailing: the sidecar emits `node-log` events for every line.
+    logUnsubscribe = onSidecarEvent((event) => {
+      if (event.kind === "node-log" && event.node_id === node.process.node_id) {
+        appendLog(event.line);
+      }
+    });
+
+    return el("div", { class: "console-view__section" },
       el("div", { class: "row row--between" },
         el("div", { class: "muted", text: `Recent output captured from ${displayNodeName(node.process.node_name, node.process.data_dir, node.process.node_id)}.` }),
         refreshBtn,
@@ -277,10 +313,9 @@ export function createConsole(): ConsoleHandles {
 
     const keyInput = el("input", {
       type: "text",
-      class: "input",
+      class: "input console-view__key-input",
       placeholder: "Key (e.g. user_101)",
       value: docKey,
-      style: "width: 180px; padding: 6px 10px; font-family: var(--font-mono); font-size: var(--text-sm);",
     }) as HTMLInputElement;
     on(keyInput, "input", () => { docKey = keyInput.value.trim(); });
 
@@ -290,16 +325,14 @@ export function createConsole(): ConsoleHandles {
     const delBtn = el("button", { class: "btn btn--sm btn--danger", type: "button" }, "DEL Key");
 
     const bodyArea = el("textarea", {
-      class: "mono",
-      style: "width: 100%; height: 260px; padding: 12px; font-size: var(--text-xs); line-height: 1.5; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); color: var(--color-ink); resize: vertical;",
+      class: "console-view__body-textarea",
       placeholder: 'JSON payload...',
     }) as HTMLTextAreaElement;
     bodyArea.value = docBody;
     on(bodyArea, "input", () => { docBody = bodyArea.value; });
 
     const outputPre = el("pre", {
-      class: "mono",
-      style: "flex: 1; margin: 0; padding: 12px; overflow: auto; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--color-ink); max-height: 400px;",
+      class: "console-view__output-pre mono",
       text: docResult || "// Response will appear here...",
     });
 
@@ -370,10 +403,10 @@ export function createConsole(): ConsoleHandles {
 
     const controls = el(
       "div",
-      { class: "row", style: "gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;" },
-      el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Collection:"),
+      { class: "console-view__row console-view__row-wrap console-view__section-margin" },
+      el("span", { class: "console-view__label" }, "Collection:"),
       colSelect,
-      el("span", { class: "muted", style: "font-size: var(--text-sm);" }, "Key:"),
+      el("span", { class: "console-view__label" }, "Key:"),
       keyInput,
       getBtn,
       putBtn,
@@ -383,12 +416,12 @@ export function createConsole(): ConsoleHandles {
 
     const grid = el(
       "div",
-      { style: "display: grid; grid-template-columns: 1fr 1fr; gap: 16px; flex: 1; overflow: hidden;" },
-      el("div", { class: "stack", style: "overflow: hidden;" }, el("strong", { text: "Document Payload" }), bodyArea),
-      el("div", { class: "stack", style: "overflow: hidden;" }, el("strong", { text: "Server Response" }), outputPre),
+      { class: "console-view__grid-full" },
+      el("div", { class: "console-view__col" }, el("strong", { text: "Document Payload" }), bodyArea),
+      el("div", { class: "console-view__col" }, el("strong", { text: "Server Response" }), outputPre),
     );
 
-    return el("div", { style: "padding: 16px; display: flex; flex-direction: column; flex: 1; overflow: auto;" }, controls, grid);
+    return el("div", { class: "console-view__container" }, controls, grid);
   }
 
   // -- 2. Vector Search Tab ---------------------------------------------------
@@ -412,21 +445,20 @@ export function createConsole(): ConsoleHandles {
       min: "1",
       max: "50",
       value: String(vecK),
-      style: "width: 70px; padding: 6px; font-size: var(--text-sm);",
+      class: "console-input",
     }) as HTMLInputElement;
     on(kInput, "input", () => { vecK = parseInt(kInput.value, 10) || 5; });
 
     const searchBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Run Vector Search");
 
     const vecTextArea = el("textarea", {
-      class: "mono",
-      style: "width: 100%; height: 100px; padding: 10px; font-size: var(--text-xs); background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); color: var(--color-ink);",
+      class: "console-textarea",
       placeholder: "[0.12, -0.45, 0.77, ...]",
     }) as HTMLTextAreaElement;
     vecTextArea.value = vecInput;
     on(vecTextArea, "input", () => { vecInput = vecTextArea.value; });
 
-    const resultBox = el("div", { class: "stack", style: "flex: 1; overflow: auto;" });
+    const resultBox = el("div", { class: "console-view__section-card" });
 
     const runSearch = async () => {
       try {
@@ -449,16 +481,15 @@ export function createConsole(): ConsoleHandles {
           el(
             "div",
             {
-              class: "row row--between card",
-              style: "padding: 10px 14px; margin-bottom: 8px; align-items: center;",
+              class: "console-view__row console-view__row--spread card console-view__section-card",
             },
             el(
               "div",
               {},
-              el("span", { class: "badge", text: `#${i + 1}`, style: "margin-right: 8px;" }),
+              el("span", { class: "badge console-view__badge-margin", text: `#${i + 1}` }),
               el("strong", { text: h.key }),
             ),
-            el("span", { class: "mono", style: "font-size: var(--text-xs); color: var(--color-primary);" }, `Score: ${h.score.toFixed(4)}`),
+            el("span", { class: "console-view__score", text: `Score: ${h.score.toFixed(4)}` }),
           ),
         );
 
@@ -476,17 +507,17 @@ export function createConsole(): ConsoleHandles {
 
     return el(
       "div",
-      { style: "padding: 16px; display: flex; flex-direction: column; flex: 1; overflow: auto;" },
-      el("div", { class: "row", style: "gap: 8px; margin-bottom: 12px; align-items: center;" },
-        el("span", { class: "muted" }, "Collection:"),
+      { class: "console-view__container" },
+      el("div", { class: "console-view__row console-view__row-wrap console-view__section-margin" },
+        el("span", { class: "console-view__label" }, "Collection:"),
         colSelect,
-        el("span", { class: "muted" }, "Top K:"),
+        el("span", { class: "console-view__label" }, "Top K:"),
         kInput,
         searchBtn,
       ),
-      el("strong", { text: "Query Vector (Float Array)", style: "margin-bottom: 6px;" }),
+      el("strong", { text: "Query Vector (Float Array)" }),
       vecTextArea,
-      el("strong", { text: "Nearest Neighbor Hits", style: "margin: 16px 0 6px;" }),
+      el("strong", { text: "Nearest Neighbor Hits" }),
       resultBox,
     );
   }
@@ -509,15 +540,14 @@ export function createConsole(): ConsoleHandles {
 
     const seriesInput = el("input", {
       type: "text",
-      class: "input",
+      class: "input console-view__series-input",
       value: tsSeries,
       placeholder: "Series (e.g. cpu_usage)",
-      style: "width: 160px; padding: 6px 10px; font-size: var(--text-sm);",
     }) as HTMLInputElement;
     on(seriesInput, "input", () => { tsSeries = seriesInput.value.trim(); });
 
     const queryBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Query Rollups");
-    const resultBox = el("div", { class: "stack", style: "flex: 1; overflow: auto; margin-top: 16px;" });
+    const resultBox = el("div", { class: "console-view__section-card" });
 
     on(queryBtn, "click", async () => {
       try {
@@ -539,20 +569,20 @@ export function createConsole(): ConsoleHandles {
             const avg = b.count > 0 ? (b.sum / b.count).toFixed(2) : "0.00";
             return el(
               "div",
-              { class: "row row--between", style: "padding: 6px 10px; border-bottom: 1px solid var(--color-hairline); font-size: var(--text-xs);" },
+              { class: "console-view__row console-view__row--spread console-view__bucket-row" },
               el("span", { class: "mono", text: new Date(b.bucket_start_ms).toLocaleTimeString() }),
               el("span", { text: `Count: ${b.count}` }),
               el("span", { text: `Min: ${b.min.toFixed(2)}` }),
-              el("span", { text: `Avg: ${avg}`, style: "font-weight: 600;" }),
+              el("span", { class: "console-view__bucket-avg", text: `Avg: ${avg}` }),
               el("span", { text: `Max: ${b.max.toFixed(2)}` }),
             );
           });
           bucketCards.push(
             el(
               "div",
-              { class: "card", style: "margin-bottom: 12px;" },
+              { class: "console-view__section-card" },
               el("h4", { class: "card__title", text: `Series: ${s} (${buckets.length} buckets)` }),
-              el("div", { class: "stack" }, ...rows),
+              el("div", { class: "console-view__container-stack" }, ...rows),
             ),
           );
         }
@@ -565,11 +595,11 @@ export function createConsole(): ConsoleHandles {
 
     return el(
       "div",
-      { style: "padding: 16px; display: flex; flex-direction: column; flex: 1; overflow: auto;" },
-      el("div", { class: "row", style: "gap: 8px; margin-bottom: 12px; align-items: center;" },
-        el("span", { class: "muted" }, "Collection:"),
+      { class: "console-view__container" },
+      el("div", { class: "console-view__row console-view__row-wrap console-view__section-margin" },
+        el("span", { class: "console-view__label" }, "Collection:"),
         colSelect,
-        el("span", { class: "muted" }, "Series:"),
+        el("span", { class: "console-view__label" }, "Series:"),
         seriesInput,
         queryBtn,
       ),
@@ -595,15 +625,14 @@ export function createConsole(): ConsoleHandles {
 
     const keyInput = el("input", {
       type: "text",
-      class: "input",
+      class: "input console-view__series-input",
       value: graphKey,
       placeholder: "Key (e.g. user_1)",
-      style: "width: 160px; padding: 6px 10px; font-size: var(--text-sm);",
     }) as HTMLInputElement;
     on(keyInput, "input", () => { graphKey = keyInput.value.trim(); });
 
     const exploreBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Traverse Neighbourhood");
-    const resultBox = el("div", { class: "stack", style: "flex: 1; overflow: auto; margin-top: 16px;" });
+    const resultBox = el("div", { class: "console-view__section-card" });
 
     on(exploreBtn, "click", async () => {
       try {
@@ -613,12 +642,12 @@ export function createConsole(): ConsoleHandles {
           resultBox,
           el("div", { class: "card" },
             el("h4", { class: "card__title", text: `Graph Adjacency for "${res.key}"` }),
-            el("div", { class: "stack", style: "margin-top: 8px;" },
+            el("div", { class: "console-view__container-stack" },
               el("strong", { text: `Out-Edges (${res.out_edges.length}):` }),
-              ...res.out_edges.map((e) => el("div", { class: "mono", style: "padding-left: 12px; font-size: var(--text-xs);" }, `→ ${e.to}${e.label ? ` (${e.label})` : ""}`)),
-              el("strong", { text: `In-Edges (${res.in_edges.length}):`, style: "margin-top: 8px;" }),
-              ...res.in_edges.map((src) => el("div", { class: "mono", style: "padding-left: 12px; font-size: var(--text-xs);" }, `← ${src}`)),
-              el("strong", { text: `Descendants Reachable (${res.descendants.length}):`, style: "margin-top: 8px;" }),
+              ...res.out_edges.map((e) => el("div", { class: "console-view__graph-edge" }, `→ ${e.to}${e.label ? ` (${e.label})` : ""}`)),
+              el("strong", { class: "console-view__graph-strong", text: `In-Edges (${res.in_edges.length}):` }),
+              ...res.in_edges.map((src) => el("div", { class: "console-view__graph-edge" }, `← ${src}`)),
+              el("strong", { class: "console-view__graph-strong", text: `Descendants Reachable (${res.descendants.length}):` }),
               ...res.descendants.map((d) => el("span", { class: "badge", text: d })),
             ),
           ),
@@ -630,11 +659,11 @@ export function createConsole(): ConsoleHandles {
 
     return el(
       "div",
-      { style: "padding: 16px; display: flex; flex-direction: column; flex: 1; overflow: auto;" },
-      el("div", { class: "row", style: "gap: 8px; margin-bottom: 12px; align-items: center;" },
-        el("span", { class: "muted" }, "Collection:"),
+      { class: "console-view__container" },
+      el("div", { class: "console-view__row console-view__row-wrap console-view__section-margin" },
+        el("span", { class: "console-view__label" }, "Collection:"),
         colSelect,
-        el("span", { class: "muted" }, "Node Key:"),
+        el("span", { class: "console-view__label" }, "Node Key:"),
         keyInput,
         exploreBtn,
       ),
@@ -654,32 +683,16 @@ export function createConsole(): ConsoleHandles {
 
     const pathInput = el("input", {
       type: "text",
-      class: "input",
+      class: "input console-view__path-input",
       value: apiPath,
       placeholder: "/_status",
-      style: "flex: 1; padding: 6px 12px; font-family: var(--font-mono); font-size: var(--text-sm);",
     }) as HTMLInputElement;
     on(pathInput, "input", () => { apiPath = pathInput.value.trim(); });
 
     const sendBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, "Send");
 
-    // Quick presets
-    const presets = ["/_brain", "/_status", "/_quota", "/_engines", "/_ledger/tip", "/_collections"];
-    const presetBtns = presets.map((p) => {
-      const b = el("button", { class: "btn btn--sm btn--ghost", type: "button", style: "font-size: var(--text-xs);" }, p);
-      on(b, "click", () => {
-        apiMethod = "GET";
-        methodSelect.value = "GET";
-        apiPath = p;
-        pathInput.value = p;
-        void execute();
-      });
-      return b;
-    });
-
     const bodyArea = el("textarea", {
-      class: "mono",
-      style: "width: 100%; height: 120px; padding: 10px; font-size: var(--text-xs); background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); color: var(--color-ink); resize: vertical; display: " + (apiMethod === "GET" ? "none" : "block"),
+      class: "console-view__body-area mono",
       placeholder: "Request Body (JSON)...",
     }) as HTMLTextAreaElement;
     bodyArea.value = apiBody;
@@ -690,11 +703,11 @@ export function createConsole(): ConsoleHandles {
     });
 
     const statusBadge = el("span", { class: "badge", text: apiStatus || "Ready" });
-    const durationSpan = el("span", { class: "muted", style: "font-size: var(--text-xs); margin-left: 8px;", text: apiDuration ? `${apiDuration}ms` : "" });
+    const durationSpan = el("span", { class: "console-view__duration", text: apiDuration ? `${apiDuration}ms` : "" });
+    const timestampSpan = el("span", { class: "console-view__timestamp", text: "" });
 
     const responsePre = el("pre", {
-      class: "mono",
-      style: "flex: 1; margin: 0; padding: 12px; overflow: auto; background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--color-ink);",
+      class: "console-view__response-box mono",
       text: apiResult || "// Response will appear here...",
     });
 
@@ -713,6 +726,7 @@ export function createConsole(): ConsoleHandles {
         );
         apiDuration = Date.now() - start;
         durationSpan.textContent = `${apiDuration}ms`;
+        timestampSpan.textContent = new Date().toLocaleTimeString();
         apiStatus = `${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
         statusBadge.textContent = apiStatus;
         apiResult = typeof res.body === "string" ? res.body : json(res.body);
@@ -720,6 +734,7 @@ export function createConsole(): ConsoleHandles {
       } catch (err) {
         apiDuration = Date.now() - start;
         durationSpan.textContent = `${apiDuration}ms`;
+        timestampSpan.textContent = new Date().toLocaleTimeString();
         apiStatus = "Error";
         statusBadge.textContent = apiStatus;
         apiResult = describeError(err);
@@ -731,13 +746,27 @@ export function createConsole(): ConsoleHandles {
 
     on(sendBtn, "click", execute);
 
+    // Quick presets (registered after `execute` so TDZ is avoided)
+    const presets = ["/_brain", "/_status", "/_quota", "/_engines", "/_ledger/tip", "/_collections"];
+    const presetBtns = presets.map((p) => {
+      const b = el("button", { class: "btn btn--sm btn--ghost console-view__preset-btn", type: "button" }, p);
+      on(b, "click", () => {
+        apiMethod = "GET";
+        methodSelect.value = "GET";
+        apiPath = p;
+        pathInput.value = p;
+        void execute();
+      });
+      return b;
+    });
+
     return el(
       "div",
-      { style: "padding: 16px; display: flex; flex-direction: column; flex: 1; overflow: auto; gap: 10px;" },
-      el("div", { class: "row", style: "gap: 6px; align-items: center;" }, methodSelect, pathInput, sendBtn),
-      el("div", { class: "row", style: "gap: 6px; flex-wrap: wrap;" }, el("span", { class: "muted", style: "font-size: var(--text-xs); align-self: center;" }, "Quick endpoints:"), ...presetBtns),
+      { class: "console-view__container--gap" },
+      el("div", { class: "console-view__row console-view__badge-row" }, methodSelect, pathInput, sendBtn),
+      el("div", { class: "console-view__preset-row" }, el("span", { class: "console-view__preset-label" }, "Quick endpoints:"), ...presetBtns),
       bodyArea,
-      el("div", { class: "row", style: "align-items: center; margin-top: 6px;" }, el("strong", { text: "Response" }), el("span", { style: "margin-left: 8px;" }), statusBadge, durationSpan),
+      el("div", { class: "console-view__response-header" }, el("strong", { text: "Response" }), statusBadge, durationSpan),
       responsePre,
     );
   }

@@ -139,9 +139,10 @@ export function openPalette(opts: { onNewNode: () => void; onPair: () => void })
     { id: "home", group: "Views", label: "Mesh map home", hint: "Esc", run: canvasHome },
     { id: "tree", group: "Views", label: "Tree view", hint: "1", run: () => store.setCanvasMode("tree") },
     { id: "mesh", group: "Views", label: "Mesh view", hint: "2", run: () => store.setCanvasMode("mesh") },
-    { id: "ledger", group: "Views", label: "Ledger feed", hint: "3", run: ledgerTarget },
-    { id: "console", group: "Views", label: "Console", hint: "4", run: consoleTarget },
-    { id: "dropbox", group: "Views", label: "Dropbox", hint: "5", run: () => store.select({ kind: "dropbox" }) },
+    { id: "files", group: "Views", label: "Files", hint: "3", run: () => store.select({ kind: "files" }) },
+    { id: "dropbox", group: "Views", label: "Dropbox", hint: "4", run: () => store.select({ kind: "dropbox" }) },
+    { id: "console", group: "Views", label: "Console", hint: "5", run: consoleTarget },
+    { id: "ledger", group: "Views", label: "Ledger feed", hint: "6", run: ledgerTarget },
   ];
 
   const input = el("input", {

@@ -38,7 +38,7 @@ function showModalPrompt(title: string, message: string, defaultValue = ""): Pro
   return new Promise((resolve) => {
     const input = el("input", {
       type: "text",
-      style: "width: 100%; font: var(--text-body); background: var(--color-surface-pearl); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); padding: 8px var(--space-sm); color: var(--color-ink);",
+      class: "explorer__modal-input",
       value: defaultValue,
       placeholder: "e.g. user_101",
     }) as HTMLInputElement;
@@ -651,7 +651,7 @@ export function createExplorer(): ExplorerHandles {
       searchInput,
     );
 
-    const keysContainer = el("div", { class: "stack", style: "gap: 2px;" });
+    const keysContainer = el("div", { class: "stack explorer__keys-container" });
 
     function renderKeysOnly(): void {
       replace(keysContainer);
@@ -664,8 +664,7 @@ export function createExplorer(): ExplorerHandles {
       if (filtered.length === 0) {
         keysContainer.appendChild(
           el("p", {
-            class: "muted",
-            style: "padding: var(--space-xs); font: var(--text-caption);",
+            class: "muted explorer__key-item",
             text: current.loading ? "Reading…" : current.keyFilter ? "No matching keys found" : "No documents in this collection yet.",
           }),
         );
@@ -685,8 +684,7 @@ export function createExplorer(): ExplorerHandles {
         },
         el("span", { text: truncate(displayName, 60) }),
         isChunked ? el("span", {
-          class: "badge",
-          style: "margin-left: 8px; font-size: 10px; padding: 1px 5px;",
+          class: "badge explorer__chunked-badge",
           text: `Chunked file (${doc.chunk_total} parts)`,
         }) : null);
         on(button, "click", () => void selectKey(row.key));
@@ -755,14 +753,13 @@ export function createExplorer(): ExplorerHandles {
     const hasRetention = engine === "ts_rollup" && (detail?.retention_days ?? 0) > 0;
 
     const retain = el("button", {
-      class: "btn btn--sm btn--ghost",
+      class: hasRetention ? "btn btn--sm btn--ghost" : "btn btn--sm btn--ghost explorer__disabled-button",
       type: "button",
       text: "Run retention",
       title: hasRetention
         ? "Apply this collection's retention_days now (ts_rollup only)"
         : "Retention is only available for ts_rollup collections with retention_days configured",
       disabled: hasRetention ? undefined : "true",
-      style: hasRetention ? undefined : "opacity: 0.5; cursor: not-allowed;",
     });
     on(retain, "click", () => {
       const node = store.node(current.nodeId);
@@ -790,8 +787,7 @@ export function createExplorer(): ExplorerHandles {
       "div",
       { class: "row row--between" },
       el("span", {
-        class: "muted",
-        style: "font: var(--text-fine);",
+        class: "muted explorer__pager-text",
         title: "Page-local range; the filter box below also applies to this page only",
         text: `${count(current.rows.length)} keys (${range})`,
       }),
@@ -817,13 +813,13 @@ export function createExplorer(): ExplorerHandles {
       const header = el(
         "div",
         { class: "row row--between" },
-        el("span", { class: "mono", style: "font-weight: 600;", text: current.selectedKey }),
+        el("span", { class: "mono explorer__editor-title", text: current.selectedKey }),
         el(
           "div",
           { class: "row" },
           engine ? el("span", { class: "chip", text: engineLabel(engine) }) : null,
           // Show a badge indicating chunked status.
-          el("span", { class: "badge", style: "margin-left: 8px; font-size: 10px; padding: 1px 5px;", text: `Chunked file (${current.chunkTotal} parts)` }),
+          el("span", { class: "badge explorer__chunk-badge", text: `Chunked file (${current.chunkTotal} parts)` }),
         ),
       );
 
@@ -844,7 +840,7 @@ export function createExplorer(): ExplorerHandles {
         );
       } else if (current.reassembled !== null) {
         // Use a <pre> to preserve whitespace; make it read‑only.
-        contentArea = el("pre", { class: "explorer__doc", style: "white-space: pre-wrap;" }, current.reassembled);
+        contentArea = el("pre", { class: "explorer__doc explorer__chunk-content" }, current.reassembled);
       } else {
         contentArea = el("p", {
           class: "muted",
@@ -928,7 +924,7 @@ export function createExplorer(): ExplorerHandles {
     const deleteButton = el("button", { class: "btn btn--danger btn--sm", type: "button", text: "Delete" });
     on(deleteButton, "click", () => void remove());
 
-    const dirtyNote = el("span", { class: "muted", style: "font: var(--text-fine);", text: current.dirty ? "Unsaved edits" : "" });
+    const dirtyNote = el("span", { class: "muted explorer__dirty-note", text: current.dirty ? "Unsaved edits" : "" });
 
     const selectedDoc = current.rows.find((row) => row.key === current.selectedKey)?.document as Record<string, unknown> | undefined;
     const assetFilename = typeof selectedDoc?.filename === "string" ? selectedDoc.filename : "";
@@ -995,7 +991,7 @@ export function createExplorer(): ExplorerHandles {
       el(
         "div",
         { class: "row row--between" },
-        el("span", { class: "mono", style: "font-weight: 600;", text: current.selectedKey }),
+        el("span", { class: "mono explorer__editor-title", text: current.selectedKey }),
         el(
           "div",
           { class: "row" },
@@ -1024,7 +1020,7 @@ export function createExplorer(): ExplorerHandles {
       void load(selection.nodeId, selection.collection, selection.key ?? "");
       replace(
         element,
-        el("div", { class: "card" }, el("div", { class: "skeleton", style: "height: 240px" })),
+        el("div", { class: "card" }, el("div", { class: "skeleton explorer__skeleton" })),
       );
       return;
     }
@@ -1058,7 +1054,7 @@ export function createExplorer(): ExplorerHandles {
         el(
           "div",
           { class: "row row--between" },
-          el("strong", { style: "font: var(--text-body-strong);", text: current.collection }),
+          el("strong", { class: "explorer__header-title", text: current.collection }),
           el("div", { class: "row" }, newButton, closeButton),
         ),
         current.error && current.rows.length === 0
