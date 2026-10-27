@@ -5,12 +5,13 @@
 <!-- CI rebuild trigger -->
 
 <p align="center">
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=for-the-badge&logo=c%2B%2B&logoColor=white" alt="C++17">
-  <img src="https://img.shields.io/badge/Topology-Symmetric%20P2P%20Mesh-orange?style=for-the-badge&logoColor=white" alt="Symmetric P2P Mesh">
-  <img src="https://img.shields.io/badge/Consistency-CRDT%20%2B%20HLC-green?style=for-the-badge" alt="CRDT + HLC">
-  <img src="https://img.shields.io/badge/Security-Ed25519%20%7C%20AES--256--GCM-purple?style=for-the-badge" alt="Ed25519 / AES-256-GCM">
-  <img src="https://img.shields.io/badge/Dependencies-Zero%20Runtime%20Deps-red?style=for-the-badge" alt="Zero Runtime Dependencies">
-  <a href="STATUS.md"><img src="https://img.shields.io/badge/Verification-13%2F13%20Suites%20Passing-brightgreen?style=for-the-badge" alt="Verification"></a>
+  <a href="https://github.com/R1sh1m/De-sentry/releases"><img src="https://img.shields.io/badge/Release-v1.1%20Production%20Ready-38bdf8?style=flat-square&logo=github&logoColor=white" alt="Release v1.1"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square&logo=c%2B%2B&logoColor=white" alt="C++17">
+  <img src="https://img.shields.io/badge/Topology-Symmetric%20P2P%20Mesh-orange?style=flat-square&logoColor=white" alt="Symmetric P2P Mesh">
+  <img src="https://img.shields.io/badge/Consistency-CRDT%20%2B%20HLC-green?style=flat-square" alt="CRDT + HLC">
+  <img src="https://img.shields.io/badge/Security-Ed25519%20%7C%20AES--256--GCM-purple?style=flat-square" alt="Ed25519 / AES-256-GCM">
+  <img src="https://img.shields.io/badge/Dependencies-Zero%20Runtime%20Deps-red?style=flat-square" alt="Zero Runtime Dependencies">
+  <a href="STATUS.md"><img src="https://img.shields.io/badge/Verification-14%2F14%20Suites%20Passing-brightgreen?style=flat-square" alt="Verification"></a>
 </p>
 
 ---
@@ -21,6 +22,25 @@
 De-Sentry is a high-performance, decentralized peer-to-peer storage engine engineered in **C++17** from first principles. Designed for zero-trust, edge-first, and air-gapped environments, every node operates as an autonomous, symmetric peer integrating an embedded storage layer, a high-throughput HTTP/REST interface, and an encrypted P2P synchronization plane.
 
 By eliminating coordinator-dependent consensus protocols in favor of state-based **Conflict-Free Replicated Data Types (CRDTs)** and **Hybrid Logical Clocks (HLC)**, De-Sentry achieves mathematically guaranteed eventual consistency without leader elections, network lock contention, or single points of failure.
+
+<p align="center">
+  <a href="#quickstart"><b>🚀 Quickstart Guide</b></a> &nbsp;•&nbsp;
+  <a href="https://github.com/R1sh1m/De-sentry/releases"><b>📦 Download v1.1 App</b></a> &nbsp;•&nbsp;
+  <a href="#system-architecture"><b>🏗️ System Architecture</b></a> &nbsp;•&nbsp;
+  <a href="#documentation-hub"><b>📖 Full Documentation</b></a>
+</p>
+
+---
+
+## Performance & Reliability at a Glance
+
+| Metric | Target / Capability | Architecture Rationale |
+|---|---|---|
+| **0 ms** | **Leader Election Latency** | Multi-master CRDT replication with deterministic Last-Write-Wins (LWW) |
+| **0** | **Runtime Dependencies** | Self-contained single-binary daemon; runs fully air-gapped |
+| **5** | **Native Storage Engines** | Router handles Key-Value, Columnar, Time-Series Rollup, Vector (HNSW), Graph |
+| **100%** | **Audit Verification** | Every mutation signed with Ed25519 in a SHA-256 hash-chained ledger |
+| **14 / 14** | **Suites Passing** | Continuous assertions with `-UNDEBUG` across all optimized builds |
 
 ---
 
