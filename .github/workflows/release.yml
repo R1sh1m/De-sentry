@@ -133,7 +133,7 @@ jobs:
           npm run stage-sidecar
 
       - name: Configure Apple Developer signing secrets
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
+        if: runner.os == 'macOS'
         shell: bash
         env:
           APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
