@@ -35,7 +35,7 @@ function fileStreamUrl(port: number, collection: string, key: string): string {
 
 async function fetchFile(meta: FileMeta): Promise<Response> {
   const token = await apiToken();
-  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = token ? { Authorization: "Bearer " + token } : {};
   const ports = [
     meta.nodePort,
     ...store.dataNodes()
@@ -54,6 +54,32 @@ async function fetchFile(meta: FileMeta): Promise<Response> {
     }
   }
   throw new Error(lastError);
+}
+
+function blobAsBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("File encoding produced no data."));
+        return;
+      }
+      const separator = reader.result.indexOf(",");
+      if (separator < 0) {
+        reject(new Error("File encoding produced an invalid data URL."));
+        return;
+      }
+      resolve(reader.result.slice(separator + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("File read failed."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function saveFetchedFile(meta: FileMeta): Promise<string | null> {
+  const response = await fetchFile(meta);
+  const base64 = await blobAsBase64(await response.blob());
+  return sidecar.saveAssetFile(meta.filename, base64, meta.size_bytes, meta.sha256);
 }
 
 function closeModal(): void {
@@ -171,19 +197,10 @@ export function openFilePreview(meta: FileMeta): void {
   const openBtn = el("button", { class: "btn btn--sm btn--primary", type: "button" }, icon(Icons.plug, 12), " Open in System App");
   on(openBtn, "click", async () => {
     try {
-      // Fetch the file and save it, then open
-      const res = await fetchFile(meta);
-      const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(",")[1];
-        const path = await sidecar.saveAssetFile(meta.filename, base64, meta.size_bytes, meta.sha256);
-        if (path) {
-          await sidecar.openSavedAsset(path, false);
-          store.toast("success", "File opened", `Opened ${meta.filename} with your default app.`);
-        }
-      };
-      reader.readAsDataURL(blob);
+      const path = await saveFetchedFile(meta);
+      if (!path) return;
+      await sidecar.openSavedAsset(path, false);
+      store.toast("success", "File opened", `Opened ${meta.filename} with your default app.`);
     } catch (err) {
       store.toast("error", "Could not open file", String(err));
     }
@@ -194,17 +211,8 @@ export function openFilePreview(meta: FileMeta): void {
   const saveBtn = el("button", { class: "btn btn--sm btn--ghost", type: "button" }, icon(Icons.copy, 12), " Save As...");
   on(saveBtn, "click", async () => {
     try {
-      const res = await fetchFile(meta);
-      const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(",")[1];
-        const path = await sidecar.saveAssetFile(meta.filename, base64, meta.size_bytes, meta.sha256);
-        if (path) {
-          store.toast("success", "File saved", `Saved ${meta.filename} to ${path}.`);
-        }
-      };
-      reader.readAsDataURL(blob);
+      const path = await saveFetchedFile(meta);
+      if (path) store.toast("success", "File saved", `Saved ${meta.filename} to ${path}.`);
     } catch (err) {
       store.toast("error", "Could not save file", String(err));
     }

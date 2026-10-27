@@ -213,7 +213,7 @@ export function createFiles(): FilesHandles {
     try {
       const { sidecar } = await import("../bridge.js");
       const token = await sidecar.apiToken();
-      return token ? { Authorization: `Bearer ${token}` } : {};
+      return token ? { Authorization: "Bearer " + token } : {};
     } catch {
       return {};
     }
@@ -418,18 +418,33 @@ export function createFiles(): FilesHandles {
   async function downloadFile(file: FileItem): Promise<void> {
     try {
       const token = await (await import("../bridge.js")).sidecar.apiToken();
-      const res = await fetch(`http://127.0.0.1:${file.nodePort}/_files/${file.collection}/${file.key}/stream`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      const res = await fetch(`http://127.0.0.1:${file.nodePort}/_files/${encodeURIComponent(file.collection)}/${encodeURIComponent(file.key)}/stream`, {
+        headers: token ? { Authorization: "Bearer " + token } : {},
       });
-      if (!res.ok) throw new Error("Download failed");
+      if (!res.ok) {
+        const detail = (await res.text()).trim();
+        throw new Error(`Download failed (${res.status})${detail ? `: ${detail.slice(0, 240)}` : ""}`);
+      }
       const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(",")[1];
-        const path = await (await import("../bridge.js")).sidecar.saveAssetFile(file.filename, base64, file.size_bytes, file.sha256);
-        if (path) store.toast("success", "Downloaded", `Saved ${file.filename} to ${path}.`);
-      };
-      reader.readAsDataURL(blob);
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result !== "string") {
+            reject(new Error("File encoding produced no data."));
+            return;
+          }
+          const separator = reader.result.indexOf(",");
+          if (separator < 0) {
+            reject(new Error("File encoding produced an invalid data URL."));
+            return;
+          }
+          resolve(reader.result.slice(separator + 1));
+        };
+        reader.onerror = () => reject(reader.error ?? new Error("File read failed."));
+        reader.readAsDataURL(blob);
+      });
+      const path = await (await import("../bridge.js")).sidecar.saveAssetFile(file.filename, base64, file.size_bytes, file.sha256);
+      if (path) store.toast("success", "Downloaded", `Saved ${file.filename} to ${path}.`);
     } catch (err) {
       store.toast("error", "Download failed", describeError(err));
     }

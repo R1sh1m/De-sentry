@@ -11,6 +11,7 @@
 #include "desentry/common/logger.h"
 #include "desentry/common/platform.h"
 #include "desentry/net/admission.h"
+#include "desentry/security/crypto.h"
 #include "desentry/storage/engines/graph_adj.h"
 #include "desentry/storage/engines/ts_rollup.h"
 #include "desentry/storage/engines/vector_hnsw_lite.h"
@@ -172,10 +173,16 @@ StatusOr<std::string> ReassembleChunkedFile(NodeEngine* engine,
       return Status::NotFound("missing chunk " + std::to_string(i) + " for " + key);
     }
     const JsonValue& part = part_or.value();
-    const JsonValue* v_cd = part.Find(chunk_field);
+    // Chunk records store the original field name in `field` and the
+    // payload in `text`; `chunk_field` belongs to the manifest.
+    const JsonValue* v_field = part.Find("field");
+    if (!v_field || !v_field->is_string() || v_field->AsString() != chunk_field) {
+      return Status::InvalidArgument("chunk " + std::to_string(i) + " has an unexpected field");
+    }
+    const JsonValue* v_cd = part.Find("text");
     const std::string chunk_data = (v_cd && v_cd->is_string()) ? v_cd->AsString() : "";
     if (chunk_data.empty()) {
-      return Status::InvalidArgument("chunk " + std::to_string(i) + " missing field " + chunk_field);
+      return Status::InvalidArgument("chunk " + std::to_string(i) + " missing text");
     }
     result += chunk_data;
   }
@@ -1621,12 +1628,14 @@ void RegisterFileRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* 
       return JsonError(500, "document is not a valid file object");
     }
 
-    const JsonValue* _fn2 = doc.Find("filename");
-    const std::string filename = (_fn2 && _fn2->is_string()) ? _fn2->AsString() : "file.bin";
     const JsonValue* _mi = doc.Find("mime");
-        const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
+    const std::string mime = (_mi && _mi->is_string()) ? _mi->AsString() : "application/octet-stream";
     const JsonValue* _ch = doc.Find("chunked");
-        const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+    const bool chunked = (_ch && _ch->is_bool()) ? _ch->AsBool() : false;
+    const JsonValue* _sz = doc.Find("size_bytes");
+    const int64_t expected_size = (_sz && _sz->is_number()) ? _sz->AsInt() : -1;
+    const JsonValue* _sh = doc.Find("sha256");
+    const std::string expected_sha256 = (_sh && _sh->is_string()) ? _sh->AsString() : "";
 
     std::string base64_data;
     if (chunked) {
@@ -1640,14 +1649,23 @@ void RegisterFileRoutes(HttpServer* server, NodeEngine* engine, NetworkManager* 
       base64_data = (_b64 && _b64->is_string()) ? _b64->AsString() : "";
     }
 
-    if (base64_data.empty()) {
-      return JsonError(404, "file content not found");
-    }
-
     // Decode base64 to binary
     std::vector<uint8_t> binary = DecodeBase64(base64_data);
-    if (binary.empty()) {
+    if (binary.empty() && expected_size != 0) {
       return JsonError(500, "failed to decode file content");
+    }
+    if (expected_size >= 0 && static_cast<int64_t>(binary.size()) != expected_size) {
+      return JsonError(422, "file content size does not match its manifest");
+    }
+    if (!expected_sha256.empty()) {
+      if (expected_sha256.size() != 64) {
+        return JsonError(422, "file manifest contains an invalid SHA-256 checksum");
+      }
+      const std::string actual_sha256 = HexEncode(crypto::Sha256(
+          std::string(reinterpret_cast<const char*>(binary.data()), binary.size())));
+      if (actual_sha256 != expected_sha256) {
+        return JsonError(422, "file content checksum does not match its manifest");
+      }
     }
 
     HttpResponse resp;

@@ -34,7 +34,7 @@ export async function apiToken(): Promise<string> {
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra ?? {}) };
-  if (cachedToken) headers["Authorization"] = `Bearer ${cachedToken}`;
+  if (cachedToken) headers["Authorization"] = "Bearer " + cachedToken;
   return headers;
 }
 
