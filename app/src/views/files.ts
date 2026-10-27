@@ -85,6 +85,7 @@ interface FilesState {
 // -- view --------------------------------------------------------------------
 
 export interface FilesHandles {
+  activate(force?: boolean): void;
   render(): void;
   element: HTMLElement;
 }
@@ -113,6 +114,20 @@ export function createFiles(): FilesHandles {
   };
 
   let searchTimer = 0;
+  let lastActivationKey: string | null = null;
+
+  function activate(force = false): void {
+    const availableNodes = store.dataNodes().filter(
+      (node) => node.reachable && node.process.process === "running",
+    );
+    const activationKey = availableNodes
+      .map((node) => `${node.process.node_id}:${node.process.api_port}`)
+      .join("|");
+    if (!force && activationKey === lastActivationKey) return;
+    lastActivationKey = activationKey;
+    void fetchFiles();
+    void fetchRecentFiles();
+  }
 
   // -- API calls ---------------------------------------------------------------
 
@@ -733,9 +748,5 @@ export function createFiles(): FilesHandles {
     replace(element, layout);
   }
 
-  // Initial load
-  void fetchFiles();
-  void fetchRecentFiles();
-
-  return { render, element };
+  return { activate, render, element };
 }

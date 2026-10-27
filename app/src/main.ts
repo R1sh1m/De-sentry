@@ -814,6 +814,7 @@ function build(): void {
   }
 
   // Render ------------------------------------------------------------------
+  let filesWereVisible = false;
   function render(): void {
     const state = store.state;
 
@@ -830,6 +831,10 @@ function build(): void {
       renderToasts();
       return;
     }
+
+    const filesAreVisible = state.selection.kind === "files";
+    if (filesAreVisible) files.activate(!filesWereVisible);
+    filesWereVisible = filesAreVisible;
 
     const nodes = store.dataNodes();
     const info = state.appInfo;
