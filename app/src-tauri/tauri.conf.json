@@ -62,7 +62,8 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "nsis/installer-hooks.nsh"
       }
     },
     "macOS": {
