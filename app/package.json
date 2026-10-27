@@ -1,6 +1,6 @@
 {
   "name": "de-sentry-app",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "De-Sentry control room — the single point of access to a peer-to-peer database mesh.",
   "type": "module",
@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri-wrapper.mjs",
     "build:engine": "cmake --build ../build --config RelWithDebInfo",
     "tauri:dev": "npm run build:engine && node scripts/stage-sidecar.mjs && tauri dev",
     "tauri:build": "npm run build:engine && node scripts/stage-sidecar.mjs && tauri build",

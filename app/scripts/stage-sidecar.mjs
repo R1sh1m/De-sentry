@@ -121,6 +121,28 @@ async function main() {
       process.stdout.write(
         `staged ${universalSource}\n     -> ${dest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
       );
+    } else {
+      // Fallback: if no universal binary exists, try to use the staged arch-specific binary
+      // or create a copy from the host triple binary
+      const hostTripleDest = join(OUT, `desentryd-${triple}`);
+      if (await exists(hostTripleDest)) {
+        const universalDest = join(OUT, "desentryd-universal-apple-darwin");
+        await copyFile(hostTripleDest, universalDest);
+        await chmod(universalDest, 0o755);
+        const info = await stat(universalDest);
+        process.stdout.write(
+          `staged (fallback) ${hostTripleDest}\n     -> ${universalDest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
+        );
+      } else {
+        // Last resort: copy from source
+        const universalDest = join(OUT, "desentryd-universal-apple-darwin");
+        await copyFile(source, universalDest);
+        await chmod(universalDest, 0o755);
+        const info = await stat(universalDest);
+        process.stdout.write(
+          `staged (fallback from source) ${source}\n     -> ${universalDest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
+        );
+      }
     }
   }
 }
