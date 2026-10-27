@@ -22,8 +22,9 @@ ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 > touch targets on sidebar resizer and icon buttons. CI/CD release workflow
 > overhauled for Apple Silicon macOS (native macos-14 runner, cross-compiled
 > static OpenSSL 3.4.0, aarch64 sidecar packaging, and Apple Developer ID
-> signing/notarization secrets). Physical multi-machine LAN verification remains
-> unverified.
+> signing/notarization made optional when secrets are absent, falling back
+> cleanly to unsigned DMG packaging rather than failing keychain certificate
+> import). Physical multi-machine LAN verification remains unverified.
 
 > **2026-10-27 — v1.1.0 release verification.** All 14 C++ test suites passed
 > green (100% pass rate, including newly introduced `ledger_feed_test`).
