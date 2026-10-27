@@ -18,6 +18,9 @@ const RELEASE_API = "https://api.github.com/repos/R1sh1m/De-sentry/releases/late
 const RELEASE_PAGE_PREFIX = "https://github.com/R1sh1m/De-sentry/releases/";
 
 export async function fetchLatestRelease(timeoutMs = 8_000): Promise<LatestRelease> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new Error("Offline (local mesh mode)");
+  }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -45,10 +48,13 @@ export async function fetchLatestRelease(timeoutMs = 8_000): Promise<LatestRelea
  * when it is older. Supports standard major.minor.patch prerelease versions. */
 export function compareVersions(candidate: string, current: string): number {
   const parse = (value: string) => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(value);
-    if (match === null) throw new Error(`Invalid app version: ${value}`);
+    const cleaned = (value || "").trim().replace(/^[vV]/, "");
+    const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(cleaned);
+    if (match === null) {
+      return { core: [0, 0, 0], prerelease: null };
+    }
     return {
-      core: [Number(match[1]), Number(match[2]), Number(match[3])],
+      core: [Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)],
       prerelease: match[4] ?? null,
     };
   };

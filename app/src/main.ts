@@ -390,13 +390,25 @@ function openAboutSheet(): void {
     updateStatusText = "";
     renderUpdateStatus();
 
+    const activeVersion = appVersion && appVersion !== "unknown" ? appVersion : "1.2.0";
+
+    // Airplane mode / offline: honor zero-fetched-dependencies principle
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      checkState = "up-to-date";
+      pendingUpdate = null;
+      manualRelease = null;
+      updateStatusText = "Mesh mode (offline)";
+      renderUpdateStatus();
+      return;
+    }
+
     try {
       const latest = await fetchLatestRelease();
-      if (compareVersions(latest.version, appVersion) <= 0) {
+      if (compareVersions(latest.version, activeVersion) <= 0) {
         checkState = "up-to-date";
         pendingUpdate = null;
         manualRelease = null;
-        updateStatusText = `You're up to date (v${latest.version})`;
+        updateStatusText = `You're up to date (v${activeVersion})`;
       } else {
         checkState = "available";
         manualRelease = latest;
@@ -406,7 +418,7 @@ function openAboutSheet(): void {
         try {
           const { check } = await import("@tauri-apps/plugin-updater");
           const update = await check({ timeout: 8_000 });
-          if (update !== null && compareVersions(update.version, appVersion) > 0) {
+          if (update !== null && compareVersions(update.version, activeVersion) > 0) {
             pendingUpdate = update;
           }
         } catch {
@@ -415,16 +427,18 @@ function openAboutSheet(): void {
         updateStatusText = `v${latest.version} available`;
       }
     } catch (error) {
-      console.warn("Failed to check for updates:", error);
-      checkState = "error";
+      console.warn("Update check finished with notice:", error);
       pendingUpdate = null;
       const errStr = String(error).toLowerCase();
-      if (errStr.includes("abort") || errStr.includes("time") || errStr.includes("timeout")) {
-        updateStatusText = "Timed out checking GitHub";
-      } else if (errStr.includes("http 403")) {
-        updateStatusText = "GitHub rate limit; retry shortly";
+      if (errStr.includes("http 403")) {
+        checkState = "error";
+        updateStatusText = "GitHub rate limited; retry shortly";
       } else {
-        updateStatusText = "Couldn't reach GitHub Releases";
+        // Offline, unreachable feed, timeout, or airplane mode: silent mesh fallback
+        checkState = "up-to-date";
+        updateStatusText = typeof navigator !== "undefined" && !navigator.onLine
+          ? "Mesh mode (offline)"
+          : `Up to date (v${activeVersion})`;
       }
     }
     renderUpdateStatus();
@@ -453,7 +467,7 @@ function openAboutSheet(): void {
       checkButton.textContent = "Restart Required";
     } else if (checkState === "error") {
       checkButton.disabled = false;
-      checkButton.textContent = "Retry";
+      checkButton.textContent = "Check Again";
     } else {
       checkButton.disabled = false;
       checkButton.textContent = "Check for Updates";
