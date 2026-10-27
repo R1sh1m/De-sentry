@@ -137,9 +137,8 @@ export function openFilePreview(meta: FileMeta): void {
         style: "width: 100%; height: 60vh; border: none;",
       });
       void fetchFile(meta).then(async (res) => {
-        const url = URL.createObjectURL(await res.blob());
-        activeObjectUrls.push(url);
-        embed.setAttribute("src", url);
+        const base64 = await blobAsBase64(await res.blob());
+        embed.setAttribute("src", `data:application/pdf;base64,${base64}`);
         loading.remove();
         previewArea.appendChild(embed);
       }).catch((error: unknown) => {
