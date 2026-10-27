@@ -88,7 +88,7 @@
 
     <!-- Version & Open Source Footprint -->
     <text x="0" y="360" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="500" fill="#475569">
-      Release v1.1.0 · C++17 Core · Tauri Sidecar · MIT License
+      Release v1.2.0 · C++17 Core · Tauri Sidecar · MIT License
     </text>
   </g>
 

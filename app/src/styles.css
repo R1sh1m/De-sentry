@@ -517,6 +517,15 @@ input::-ms-clear {
   transition: background var(--motion-instant);
   touch-action: none;
 }
+/* Expand the hit area to >=44px for touch targets without changing visual size */
+.sidebar__resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -17px;
+  width: 44px;
+  height: 100%;
+}
 .sidebar__resizer:focus-visible {
   outline: none;
   background: var(--color-primary);
@@ -986,7 +995,15 @@ svg.mesh {
   background: var(--color-status-lagging);
 }
 .dot[data-status="waiting"] {
-  background: var(--color-status-lagging);
+  background: var(--color-ink-muted-48);
+  animation: dot-breathe 1.6s ease-in-out infinite;
+}
+@keyframes dot-breathe {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot[data-status="waiting"] { animation: none; opacity: 0.7; }
 }
 .dot[data-status="offline"] {
   background: var(--color-status-offline);
@@ -1039,8 +1056,8 @@ svg.mesh {
   color: var(--color-status-lagging);
 }
 .badge[data-tone="waiting"] {
-  background: var(--color-status-lagging-bg);
-  color: var(--color-status-lagging);
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted-48);
 }
 .badge[data-tone="offline"] {
   background: var(--color-status-offline-bg);
@@ -1244,6 +1261,7 @@ svg.mesh {
   padding: 4px 10px;
 }
 .btn--icon-only {
+  position: relative;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -1251,6 +1269,11 @@ svg.mesh {
   color: var(--color-ink-muted-80);
   border: 1px solid transparent;
   cursor: pointer;
+}
+.btn--icon-only::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
 }
 .btn--icon-only:hover {
   color: var(--color-ink);
@@ -1286,8 +1309,9 @@ svg.mesh {
 }
 .segmented button[aria-pressed="true"] {
   background: var(--color-surface);
-  color: var(--color-ink);
-  box-shadow: var(--elev-hairline);
+  color: var(--color-primary);
+  box-shadow: var(--elev-hairline), 0 0 10px color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1625,6 +1649,7 @@ svg.mesh {
   font-size: 12px;
 }
 .mesh__popover-close {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1636,6 +1661,11 @@ svg.mesh {
   color: var(--color-ink-muted-48);
   cursor: pointer;
   flex: none;
+}
+.mesh__popover-close::before {
+  content: "";
+  position: absolute;
+  inset: -13px;
 }
 .mesh__popover-close:hover {
   background: color-mix(in srgb, var(--color-ink) 10%, transparent);
@@ -3152,10 +3182,17 @@ select.ledger__filter-control option {
 .empty {
   display: grid;
   place-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   padding: var(--space-xxl) var(--space-lg);
   text-align: center;
   color: var(--color-ink-muted-48);
+  background: radial-gradient(60% 40% at 50% 0%, color-mix(in srgb, var(--color-primary) 8%, transparent), transparent 70%);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  backdrop-filter: var(--chrome-blur-thin);
+  -webkit-backdrop-filter: var(--chrome-blur-thin);
+  max-width: 520px;
+  margin: 0 auto;
 }
 .empty__badge {
   display: inline-flex;
@@ -3172,7 +3209,7 @@ select.ledger__filter-control option {
   margin-bottom: 2px;
 }
 .empty__title {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
   color: var(--color-ink);
   letter-spacing: -0.015em;
@@ -3184,6 +3221,22 @@ select.ledger__filter-control option {
   margin: 0;
   max-width: 48ch;
   line-height: 1.55;
+}
+.empty__actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
+  flex-wrap: wrap;
+}
+.empty__trust {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  flex-wrap: wrap;
 }
 .skeleton {
   height: 30px;
@@ -3589,6 +3642,7 @@ select.ledger__filter-control option {
 }
 
 .health-alert__close {
+  position: relative;
   margin-left: auto;
   background: none;
   border: 1px solid transparent;
@@ -3604,6 +3658,11 @@ select.ledger__filter-control option {
   border-radius: 50%;
   flex-shrink: 0;
   transition: all 0.15s ease;
+}
+.health-alert__close::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
 }
 
 .health-alert__close:hover,

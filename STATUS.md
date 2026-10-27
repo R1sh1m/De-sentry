@@ -12,6 +12,19 @@ the design rationale lives in `docs/architecture.md`
 (v1 engine) and `docs/architecture-v2.md` (supervisors, storage router,
 ledger v2, threat model); `AGENTS.md` is the how-to-work-here companion.
 
+> **2026-10-27 — v1.2.0 release verification.** All 14 C++ test suites passed
+> green (100% pass rate: acl, at_rest, crdt, crypto, ledger_feed, ledger_v2,
+> liveness, network, placement, quota, retention, router, storage, transit).
+> Frontend checks passed: `tsc --noEmit`, `check:qr`, `check:css`, Vitest
+> test suite, and Vite production build clean. Rust sidecar `cargo check` clean.
+> Added canvas "Import mesh invite" direct flow for immediate onboarding into
+> an existing LAN mesh from empty state. Enhanced accessibility with >=44px
+> touch targets on sidebar resizer and icon buttons. CI/CD release workflow
+> overhauled for Apple Silicon macOS (native macos-14 runner, cross-compiled
+> static OpenSSL 3.4.0, aarch64 sidecar packaging, and Apple Developer ID
+> signing/notarization secrets). Physical multi-machine LAN verification remains
+> unverified.
+
 > **2026-10-27 — v1.1.0 release verification.** All 14 C++ test suites passed
 > green (100% pass rate, including newly introduced `ledger_feed_test`).
 > Frontend checks passed: `tsc --noEmit`, `check:qr`, `check:css`, Vitest

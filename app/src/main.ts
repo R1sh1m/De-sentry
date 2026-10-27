@@ -527,7 +527,7 @@ function build(): void {
   lockDarkTheme();
 
   const sidebar = createSidebar(() => wizard.open(), onAddAsPeer);
-  const canvas = createCanvas(() => wizard.open());
+  const canvas = createCanvas(() => wizard.open(), showAddDevice);
   const explorer = createExplorer();
   const explorerMain = el("main", { class: "canvas" }, explorer.element);
   const ledger = createLedger();

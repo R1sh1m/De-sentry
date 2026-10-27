@@ -5,7 +5,7 @@
 <!-- CI rebuild trigger -->
 
 <p align="center">
-  <a href="https://github.com/R1sh1m/De-sentry/releases"><img src="https://img.shields.io/badge/Release-v1.1%20Production%20Ready-38bdf8?style=flat-square&logo=github&logoColor=white" alt="Release v1.1"></a>
+  <a href="https://github.com/R1sh1m/De-sentry/releases"><img src="https://img.shields.io/badge/Release-v1.2%20Production%20Ready-38bdf8?style=flat-square&logo=github&logoColor=white" alt="Release v1.2"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square&logo=c%2B%2B&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/Topology-Symmetric%20P2P%20Mesh-orange?style=flat-square&logoColor=white" alt="Symmetric P2P Mesh">
   <img src="https://img.shields.io/badge/Consistency-CRDT%20%2B%20HLC-green?style=flat-square" alt="CRDT + HLC">
@@ -25,7 +25,7 @@ By eliminating coordinator-dependent consensus protocols in favor of state-based
 
 <p align="center">
   <a href="#quickstart"><b>🚀 Quickstart Guide</b></a> &nbsp;•&nbsp;
-  <a href="https://github.com/R1sh1m/De-sentry/releases"><b>📦 Download v1.1 App</b></a> &nbsp;•&nbsp;
+  <a href="https://github.com/R1sh1m/De-sentry/releases"><b>📦 Download v1.2 App</b></a> &nbsp;•&nbsp;
   <a href="#system-architecture"><b>🏗️ System Architecture</b></a> &nbsp;•&nbsp;
   <a href="#documentation-hub"><b>📖 Full Documentation</b></a>
 </p>

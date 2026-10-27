@@ -1611,18 +1611,29 @@ function discoveredCanvas(candidates: DiscoveredCandidate[], onNewNode: () => vo
   return wrapper;
 }
 
-function emptyCanvas(onNewNode: () => void): HTMLElement {
+function emptyCanvas(onNewNode: () => void, onJoinMesh?: () => void): HTMLElement {
   const button = el("button", { class: "btn btn--primary", type: "button" },
     icon(Icons.plus, 13),
     el("span", { style: "margin-left: 4px;", text: "Ignite first node" }),
   );
   on(button, "click", onNewNode);
+
+  const actions: HTMLElement[] = [button];
+  if (onJoinMesh) {
+    const inviteBtn = el("button", { class: "btn btn--ghost", type: "button" },
+      icon(Icons.mesh, 14),
+      el("span", { style: "margin-left: 4px;", text: "Import mesh invite" }),
+    );
+    on(inviteBtn, "click", onJoinMesh);
+    actions.push(inviteBtn);
+  }
+
   return emptyState({
-    badge: "Decentralized P2P Mesh",
-    title: "This sector is dark",
-    body: "No nodes yet — a node is a place to keep data, a folder on this machine or a drive you can carry. Ignite one and its star appears here, along with every peer it finds.",
-    actions: [button],
-    trustSignals: ["🔒 Encrypted at Rest", "✈️ Zero Cloud Dependencies", "⚡ Sub-millisecond CRDT Sync"],
+    badge: "OFFLINE-FIRST",
+    title: "No nodes yet",
+    body: "A node is a folder that holds a slice of your data. Ignite one on this machine or import a LAN mesh invite to join an existing mesh. Your data stays local until you connect.",
+    actions,
+    trustSignals: ["Airplane-mode ready", "No cloud required", "Encrypted at rest"],
   });
 }
 
@@ -1631,7 +1642,7 @@ export interface CanvasHandles {
   element: HTMLElement;
 }
 
-export function createCanvas(onNewNode: () => void): CanvasHandles {
+export function createCanvas(onNewNode: () => void, onJoinMesh?: () => void): CanvasHandles {
   const body = el("div", { style: "width: 100%; height: 100%; position: relative; z-index: 1;" });
   const element = el("main", { class: "canvas", style: "position: relative; overflow: hidden;" }, body);
 
@@ -1651,7 +1662,7 @@ export function createCanvas(onNewNode: () => void): CanvasHandles {
       if (candidates.length > 0) {
         replace(body, discoveredCanvas(candidates, onNewNode));
       } else {
-        replace(body, emptyCanvas(onNewNode));
+        replace(body, emptyCanvas(onNewNode, onJoinMesh));
       }
       return;
     }

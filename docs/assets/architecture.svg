@@ -67,7 +67,7 @@
   <g transform="translate(40, 36)">
     <rect x="0" y="0" width="148" height="24" rx="12" fill="#00f0ff" fill-opacity="0.1" stroke="#00f0ff" stroke-opacity="0.3"/>
     <text x="74" y="16" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#00f0ff" text-anchor="middle" letter-spacing="1">SYMMETRIC NODE</text>
-    <text x="164" y="17" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="700" fill="#f1f5f9" letter-spacing="-0.3">Autonomous Peer Architecture (desentryd)</text>
+    <text x="164" y="17" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="700" fill="#f1f5f9" letter-spacing="-0.3">Autonomous Peer Architecture</text>
   </g>
 
   <!-- Client Layer (Left Column) -->
@@ -228,21 +228,33 @@
 
         <!-- Network components -->
         <g transform="translate(14, 42)">
-          <rect width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
-          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Zero-Trust Framing</text>
-          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#00f0ff">X25519 + AES-256-GCM</text>
+          <!-- Zero-Trust Framing -->
+          <g transform="translate(0, 0)">
+            <rect width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+            <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Zero-Trust Framing</text>
+            <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#00f0ff">X25519 + AES-256-GCM</text>
+          </g>
 
-          <rect x="216" y="0" width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
-          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">LAN Auto-Discovery</text>
-          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#38bdf8">UDP Broadcast (Port 7901)</text>
+          <!-- LAN Auto-Discovery -->
+          <g transform="translate(216, 0)">
+            <rect width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+            <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">LAN Auto-Discovery</text>
+            <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#38bdf8">UDP Broadcast (Port 7901)</text>
+          </g>
 
-          <rect x="0" y="48" width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
-          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Consistent Hashing</text>
-          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#10b981">Partition Placement (RF=3)</text>
+          <!-- Consistent Hashing -->
+          <g transform="translate(0, 48)">
+            <rect width="204" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+            <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Consistent Hashing</text>
+            <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#10b981">Partition Placement (RF=3)</text>
+          </g>
 
-          <rect x="216" y="48" width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
-          <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Gossip Anti-Entropy</text>
-          <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#c084fc">Decentralized synchronization</text>
+          <!-- Gossip Anti-Entropy -->
+          <g transform="translate(216, 48)">
+            <rect width="206" height="42" rx="6" fill="#1a2233" stroke="#2b3952" stroke-width="1"/>
+            <text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#f8fafc">Gossip Anti-Entropy</text>
+            <text x="12" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#c084fc">Decentralized synchronization</text>
+          </g>
         </g>
       </g>
     </g>

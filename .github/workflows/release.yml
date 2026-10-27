@@ -60,7 +60,7 @@ jobs:
           - os: ubuntu-22.04
             args: ""
           - os: macos-latest
-            args: "--target universal-apple-darwin"
+            args: "--target aarch64-apple-darwin"
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -85,9 +85,21 @@ jobs:
       - name: Install Rust (MSVC on Windows)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust targets for macOS universal binary
+      - name: Rust targets for macOS arm64
         if: runner.os == 'macOS'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Build OpenSSL for arm64 cross-compilation
+        if: runner.os == 'macOS' && matrix.args == '--target aarch64-apple-darwin'
+        run: |
+          # GitHub's macos-latest runner is Intel; Homebrew's OpenSSL is x86_64-only.
+          # Build OpenSSL from source for arm64 so the C++ engine can cross-compile.
+          curl -fsSL https://www.openssl.org/source/openssl-3.4.0.tar.gz | tar xz -C /tmp
+          cd /tmp/openssl-3.4.0
+          ./Configure darwin64-arm64-cc -no-shared --prefix=/tmp/openssl-arm64 > /dev/null
+          make -j"$(sysctl -n hw.ncpu)" > /dev/null
+          make install_sw > /dev/null
+          echo "OPENSSL_ROOT_DIR=/tmp/openssl-arm64" >> $GITHUB_ENV
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -98,8 +110,13 @@ jobs:
 
       - name: Build the engine
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build --config RelWithDebInfo --parallel
+          if [ "${{ runner.os }}" = "macOS" ] && [ "${{ matrix.args }}" = "--target aarch64-apple-darwin" ]; then
+            cmake -S . -B build-arm64 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_OSX_ARCHITECTURES=arm64
+            cmake --build build-arm64 --config RelWithDebInfo --parallel
+          else
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            cmake --build build --config RelWithDebInfo --parallel
+          fi
 
       - name: App setup (deps, sizing model, sidecar staging)
         working-directory: app
@@ -118,6 +135,21 @@ jobs:
           # still builds, but updater bundles are unsigned and clients refuse
           # them -- fail closed, never silently unsigned.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Apple Developer ID signing and notarization (macOS only).
+          # Required secrets:
+          #   APPLE_CERTIFICATE         — Developer ID p12 cert, base64-encoded
+          #   APPLE_CERTIFICATE_PASSWORD — p12 file password
+          #   APPLE_NOTARIZATION_PASSWORD — Apple ID app-specific password
+          #   APPLE_NOTARIZATION_TEAM_ID — your Apple Developer Team ID
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARIZATION_PASSWORD: ${{ secrets.APPLE_NOTARIZATION_PASSWORD }}
+          APPLE_NOTARIZATION_TEAM_ID: ${{ secrets.APPLE_NOTARIZATION_TEAM_ID }}
+          # macOS arm64 cross-build: tell stage-sidecar.mjs (run by
+          # beforeBuildCommand) to name the sidecar desentryd-aarch64-apple-darwin
+          # and source it from the cross-built engine in build-arm64/.
+          DESENTRY_SIDECAR_TRIPLE: ${{ matrix.args == '--target aarch64-apple-darwin' && 'aarch64-apple-darwin' || '' }}
+          DESENTRY_ENGINE: ${{ matrix.args == '--target aarch64-apple-darwin' && format('{0}/build-arm64/desentryd', github.workspace) || '' }}
         with:
           projectPath: app
           tagName: ${{ github.ref_name }}

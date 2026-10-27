@@ -57,6 +57,14 @@ function targetTriple() {
   return line.slice("host:".length).trim();
 }
 
+/** Target triple used to name the staged sidecar. DESENTRY_SIDECAR_TRIPLE lets
+ *  a CI job cross-build the engine for a different arch (e.g. aarch64-apple-darwin
+ *  on an Intel macOS runner) and name the sidecar so Tauri resolves it for that
+ *  target. Falls back to rustc's host triple. */
+function configuredTriple() {
+  return process.env.DESENTRY_SIDECAR_TRIPLE || targetTriple();
+}
+
 async function main() {
   // Explicit path wins, then $DESENTRY_ENGINE (the same override the Python
   // integration harness honours), then the usual CMake outputs.
@@ -81,7 +89,7 @@ async function main() {
     );
   }
 
-  const triple = targetTriple();
+  const triple = configuredTriple();
   const suffix = process.platform === "win32" ? ".exe" : "";
   const names = [`desentryd-${triple}${suffix}`];
   // Windows quirk, documented not hidden: the Tauri CLI's npm distribution
@@ -110,41 +118,9 @@ async function main() {
     );
   }
 
-  // macOS universal build: also stage the universal binary if present
-  if (process.platform === "darwin") {
-    const universalSource = join(REPO, "build", "desentryd-universal-apple-darwin");
-    if (await exists(universalSource)) {
-      const dest = join(OUT, "desentryd-universal-apple-darwin");
-      await copyFile(universalSource, dest);
-      await chmod(dest, 0o755);
-      const info = await stat(dest);
-      process.stdout.write(
-        `staged ${universalSource}\n     -> ${dest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
-      );
-    } else {
-      // Fallback: if no universal binary exists, try to use the staged arch-specific binary
-      // or create a copy from the host triple binary
-      const hostTripleDest = join(OUT, `desentryd-${triple}`);
-      if (await exists(hostTripleDest)) {
-        const universalDest = join(OUT, "desentryd-universal-apple-darwin");
-        await copyFile(hostTripleDest, universalDest);
-        await chmod(universalDest, 0o755);
-        const info = await stat(universalDest);
-        process.stdout.write(
-          `staged (fallback) ${hostTripleDest}\n     -> ${universalDest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
-        );
-      } else {
-        // Last resort: copy from source
-        const universalDest = join(OUT, "desentryd-universal-apple-darwin");
-        await copyFile(source, universalDest);
-        await chmod(universalDest, 0o755);
-        const info = await stat(universalDest);
-        process.stdout.write(
-          `staged (fallback from source) ${source}\n     -> ${universalDest} (${(info.size / 1024 / 1024).toFixed(1)} MiB)\n`,
-        );
-      }
-    }
-  }
+  // NOTE: Universal macOS binaries are no longer built.
+  // If a target triple override is set (e.g. CI cross-compiling for aarch64),
+  // the sidecar is already staged with the correct name above.
 }
 
 main().catch((error) => {

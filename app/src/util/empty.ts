@@ -32,12 +32,12 @@ export function emptyState(options: EmptyStateOptions): HTMLElement {
     el("p", { class: "empty__title", text: options.title }),
     el("p", { class: "empty__body", text: options.body }),
     options.actions && options.actions.length > 0
-      ? el("div", { class: "empty__actions row", style: "gap: 8px; justify-content: center; margin-top: 8px;" }, ...options.actions)
+      ? el("div", { class: "empty__actions row" }, ...options.actions)
       : null,
     options.trustSignals && options.trustSignals.length > 0
       ? el(
           "div",
-          { class: "empty__trust row", style: "gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap;" },
+          { class: "empty__trust row" },
           ...options.trustSignals.map((signal) => el("span", { class: "chip chip--muted", style: "font-size: 11px; padding: 3px 8px;", text: signal })),
         )
       : null,
