@@ -1612,12 +1612,17 @@ function discoveredCanvas(candidates: DiscoveredCandidate[], onNewNode: () => vo
 }
 
 function emptyCanvas(onNewNode: () => void): HTMLElement {
-  const button = el("button", { class: "btn btn--primary", type: "button", text: "Ignite first node" });
+  const button = el("button", { class: "btn btn--primary", type: "button" },
+    icon(Icons.plus, 13),
+    el("span", { style: "margin-left: 4px;", text: "Ignite first node" }),
+  );
   on(button, "click", onNewNode);
   return emptyState({
+    badge: "Decentralized P2P Mesh",
     title: "This sector is dark",
     body: "No nodes yet — a node is a place to keep data, a folder on this machine or a drive you can carry. Ignite one and its star appears here, along with every peer it finds.",
     actions: [button],
+    trustSignals: ["🔒 Encrypted at Rest", "✈️ Zero Cloud Dependencies", "⚡ Sub-millisecond CRDT Sync"],
   });
 }
 

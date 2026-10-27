@@ -766,7 +766,7 @@ svg.mesh {
   background: var(--tree-row-selected-bg);
   color: var(--tree-row-selected-color);
   font-weight: 600;
-  box-shadow: inset 3px 0 0 0 var(--color-primary);
+  box-shadow: inset 3px 0 0 0 var(--color-primary), 0 0 12px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 .nav-item[aria-selected="true"]:active {
   filter: brightness(0.92);
@@ -3157,15 +3157,33 @@ select.ledger__filter-control option {
   text-align: center;
   color: var(--color-ink-muted-48);
 }
+.empty__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  color: var(--color-primary);
+  font: var(--text-fine);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
 .empty__title {
-  font: var(--text-body-strong);
+  font-size: 20px;
+  font-weight: 600;
   color: var(--color-ink);
+  letter-spacing: -0.015em;
   margin: 0;
 }
 .empty__body {
   font: var(--text-caption);
+  color: var(--color-ink-muted-48);
   margin: 0;
-  max-width: 44ch;
+  max-width: 48ch;
+  line-height: 1.55;
 }
 .skeleton {
   height: 30px;

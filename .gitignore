@@ -220,3 +220,8 @@ app/src-tauri/binaries/
 app/resources/model/*
 !app/resources/model/README.md
 digest.txt
+
+# iFixAi audit outputs
+ifixai-results/
+runs/
+reference.yaml

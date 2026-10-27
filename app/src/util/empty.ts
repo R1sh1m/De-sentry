@@ -13,6 +13,8 @@ import { sentryWatermarkSvg } from "./logo.js";
 export interface EmptyStateOptions {
   title: string;
   body: string;
+  badge?: string;
+  trustSignals?: string[];
   actions?: HTMLElement[];
   watermarkSize?: number;
 }
@@ -26,8 +28,18 @@ export function emptyState(options: EmptyStateOptions): HTMLElement {
       { class: "empty__watermark empty__watermark--glow" },
       sentryWatermarkSvg(options.watermarkSize ?? 110),
     ),
+    options.badge ? el("span", { class: "empty__badge", text: options.badge }) : null,
     el("p", { class: "empty__title", text: options.title }),
     el("p", { class: "empty__body", text: options.body }),
-    ...(options.actions ?? []),
+    options.actions && options.actions.length > 0
+      ? el("div", { class: "empty__actions row", style: "gap: 8px; justify-content: center; margin-top: 8px;" }, ...options.actions)
+      : null,
+    options.trustSignals && options.trustSignals.length > 0
+      ? el(
+          "div",
+          { class: "empty__trust row", style: "gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap;" },
+          ...options.trustSignals.map((signal) => el("span", { class: "chip chip--muted", style: "font-size: 11px; padding: 3px 8px;", text: signal })),
+        )
+      : null,
   );
 }
